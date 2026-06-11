@@ -13,6 +13,36 @@ requests are served instantly.
 
 ---
 
+## Live demo — free public instance
+
+A free, best-effort public instance runs at **<https://ragassets.duckdns.org>**.
+You can use it right away — no API key, no sign-up — by pointing an `<img>` (or
+anything) at it:
+
+```html
+<img src="https://ragassets.duckdns.org/image?job=1002&action=0" alt="Poring">
+```
+
+It's a small hobby server with **no SLA** — it may be slow, rate-limited, or go
+away at any time, so please don't build anything critical on it. For real or
+heavy use, **self-host** (it's a few minutes with Docker — see [Running it](#running-it)).
+
+### Gallery
+
+The images below are served live by that instance (animations are APNG and play
+in your browser):
+
+| Poring · idle | Poring · attack | Dragon Knight · idle |
+|:---:|:---:|:---:|
+| ![Poring idle](https://ragassets.duckdns.org/image?job=1002&action=0) | ![Poring attack](https://ragassets.duckdns.org/image?job=1002&action=16) | ![Dragon Knight idle](https://ragassets.duckdns.org/image?job=4252&head=1&action=0) |
+| **Dragon Knight · attack** | **Arch Mage ♀** | **Custom Swordman ♀** |
+| ![Dragon Knight attack](https://ragassets.duckdns.org/image?job=4252&head=1&action=40) | ![Arch Mage](https://ragassets.duckdns.org/image?job=4255&gender=female&head=3&action=0) | ![Custom Swordman](https://ragassets.duckdns.org/image?job=1&gender=female&head=4&headgear=4,125&garment=1&weapon=1&action=0) |
+
+The last three are 4th-class and customized **player** sprites; the first row are
+monsters. Every one is just a URL — see the [API](#get-image) below.
+
+---
+
 ## How it works
 
 ```
@@ -82,6 +112,66 @@ A missing `job` returns `400`. Upstream render errors return `502`.
 /image?job=1&gender=female&headgear=4,125&garment=1&weapon=2&head=4&action=32
 /image?job=0&canvas=200x200+75+175&action=93
 ```
+
+### Understanding `action` (animations & directions)
+
+zrenderer has no flat list of named actions: the `action` number is an **index
+into the sprite's `.act` file**, and it encodes **two things at once**:
+
+```
+action = (animation type × 8) + direction
+```
+
+Every animation is stored as 8 directional variants (one per 45°), so actions
+come in blocks of 8.
+
+**Direction** (the `+0…7` part) — `0` faces south/front, then rotates 45° each step:
+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|
+| S | SW | W | NW | N | NE | E | SE |
+
+(Conventional order — easiest to confirm by rendering `frame` 0–7 of a block.)
+
+**Animation type** (the `× 8` part) depends on the sprite kind.
+
+Players / jobs (rich set):
+
+| Type | `action` (south-facing) | Meaning |
+|---|---|---|
+| 0 | 0 | Idle / stand |
+| 1 | 8 | Walk |
+| 2 | 16 | Sit |
+| 3 | 24 | Pick up |
+| 4 | 32 | Standby (ready to fight) |
+| 5 | 40 | Attack |
+| 6 | 48 | Hurt (took damage) |
+| 7 | 56 | Frozen / stun |
+| 8 | 64 | Dead |
+| 9 | 72 | Frozen 2 |
+| 10–12 | 80 / 88 / 96 | Attack variants 1–3 (weapon-dependent) |
+
+Monsters (only ~5 blocks):
+
+| Type | `action` | Meaning |
+|---|---|---|
+| 0 | 0 | Idle |
+| 1 | 8 | Walk |
+| 2 | 16 | Attack |
+| 3 | 24 | Hurt |
+| 4 | 32 | Dead |
+
+So `action=18` is "walk, facing west" for a monster (`8 + 2`), and the zrenderer
+examples line up: `--action=16` is a monster attack, `--action=32` a player
+standby pose, `--action=93` a player attack variant (`88 + 5`) facing direction 5.
+
+> NPCs, homunculi, mercenaries, pets and mounts each have their own (usually
+> smaller) tables. The real source of truth is always the individual sprite's
+> `.act` file — zrenderer renders whatever index exists in it, so the valid range
+> varies per sprite.
+
+Note: body direction is part of `action`; the separate `headdir` parameter only
+rotates the **head**.
 
 ### `GET /healthz`
 
