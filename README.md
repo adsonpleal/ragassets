@@ -34,9 +34,9 @@ in your browser):
 
 | Poring · idle | Poring · attack | Dragon Knight · idle |
 |:---:|:---:|:---:|
-| ![Poring idle](https://ragassets.duckdns.org/image?job=1002&action=0) | ![Poring attack](https://ragassets.duckdns.org/image?job=1002&action=16) | ![Dragon Knight idle](https://ragassets.duckdns.org/image?job=4252&head=1&action=0) |
+| ![Poring idle](https://ragassets.duckdns.org/image?job=1002&action=0) | ![Poring attack](https://ragassets.duckdns.org/image?job=1002&action=16) | ![Dragon Knight idle](https://ragassets.duckdns.org/image?job=4252&head=1&action=0&frame=0) |
 | **Dragon Knight · attack** | **Arch Mage ♀** | **Custom Swordman ♀** |
-| ![Dragon Knight attack](https://ragassets.duckdns.org/image?job=4252&head=1&action=40) | ![Arch Mage](https://ragassets.duckdns.org/image?job=4255&gender=female&head=3&action=0) | ![Custom Swordman](https://ragassets.duckdns.org/image?job=1&gender=female&head=4&headgear=4,125&garment=1&weapon=1&action=0) |
+| ![Dragon Knight attack](https://ragassets.duckdns.org/image?job=4252&head=1&action=40) | ![Arch Mage](https://ragassets.duckdns.org/image?job=4255&gender=female&head=3&action=0&frame=0) | ![Custom Swordman](https://ragassets.duckdns.org/image?job=1&gender=female&head=4&headgear=4,125&garment=1&weapon=1&action=0&frame=0) |
 
 The last three are 4th-class and customized **player** sprites; the first row are
 monsters. Every one is just a URL — see the [API](#get-image) below.
