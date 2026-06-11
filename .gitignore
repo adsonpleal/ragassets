@@ -1,0 +1,23 @@
+# Extracted GRF assets — large, regenerated from the client via extract-grf.mjs
+/resources/
+
+# Packaged resources for transfer
+*.tar
+*.tar.gz
+
+# Node
+node_modules/
+
+# Local env overrides (commit .env.example instead)
+.env
+
+# Go build artifacts (the gateway is normally built inside Docker)
+/gateway/zrenderer-gateway
+/gateway/*.exe
+
+# Local Claude settings
+.claude/settings.local.json
+
+# OS junk
+Thumbs.db
+.DS_Store

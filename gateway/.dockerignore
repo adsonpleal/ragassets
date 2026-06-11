@@ -1,0 +1,4 @@
+# Keep the build context minimal.
+Dockerfile
+.dockerignore
+*.md
