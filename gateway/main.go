@@ -119,7 +119,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "zrenderer-gateway — a caching layer over zhad3/zrenderer.\n\n"+
 		"Try: /image?job=1002            (still image)\n"+
 		"     /image?job=1002&action=0   (animation, APNG)\n"+
-		"     /icons/item/501.png        (static item/collection/skill/job icons)\n\n"+
+		"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n\n"+
 		"See the README for every supported parameter.\n")
 }
 
@@ -195,15 +195,15 @@ func (s *server) serveFile(w http.ResponseWriter, r *http.Request, path, key, co
 // client GRF by extract-grf.mjs --icons. No zrenderer involvement.
 // ---------------------------------------------------------------------------
 
-// The kinds and the digits-only ids mirror what extract-grf.mjs --icons
-// produces (<icons-dir>/{item,collection,skill,job}/<numeric id>.png) — keep
-// them in sync with extractIcons() there.
-var iconKinds = map[string]bool{"item": true, "collection": true, "skill": true, "job": true}
-var iconFilePattern = regexp.MustCompile(`^[0-9]+\.png$`)
+// The kinds and the filenames mirror what extract-grf.mjs --icons produces —
+// numeric-id PNGs for item/collection/skill/job and client-basename PNGs for
+// ui (character-creation elements). Keep in sync with extractIcons() there.
+var iconKinds = map[string]bool{"item": true, "collection": true, "skill": true, "job": true, "ui": true}
+var iconFilePattern = regexp.MustCompile(`^[a-z0-9_]+\.png$`)
 
-// handleIcon serves /icons/{type}/{id}.png from the icons dir. The kind
-// whitelist plus the digits-only filename pattern make path traversal
-// structurally impossible; anything else is a 404.
+// handleIcon serves /icons/{type}/{name}.png from the icons dir. The kind
+// whitelist plus the lowercase-word filename pattern (no dots, no slashes)
+// make path traversal structurally impossible; anything else is a 404.
 func (s *server) handleIcon(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

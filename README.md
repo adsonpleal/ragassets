@@ -179,30 +179,44 @@ standby pose, `--action=93` a player attack variant (`88 + 5`) facing direction 
 Note: body direction is part of `action`; the separate `headdir` parameter only
 rotates the **head**.
 
-### `GET /icons/{type}/{id}.png`
+### `GET /icons/{type}/{name}.png`
 
-Serves a static icon extracted from the client GRF (see
+Serves a static image extracted from the client GRF (see
 [GRF extraction](#resources--grf-extraction-required) — this endpoint returns
 `404` until you run the `--icons` extraction step):
 
-| `type` | What you get | `id` |
+| `type` | What you get | `name` |
 |---|---|---|
 | `item` | Inventory icon (~24×24) | item id |
 | `collection` | Larger item description image (~75×100) | item id |
 | `skill` | Skill icon (~24×24) | skill id |
 | `job` | Class/job icon | job id |
+| `ui` | Character-creation UI element | client filename (see below) |
 
 ```
 /icons/item/501.png          # Red Potion inventory icon
 /icons/collection/501.png    # Red Potion description image
 /icons/skill/28.png          # Heal
 /icons/job/4252.png          # Dragon Knight
+/icons/ui/bt_female_on.png   # gender toggle, female, selected
 ```
 
-Ids are numeric. The source BMPs use magenta (`#FF00FF`) as the transparency
-colorkey; the extractor converts that to a real PNG alpha channel. Responses
-carry the same immutable cache headers and `ETag`/`304` support as `/image`.
-Unknown ids (or types) return `404`.
+The source BMPs use magenta (`#FF00FF`) as the transparency colorkey; the
+extractor converts that to a real PNG alpha channel. Responses carry the same
+immutable cache headers and `ETag`/`304` support as `/image`. Unknown names
+(or types) return `404`.
+
+The `ui` type exposes the character-creation screen's elements under their
+original client filenames:
+
+| Element | Names |
+|---|---|
+| Gender toggle | `bt_male_<state>`, `bt_female_<state>` with states `off` (idle), `on` (selected), `over` (hover), `press` |
+| Rotation arrows | `bt_leftturn_<state>`, `bt_rightturn_<state>` with states `normal`, `over`, `press` |
+| Hair styles — human | `img_hairstyle01`…`img_hairstyle23` (male), `img_hairstyle_girl01`…`girl23` (female), `img_hairstyle_none` |
+| Hair styles — doram | `img_hairstyle_doramboy01`…`06`, `img_hairstyle_doramgirl01`…`06` |
+| Hair colors | `color01`…`color09` with states `off`, `on`, `over`, `press` (e.g. `color03_on`) |
+| Misc | `bt_make_*`, `bt_close_*`, `bt_doublecheck_*`, `bt_hairstyle_*`, `img_human_on/off`, `img_doram_*`, `bg_makebg` |
 
 ### `GET /healthz`
 
@@ -266,8 +280,9 @@ To serve the static icons (`/icons/*`), run the icon extraction step too:
 node extract-grf.mjs --icons resources/icons --grf path/to/data.grf
 ```
 
-This decodes the item/collection/skill/job icon BMPs into transparent PNGs
-keyed by numeric id under `resources/icons/{item,collection,skill,job}/`,
+This decodes the item/collection/skill/job icon BMPs (keyed by numeric id) and
+the character-creation UI elements (keyed by their client basename) into
+transparent PNGs under `resources/icons/{item,collection,skill,job,ui}/`,
 which the gateway serves directly. Item ids are resolved via
 `System/iteminfo_new.lub` (found automatically next to the GRF; override with
 `--iteminfo <path>`), skill ids via `skillid.lub` inside the GRF. Rerunning

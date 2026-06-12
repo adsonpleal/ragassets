@@ -26,9 +26,9 @@
 //   # The --match value is a JS regex tested (case-insensitive) against each
 //   # stored filename. Stored names use BACKSLASH separators, so escape them.
 //
-//   # Extract item/collection/skill/job icons as transparent PNGs keyed by
-//   # numeric id (reads System/iteminfo_new.lub next to the GRF unless
-//   # --iteminfo is given):
+//   # Extract item/collection/skill/job icons (keyed by numeric id) and
+//   # char-creation UI elements (keyed by basename) as transparent PNGs
+//   # (reads System/iteminfo_new.lub next to the GRF unless --iteminfo is given):
 //   node extract-grf.mjs --icons resources/icons --grf data.grf
 //
 // Credits: GRF reader, icon pipeline and the mini Lua 5.1 VM extracted from
@@ -82,9 +82,10 @@ function usage() {
       "  --match is a regex tested against stored names (backslash separators).",
       '  e.g. --match "data\\\\(sprite|palette|imf|luafiles514)\\\\"',
       "",
-      "  --icons extracts item/collection/skill/job icons as transparent PNGs",
-      "  keyed by numeric id. Reads System/iteminfo_new.lub next to the GRF",
-      "  unless --iteminfo points at it explicitly.",
+      "  --icons extracts item/collection/skill/job icons (keyed by numeric id)",
+      "  and char-creation UI elements (keyed by basename) as transparent PNGs.",
+      "  Reads System/iteminfo_new.lub next to the GRF unless --iteminfo points",
+      "  at it explicitly.",
     ].join("\n"),
   );
 }
@@ -957,11 +958,16 @@ function bmpToPng(bmpBytes) {
 //   <out>/collection/<id>.png  description image (collection\<resname>.bmp)
 //   <out>/skill/<id>.png       skill icon        (item\<skid-const>.bmp)
 //   <out>/job/<id>.png         class icon        (renewalparty\icon_jobs_<id>.bmp)
+//   <out>/ui/<name>.png        char-creation UI  (make_character_ver2\<name>.bmp)
 // resnames come from System/iteminfo_new.lub; skill icon filenames are the
 // lowercased SKID constant. Magenta (#FF00FF) is mapped to transparent.
 // ---------------------------------------------------------------------------
 
 const UI = "data/texture/유저인터페이스"; // "user interface" texture root
+
+// Character-creation UI elements (gender/turn buttons, hair style thumbnails,
+// hair color swatches, race images) served by basename under the `ui` kind.
+const UI_DIR = `${UI}/make_character_ver2/`;
 
 function indexIcons(grf) {
   // normalized filename -> best entry, limited to the icon folders we need.
@@ -976,7 +982,8 @@ function indexIcons(grf) {
     if (
       !n.startsWith(itemDir) &&
       !n.startsWith(collDir) &&
-      !n.startsWith(jobPrefix)
+      !n.startsWith(jobPrefix) &&
+      !n.startsWith(UI_DIR)
     )
       continue;
     const prev = idx.get(n);
@@ -994,6 +1001,7 @@ function extractIcons(grfPath, outBase, args) {
       collection: join(root, "collection"),
       skill: join(root, "skill"),
       job: join(root, "job"),
+      ui: join(root, "ui"),
     };
     for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
 
@@ -1001,7 +1009,7 @@ function extractIcons(grfPath, outBase, args) {
     const idx = indexIcons(grf);
     console.error(`  ${idx.size} icon files indexed`);
 
-    const counts = { item: 0, collection: 0, skill: 0, job: 0 };
+    const counts = { item: 0, collection: 0, skill: 0, job: 0, ui: 0 };
     const fails = { extract: 0, convert: 0 };
     const writeIcon = (kind, id, entry) => {
       let bmp;
@@ -1051,8 +1059,17 @@ function extractIcons(grfPath, outBase, args) {
       if (m && !writeIcon("job", m[1], entry)) jobFailed.push(Number(m[1]));
     }
 
+    // Character-creation UI elements, keyed by their original basename
+    // (bt_male_on, img_hairstyle_girl05, color03_press, ...).
+    for (const [name, entry] of idx) {
+      if (!name.startsWith(UI_DIR)) continue;
+      const base = name.slice(UI_DIR.length, -".bmp".length);
+      if (!/^[a-z0-9_]+$/.test(base)) continue; // flat lowercase names only
+      writeIcon("ui", base, entry);
+    }
+
     console.error(
-      `\nIcons (PNG) → ${root}\n  item: ${counts.item}  collection: ${counts.collection}  skill: ${counts.skill}  job: ${counts.job}` +
+      `\nIcons (PNG) → ${root}\n  item: ${counts.item}  collection: ${counts.collection}  skill: ${counts.skill}  job: ${counts.job}  ui: ${counts.ui}` +
         (fails.extract ? `\n  ${fails.extract} entry(s) failed to extract` : "") +
         (fails.convert ? `\n  ${fails.convert} BMP(s) skipped (unsupported encoding)` : ""),
     );
