@@ -37,6 +37,7 @@ type config struct {
 	tokenEnv     string
 	outputDir    string
 	cacheDir     string
+	iconsDir     string
 	port         string
 }
 
@@ -47,6 +48,7 @@ func loadConfig() config {
 		tokenEnv:     os.Getenv("ZRENDERER_TOKEN"),
 		outputDir:    env("OUTPUT_DIR", "/zren/output"),
 		cacheDir:     env("CACHE_DIR", "/cache"),
+		iconsDir:     env("ICONS_DIR", "/icons"),
 		port:         env("GATEWAY_PORT", "8080"),
 	}
 }
@@ -82,8 +84,15 @@ func main() {
 		flight: newFlightGroup(),
 	}
 
+	if fi, err := os.Stat(cfg.iconsDir); err != nil || !fi.IsDir() {
+		log.Printf("icons: %s not found — /icons/* will return 404 (run extract-grf.mjs --icons)", cfg.iconsDir)
+	} else {
+		log.Printf("icons: serving %s at /icons/{type}/{id}.png", cfg.iconsDir)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/image", s.handleImage)
+	mux.HandleFunc("/icons/", s.handleIcon)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		io.WriteString(w, "ok")
@@ -109,7 +118,8 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	io.WriteString(w, "zrenderer-gateway — a caching layer over zhad3/zrenderer.\n\n"+
 		"Try: /image?job=1002            (still image)\n"+
-		"     /image?job=1002&action=0   (animation, APNG)\n\n"+
+		"     /image?job=1002&action=0   (animation, APNG)\n"+
+		"     /icons/item/501.png        (static item/collection/skill/job icons)\n\n"+
 		"See the README for every supported parameter.\n")
 }
 
@@ -178,6 +188,45 @@ func (s *server) serveFile(w http.ResponseWriter, r *http.Request, path, key, co
 	w.Header().Set("Etag", `"`+key+`"`)
 	// http.ServeContent honors If-None-Match against the Etag we set, plus ranges.
 	http.ServeContent(w, r, "", fi.ModTime(), f)
+}
+
+// ---------------------------------------------------------------------------
+// /icons handler — static item/collection/skill/job icons extracted from the
+// client GRF by extract-grf.mjs --icons. No zrenderer involvement.
+// ---------------------------------------------------------------------------
+
+// The kinds and the digits-only ids mirror what extract-grf.mjs --icons
+// produces (<icons-dir>/{item,collection,skill,job}/<numeric id>.png) — keep
+// them in sync with extractIcons() there.
+var iconKinds = map[string]bool{"item": true, "collection": true, "skill": true, "job": true}
+var iconFilePattern = regexp.MustCompile(`^[0-9]+\.png$`)
+
+// handleIcon serves /icons/{type}/{id}.png from the icons dir. The kind
+// whitelist plus the digits-only filename pattern make path traversal
+// structurally impossible; anything else is a 404.
+func (s *server) handleIcon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/icons/"), "/")
+	if len(parts) != 2 || !iconKinds[parts[0]] || !iconFilePattern.MatchString(parts[1]) {
+		http.NotFound(w, r)
+		return
+	}
+
+	path := filepath.Join(s.cfg.iconsDir, parts[0], parts[1])
+	fi, err := os.Stat(path)
+	if err != nil || fi.IsDir() {
+		http.NotFound(w, r) // unknown id, or icons not extracted yet
+		return
+	}
+
+	// Icons are re-extracted in place, so derive the ETag from mtime+size
+	// (renders use their query hash instead).
+	etag := fmt.Sprintf("%x-%x", fi.ModTime().UnixNano(), fi.Size())
+	s.serveFile(w, r, path, etag, "image/png")
 }
 
 // ---------------------------------------------------------------------------

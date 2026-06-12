@@ -17,6 +17,7 @@ node_modules/
 
 # Local Claude settings
 .claude/settings.local.json
+.claude/skills/deploy/
 
 # OS junk
 Thumbs.db

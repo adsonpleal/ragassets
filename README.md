@@ -2,7 +2,9 @@
 
 `ragassets` is a thin, fast HTTP layer that renders and serves Ragnarok Online
 sprites as images and animations, with aggressive on-disk caching so repeat
-requests are served instantly.
+requests are served instantly. It also serves the client's **item, collection,
+skill and class (job) icons** as static transparent PNGs — those are plain
+files extracted straight from the GRF, no rendering involved.
 
 > **All of the actual rendering is done by [zrenderer](https://github.com/zhad3/zrenderer)
 > by [zhad3](https://github.com/zhad3).** This project is *just a caching gateway on
@@ -68,6 +70,10 @@ client ──GET /image?job=1002&...──▶  gateway (Go)        ──POST /r
 - **Concurrent requests for the same URL trigger exactly one render** (in-process
   single-flight), and zrenderer's own `returnExistingFiles` cache is a second
   backstop.
+- **`GET /icons/*` is plain static file serving** — the icons are extracted
+  once from the client GRF by `extract-grf.mjs --icons` (see
+  [GRF extraction](#resources--grf-extraction-required)); zrenderer is not
+  involved at all.
 
 ## API
 
@@ -173,6 +179,31 @@ standby pose, `--action=93` a player attack variant (`88 + 5`) facing direction 
 Note: body direction is part of `action`; the separate `headdir` parameter only
 rotates the **head**.
 
+### `GET /icons/{type}/{id}.png`
+
+Serves a static icon extracted from the client GRF (see
+[GRF extraction](#resources--grf-extraction-required) — this endpoint returns
+`404` until you run the `--icons` extraction step):
+
+| `type` | What you get | `id` |
+|---|---|---|
+| `item` | Inventory icon (~24×24) | item id |
+| `collection` | Larger item description image (~75×100) | item id |
+| `skill` | Skill icon (~24×24) | skill id |
+| `job` | Class/job icon | job id |
+
+```
+/icons/item/501.png          # Red Potion inventory icon
+/icons/collection/501.png    # Red Potion description image
+/icons/skill/28.png          # Heal
+/icons/job/4252.png          # Dragon Knight
+```
+
+Ids are numeric. The source BMPs use magenta (`#FF00FF`) as the transparency
+colorkey; the extractor converts that to a real PNG alpha channel. Responses
+carry the same immutable cache headers and `ETag`/`304` support as `/image`.
+Unknown ids (or types) return `404`.
+
 ### `GET /healthz`
 
 Liveness check — returns `200 ok`.
@@ -203,6 +234,7 @@ docker-compose.yml        # gateway + zrenderer, shared output/secrets/cache vol
 zrenderer.docker.conf     # zrenderer server config
 gateway/                  # the Go caching gateway (this project)
 resources/                # YOUR extracted GRF assets (git-ignored, not distributed)
+resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*
 extract-grf.mjs           # helper to extract a GRF into resources/
 ```
 
@@ -228,6 +260,19 @@ node extract-grf.mjs --extract resources --grf path/to/data.grf \
 This populates `resources/data/sprite`, `resources/data/palette`, etc., which
 zrenderer reads via `resourcepath=resources` in `zrenderer.docker.conf`.
 
+To serve the static icons (`/icons/*`), run the icon extraction step too:
+
+```bash
+node extract-grf.mjs --icons resources/icons --grf path/to/data.grf
+```
+
+This decodes the item/collection/skill/job icon BMPs into transparent PNGs
+keyed by numeric id under `resources/icons/{item,collection,skill,job}/`,
+which the gateway serves directly. Item ids are resolved via
+`System/iteminfo_new.lub` (found automatically next to the GRF; override with
+`--iteminfo <path>`), skill ids via `skillid.lub` inside the GRF. Rerunning
+overwrites in place.
+
 Other modes:
 
 ```bash
@@ -247,8 +292,9 @@ stored filename. Stored names use **backslash** separators, so escape them
 - **[zrenderer](https://github.com/zhad3/zrenderer)** by **[zhad3](https://github.com/zhad3)**
   — does 100% of the sprite rendering. This project is only a layer on top.
 - The GRF extractor's DES routine is ported from
-  **[grf-loader](https://github.com/vthibault/grf-loader)** (MIT). The GRF reader
-  originates from `adsonpleal/ragreplaystats`.
+  **[grf-loader](https://github.com/vthibault/grf-loader)** (MIT). The GRF reader,
+  the icon pipeline and the mini Lua 5.1 VM originate from
+  `adsonpleal/ragreplaystats`.
 - Ragnarok Online and its assets are © Gravity Co., Ltd. No game assets are
   included in or distributed by this repository.
 

@@ -28,12 +28,14 @@ services:
       TOKEN_FILE: "/secrets/accesstokens.conf"
       OUTPUT_DIR: "/zren/output"
       CACHE_DIR: "/cache"
+      ICONS_DIR: "/icons"
       GATEWAY_PORT: "8080"
       # ZRENDERER_TOKEN: "..."                 # optional: skip reading the token file
     volumes:
       - zren-output:/zren/output:ro            # read renders produced by zrenderer
       - zren-secrets:/secrets:ro               # read the generated access token
       - gateway-cache:/cache                   # persistent gateway cache
+      - ./resources/icons:/icons:ro            # static icons from extract-grf.mjs --icons (optional)
     ports:
       - "${GATEWAY_PORT:-8080}:8080"           # the only public-facing port
     restart: unless-stopped

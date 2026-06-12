@@ -13,6 +13,7 @@
 //   node extract-grf.mjs --list   <file.grf>
 //   node extract-grf.mjs --extract <out-dir> --grf <file.grf> [--match <regex>]
 //   node extract-grf.mjs --dump   <file.grf>::<path>      # one file to stdout (fwd-slash path)
+//   node extract-grf.mjs --icons  <out-dir> --grf <file.grf> [--iteminfo <path>]
 //
 // Examples:
 //   # List every entry:
@@ -25,7 +26,13 @@
 //   # The --match value is a JS regex tested (case-insensitive) against each
 //   # stored filename. Stored names use BACKSLASH separators, so escape them.
 //
-// Credits: GRF reader extracted from adsonpleal/ragreplaystats (tools/build-db.mjs).
+//   # Extract item/collection/skill/job icons as transparent PNGs keyed by
+//   # numeric id (reads System/iteminfo_new.lub next to the GRF unless
+//   # --iteminfo is given):
+//   node extract-grf.mjs --icons resources/icons --grf data.grf
+//
+// Credits: GRF reader, icon pipeline and the mini Lua 5.1 VM extracted from
+// adsonpleal/ragreplaystats (tools/build-db.mjs + tools/lua51.mjs).
 // The DES routine is ported from vthibault/grf-loader (MIT).
 
 import {
@@ -34,11 +41,13 @@ import {
   fstatSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { resolve, join, dirname } from "node:path";
-import { inflateSync } from "node:zlib";
+import { deflateSync, inflateSync } from "node:zlib";
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -53,6 +62,8 @@ function parseArgs(argv) {
     else if (a === "--dump") out.dump = argv[++i];
     else if (a === "--extract") out.extract = argv[++i];
     else if (a === "--match") out.match = argv[++i];
+    else if (a === "--icons") out.icons = argv[++i];
+    else if (a === "--iteminfo") out.iteminfo = argv[++i];
     else if (a === "-h" || a === "--help") out.help = true;
   }
   return out;
@@ -66,9 +77,14 @@ function usage() {
       "  node extract-grf.mjs --list    <file.grf>",
       "  node extract-grf.mjs --extract <out-dir> --grf <file.grf> [--match <regex>]",
       "  node extract-grf.mjs --dump    <file.grf>::<path>",
+      "  node extract-grf.mjs --icons   <out-dir> --grf <file.grf> [--iteminfo <path>]",
       "",
       "  --match is a regex tested against stored names (backslash separators).",
       '  e.g. --match "data\\\\(sprite|palette|imf|luafiles514)\\\\"',
+      "",
+      "  --icons extracts item/collection/skill/job icons as transparent PNGs",
+      "  keyed by numeric id. Reads System/iteminfo_new.lub next to the GRF",
+      "  unless --iteminfo points at it explicitly.",
     ].join("\n"),
   );
 }
@@ -76,7 +92,7 @@ function usage() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || (!args.list && !args.extract && !args.dump)) {
+  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons)) {
     usage();
     process.exit(args.help ? 0 : 1);
   }
@@ -117,6 +133,15 @@ function main() {
     } finally {
       closeGrf(grf);
     }
+    process.exit(0);
+  }
+
+  if (args.icons) {
+    if (!args.grf) {
+      console.error("usage: --icons <out-dir> --grf <file.grf> [--iteminfo <path>]");
+      process.exit(1);
+    }
+    extractIcons(args.grf, args.icons, args);
     process.exit(0);
   }
 }
@@ -523,6 +548,536 @@ function extractAll(grfPath, outDir, matchPattern) {
   );
   if (encrypted) console.error(`Decrypted ${encrypted} encrypted file(s).`);
   if (skipped) console.error(`Skipped ${skipped} unreadable/invalid file(s).`);
+}
+
+// ---------------------------------------------------------------------------
+// Minimal Lua 5.1 bytecode VM — just enough to execute the Ragnarok client's
+// data-table chunks (System/iteminfo_new.lub, skillid.lub, etc.). These files
+// are pure table constructors assigned to globals: no loops, branches, or
+// arithmetic, so we only implement the opcodes they actually use and throw on
+// anything unexpected. Run a chunk and read the resulting globals.
+//
+// String constants are kept as latin1 (1:1 byte<->codepoint) so the caller can
+// re-decode the original bytes with the right charset (client data mixes CP1252
+// Portuguese with EUC-KR Korean). See decodeClientString().
+//
+// Inlined from adsonpleal/ragreplaystats (tools/lua51.mjs).
+// ---------------------------------------------------------------------------
+
+// Lua 5.1 opcode numbers (lopcodes.h order).
+// prettier-ignore
+const OP = {
+  MOVE: 0, LOADK: 1, LOADBOOL: 2, LOADNIL: 3, GETUPVAL: 4, GETGLOBAL: 5,
+  GETTABLE: 6, SETGLOBAL: 7, SETUPVAL: 8, SETTABLE: 9, NEWTABLE: 10, SELF: 11,
+  ADD: 12, SUB: 13, MUL: 14, DIV: 15, MOD: 16, POW: 17, UNM: 18, NOT: 19,
+  LEN: 20, CONCAT: 21, JMP: 22, EQ: 23, LT: 24, LE: 25, TEST: 26, TESTSET: 27,
+  CALL: 28, TAILCALL: 29, RETURN: 30, FORLOOP: 31, FORPREP: 32, TFORLOOP: 33,
+  SETLIST: 34, CLOSE: 35, CLOSURE: 36, VARARG: 37,
+};
+const FIELDS_PER_FLUSH = 50;
+const BITRK = 1 << 8;
+
+class LuaTable {
+  constructor() {
+    this.map = new Map();
+  }
+  set(k, v) {
+    if (v === undefined || v === null) this.map.delete(k);
+    else this.map.set(k, v);
+  }
+  get(k) {
+    return this.map.get(k);
+  }
+}
+
+function loadChunk(bytes) {
+  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (buf[0] !== 0x1b || buf[1] !== 0x4c || buf[2] !== 0x75 || buf[3] !== 0x61)
+    throw new Error("not a Lua chunk");
+  if (buf[4] !== 0x51) throw new Error(`unsupported Lua version 0x${buf[4].toString(16)}`);
+  const c = {
+    buf,
+    pos: 12,
+    sizeofInt: buf[7],
+    sizeofSizeT: buf[8],
+    sizeofInstr: buf[9],
+    sizeofNumber: buf[10],
+  };
+  if (c.sizeofInstr !== 4) throw new Error("only 4-byte instructions supported");
+  return readProto(c);
+}
+
+function readUInt(c, n) {
+  let val = 0;
+  for (let i = 0; i < n; i++) val += c.buf[c.pos + i] * 2 ** (8 * i);
+  c.pos += n;
+  return val;
+}
+
+function readString(c) {
+  const len = readUInt(c, c.sizeofSizeT);
+  if (len === 0) return null;
+  const start = c.pos;
+  c.pos += len;
+  return c.buf.toString("latin1", start, start + len - 1); // drop trailing \0
+}
+
+function readProto(c) {
+  readString(c); // source name
+  c.pos += c.sizeofInt; // line defined
+  c.pos += c.sizeofInt; // last line defined
+  c.pos += 4; // nups, numparams, is_vararg, maxstacksize
+
+  const sizecode = readUInt(c, c.sizeofInt);
+  const code = new Array(sizecode);
+  for (let i = 0; i < sizecode; i++) {
+    code[i] = c.buf.readUInt32LE(c.pos);
+    c.pos += 4;
+  }
+
+  const sizek = readUInt(c, c.sizeofInt);
+  const k = new Array(sizek);
+  for (let i = 0; i < sizek; i++) {
+    const type = c.buf[c.pos++];
+    if (type === 0) k[i] = undefined;
+    else if (type === 1) k[i] = c.buf[c.pos++] !== 0;
+    else if (type === 3) {
+      k[i] = c.buf.readDoubleLE(c.pos);
+      c.pos += 8;
+    } else if (type === 4) k[i] = readString(c);
+    else throw new Error(`unknown constant type ${type}`);
+  }
+
+  const sizep = readUInt(c, c.sizeofInt);
+  const protos = new Array(sizep);
+  for (let i = 0; i < sizep; i++) protos[i] = readProto(c);
+
+  // debug blocks — skip
+  const lineInfo = readUInt(c, c.sizeofInt);
+  c.pos += lineInfo * c.sizeofInt;
+  const locals = readUInt(c, c.sizeofInt);
+  for (let i = 0; i < locals; i++) {
+    readString(c);
+    c.pos += c.sizeofInt * 2;
+  }
+  const upvals = readUInt(c, c.sizeofInt);
+  for (let i = 0; i < upvals; i++) readString(c);
+
+  return { code, k, protos };
+}
+
+// Executes a single proto over a shared globals table.
+function execute(proto, globals) {
+  const R = [];
+  const K = proto.k;
+  const rk = (x) => (x & BITRK ? K[x & (BITRK - 1)] : R[x]);
+  let pc = 0;
+  while (pc < proto.code.length) {
+    const i = proto.code[pc++];
+    const op = i & 0x3f;
+    const a = (i >>> 6) & 0xff;
+    const c = (i >>> 14) & 0x1ff;
+    const b = (i >>> 23) & 0x1ff;
+    const bx = (i >>> 14) & 0x3ffff;
+
+    switch (op) {
+      case OP.MOVE: R[a] = R[b]; break;
+      case OP.LOADK: R[a] = K[bx]; break;
+      case OP.LOADBOOL: R[a] = b !== 0; if (c) pc++; break;
+      case OP.LOADNIL: for (let r = a; r <= b; r++) R[r] = undefined; break;
+      case OP.GETGLOBAL: R[a] = globals.get(K[bx]); break;
+      case OP.SETGLOBAL: globals.set(K[bx], R[a]); break;
+      case OP.NEWTABLE: R[a] = new LuaTable(); break;
+      case OP.GETTABLE: {
+        const t = R[b];
+        R[a] = t instanceof LuaTable ? t.get(rk(c)) : undefined;
+        break;
+      }
+      case OP.SETTABLE: {
+        const t = R[a];
+        if (t instanceof LuaTable) t.set(rk(b), rk(c));
+        break;
+      }
+      case OP.SETLIST: {
+        let n = b;
+        let block = c;
+        if (block === 0) block = proto.code[pc++]; // real C in next word
+        if (n === 0) throw new Error("SETLIST with B=0 (vararg) not supported");
+        const base = (block - 1) * FIELDS_PER_FLUSH;
+        const t = R[a];
+        for (let j = 1; j <= n; j++) t.set(base + j, R[a + j]);
+        break;
+      }
+      case OP.CLOSURE: {
+        // Represent nested closures as their proto; calling is a no-op below.
+        R[a] = { __proto_index: bx, proto: proto.protos[bx] };
+        // CLOSURE is followed by `nups` pseudo-instructions (MOVE/GETUPVAL);
+        // skip them so we don't misread them as real ops.
+        // We don't track nups here, but data chunks have no upvalue captures
+        // on these closures, so there is nothing to skip in practice.
+        break;
+      }
+      case OP.CALL: break; // ignore calls — data chunks build tables, not effects
+      case OP.TAILCALL: break;
+      case OP.RETURN: return; // end of chunk
+      case OP.JMP: break; // no real branching in data chunks
+      default:
+        throw new Error(`unimplemented opcode ${op} at pc ${pc - 1}`);
+    }
+  }
+}
+
+// Run a Lua 5.1 chunk over an existing globals table (so dependent chunks can
+// share state); runChunk starts from a fresh one.
+function runChunkInto(bytes, globals) {
+  execute(loadChunk(bytes), globals);
+  return globals;
+}
+
+function runChunk(bytes) {
+  return runChunkInto(bytes, new LuaTable());
+}
+
+// Client strings are CP1252 (Portuguese) or EUC-KR (Korean, untranslated). The
+// VM keeps them as latin1, so recover the bytes and pick the charset: prefer a
+// clean EUC-KR decode that yields Hangul, else fall back to Windows-1252.
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+const EUCKR = new TextDecoder("euc-kr", { fatal: true });
+const CP1252 = new TextDecoder("windows-1252");
+function decodeClientString(latin1) {
+  if (latin1 == null) return null;
+  const bytes = Buffer.from(latin1, "latin1");
+  if (!bytes.some((x) => x >= 0x80)) return latin1; // pure ASCII
+  // The patched iteminfo_new.lub is UTF-8; a strict decode succeeds only for
+  // genuine UTF-8 and cleanly covers both Portuguese and Korean. Legacy strings
+  // fall back: EUC-KR for pure-Hangul names, else CP1252.
+  try {
+    return UTF8.decode(bytes);
+  } catch {
+    /* not UTF-8 */
+  }
+  if (!/[A-Za-z]/.test(latin1)) {
+    try {
+      return EUCKR.decode(bytes);
+    } catch {
+      /* fall through to CP1252 */
+    }
+  }
+  return CP1252.decode(bytes);
+}
+
+// ---------------------------------------------------------------------------
+// Icon id mapping — items come from System/iteminfo_new.lub (a sibling of
+// data.grf), skills from skillid.lub inside the GRF.
+// ---------------------------------------------------------------------------
+
+// Allow an explicit override via --iteminfo; otherwise look next to the GRF.
+function resolveItemInfoPath(args) {
+  if (args.iteminfo) return existsSync(args.iteminfo) ? args.iteminfo : null;
+  const root = join(dirname(resolve(args.grf)), "System");
+  for (const name of ["iteminfo_new.lub", "itemInfo.lub", "iteminfo.lub"]) {
+    const p = join(root, name);
+    // Skip the tiny stub itemInfo.lub (a few hundred bytes that just chains
+    // to the real table).
+    if (existsSync(p) && statSync(p).size > 4096) return p;
+  }
+  return null;
+}
+
+// id -> icon resource name (lowercased). The live System/iteminfo_new.lub is
+// authoritative and complete (modern equipment like 450147 = "Illusion_Armor_A"
+// is only there).
+function buildResNameMap(args) {
+  const out = new Map();
+  const lubPath = resolveItemInfoPath(args);
+  if (!lubPath) {
+    throw new Error(
+      "iteminfo_new.lub not found next to the GRF (System/) — pass --iteminfo <path>",
+    );
+  }
+  const tbl = runChunk(readFileSync(lubPath)).get("tbl");
+  if (tbl instanceof LuaTable) {
+    for (const [id, entry] of tbl.map) {
+      if (typeof id !== "number" || !(entry instanceof LuaTable)) continue;
+      const res =
+        decodeClientString(entry.get("identifiedResourceName")) ||
+        decodeClientString(entry.get("unidentifiedResourceName"));
+      if (res) out.set(String(id), res.toLowerCase());
+    }
+  }
+  return out;
+}
+
+// SKID const -> numeric id, from executing skillid.lub (it defines the SKID
+// table). Skill icons live in the item folder named after the lowercased
+// const (e.g. SKID.AL_HEAL = 28 -> item/al_heal.bmp -> skill/28.png).
+function parseSkillIds(map) {
+  const ids = new Map();
+  const bytes =
+    map.get("data/luafiles514/lua files/skillinfoz/skillid.lub") ??
+    map.get("data/luafiles514/lua files/skillinfoz/skillid.lua");
+  if (!bytes) return ids;
+  try {
+    const skid = runChunk(bytes).get("SKID");
+    if (skid instanceof LuaTable) {
+      for (const [konst, id] of skid.map) {
+        if (typeof konst === "string" && typeof id === "number") ids.set(konst, id);
+      }
+    }
+  } catch (err) {
+    console.error(`! skillid.lub could not be executed (${err.message}); skipping skill icons`);
+  }
+  return ids;
+}
+
+// ---------------------------------------------------------------------------
+// BMP -> PNG conversion. RO icons are uncompressed BMPs (8-bit palettized,
+// some 24/32-bit) that use magenta #FF00FF as the transparency colorkey. We
+// decode to RGBA (keying magenta -> alpha 0) and re-encode as a PNG using only
+// node:zlib — no external image library.
+// ---------------------------------------------------------------------------
+
+function bmpToRgba(buf) {
+  const b = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+  if (b.length < 54 || b[0] !== 0x42 || b[1] !== 0x4d) return null; // "BM"
+  const dataOffset = b.readUInt32LE(10);
+  const dibSize = b.readUInt32LE(14);
+  const w = b.readInt32LE(18);
+  const rawH = b.readInt32LE(22);
+  const bpp = b.readUInt16LE(28);
+  const compression = b.readUInt32LE(30);
+  if (compression !== 0 || w <= 0 || rawH === 0) return null; // BI_RGB only
+  const topDown = rawH < 0;
+  const h = Math.abs(rawH);
+
+  let palette = null;
+  if (bpp <= 8) {
+    let palCount = b.readUInt32LE(46); // biClrUsed
+    if (!palCount) palCount = 1 << bpp;
+    const palStart = 14 + dibSize;
+    palette = new Array(palCount);
+    for (let i = 0; i < palCount; i++) {
+      const o = palStart + i * 4; // stored BGRA
+      palette[i] = [b[o + 2], b[o + 1], b[o]];
+    }
+  } else if (bpp !== 24 && bpp !== 32) {
+    return null; // unsupported depth
+  }
+
+  const rowSize = Math.floor((bpp * w + 31) / 32) * 4; // padded to 4 bytes
+  const rgba = Buffer.alloc(w * h * 4);
+  for (let row = 0; row < h; row++) {
+    const srcRow = topDown ? row : h - 1 - row; // BMP rows are bottom-up
+    const srcBase = dataOffset + srcRow * rowSize;
+    for (let x = 0; x < w; x++) {
+      let r, g, bl;
+      if (bpp === 8) {
+        const p = palette[b[srcBase + x]] || [0, 0, 0];
+        [r, g, bl] = p;
+      } else if (bpp === 4) {
+        const byte = b[srcBase + (x >> 1)];
+        const p = palette[x & 1 ? byte & 0x0f : byte >> 4] || [0, 0, 0];
+        [r, g, bl] = p;
+      } else if (bpp === 1) {
+        const byte = b[srcBase + (x >> 3)];
+        const p = palette[(byte >> (7 - (x & 7))) & 1] || [0, 0, 0];
+        [r, g, bl] = p;
+      } else if (bpp === 24) {
+        const o = srcBase + x * 3;
+        bl = b[o]; g = b[o + 1]; r = b[o + 2];
+      } else {
+        const o = srcBase + x * 4; // 32bpp BGRA — ignore stored alpha
+        bl = b[o]; g = b[o + 1]; r = b[o + 2];
+      }
+      const di = (row * w + x) * 4;
+      rgba[di] = r;
+      rgba[di + 1] = g;
+      rgba[di + 2] = bl;
+      rgba[di + 3] = r === 255 && g === 0 && bl === 255 ? 0 : 255; // magenta key
+    }
+  }
+  return { width: w, height: h, rgba };
+}
+
+const PNG_CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = PNG_CRC[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+}
+
+function encodePng(width, height, rgba) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // color type RGBA
+  // 10..12 = compression / filter / interlace = 0
+  const stride = width * 4;
+  const raw = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * (stride + 1)] = 0; // filter: none
+    rgba.copy(raw, y * (stride + 1) + 1, y * stride, y * stride + stride);
+  }
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function bmpToPng(bmpBytes) {
+  const decoded = bmpToRgba(bmpBytes);
+  if (!decoded) return null;
+  return encodePng(decoded.width, decoded.height, decoded.rgba);
+}
+
+// ---------------------------------------------------------------------------
+// Icon extraction — decodes each BMP to a transparent PNG keyed by numeric id:
+//   <out>/item/<id>.png        inventory icon    (item\<resname>.bmp)
+//   <out>/collection/<id>.png  description image (collection\<resname>.bmp)
+//   <out>/skill/<id>.png       skill icon        (item\<skid-const>.bmp)
+//   <out>/job/<id>.png         class icon        (renewalparty\icon_jobs_<id>.bmp)
+// resnames come from System/iteminfo_new.lub; skill icon filenames are the
+// lowercased SKID constant. Magenta (#FF00FF) is mapped to transparent.
+// ---------------------------------------------------------------------------
+
+const UI = "data/texture/유저인터페이스"; // "user interface" texture root
+
+function indexIcons(grf) {
+  // normalized filename -> best entry, limited to the icon folders we need.
+  const idx = new Map();
+  const itemDir = `${UI}/item/`;
+  const collDir = `${UI}/collection/`;
+  const jobPrefix = `${UI}/renewalparty/icon_jobs_`;
+  for (const f of grf.files) {
+    if (!(f.flags & 0x01)) continue;
+    const n = normalize(f.filename);
+    if (!n.endsWith(".bmp")) continue;
+    if (
+      !n.startsWith(itemDir) &&
+      !n.startsWith(collDir) &&
+      !n.startsWith(jobPrefix)
+    )
+      continue;
+    const prev = idx.get(n);
+    if (!prev || f.uncompSize > prev.uncompSize) idx.set(n, f);
+  }
+  return idx;
+}
+
+function extractIcons(grfPath, outBase, args) {
+  const grf = openGrf(grfPath);
+  try {
+    const root = resolve(outBase);
+    const dirs = {
+      item: join(root, "item"),
+      collection: join(root, "collection"),
+      skill: join(root, "skill"),
+      job: join(root, "job"),
+    };
+    for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
+
+    console.error("Indexing icon entries…");
+    const idx = indexIcons(grf);
+    console.error(`  ${idx.size} icon files indexed`);
+
+    const counts = { item: 0, collection: 0, skill: 0, job: 0 };
+    const fails = { extract: 0, convert: 0 };
+    const writeIcon = (kind, id, entry) => {
+      let bmp;
+      try {
+        bmp = extractFile(grf, entry);
+      } catch {
+        fails.extract++;
+        return false;
+      }
+      const png = bmpToPng(bmp);
+      if (!png) {
+        fails.convert++;
+        return false;
+      }
+      writeFileSync(join(dirs[kind], `${id}.png`), png);
+      counts[kind]++;
+      return true;
+    };
+
+    // Item inventory + collection icons, keyed by resource name.
+    const resNames = buildResNameMap(args);
+    for (const [id, res] of resNames) {
+      const itemEntry = idx.get(`${UI}/item/${res}.bmp`);
+      if (itemEntry) writeIcon("item", id, itemEntry);
+      const collEntry = idx.get(`${UI}/collection/${res}.bmp`);
+      if (collEntry) writeIcon("collection", id, collEntry);
+    }
+
+    // Skill icons share the item folder, named after the lowercased SKID const.
+    const fileMap = collectGrfFiles(grf, [
+      "data/luafiles514/lua files/skillinfoz/skillid.lub",
+      "data/luafiles514/lua files/skillinfoz/skillid.lua",
+    ]);
+    const skillIds = parseSkillIds(fileMap);
+    for (const [konst, id] of skillIds) {
+      const entry = idx.get(`${UI}/item/${konst.toLowerCase()}.bmp`);
+      if (entry) writeIcon("skill", id, entry);
+    }
+
+    // Class icons keyed directly by numeric job id (skip the _die variants).
+    const jobRe = new RegExp(
+      `${UI.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/renewalparty/icon_jobs_(\\d+)\\.bmp$`,
+    );
+    const jobFailed = [];
+    for (const [name, entry] of idx) {
+      const m = name.match(jobRe);
+      if (m && !writeIcon("job", m[1], entry)) jobFailed.push(Number(m[1]));
+    }
+
+    console.error(
+      `\nIcons (PNG) → ${root}\n  item: ${counts.item}  collection: ${counts.collection}  skill: ${counts.skill}  job: ${counts.job}` +
+        (fails.extract ? `\n  ${fails.extract} entry(s) failed to extract` : "") +
+        (fails.convert ? `\n  ${fails.convert} BMP(s) skipped (unsupported encoding)` : ""),
+    );
+    if (jobFailed.length)
+      console.error(`  job ids not written: ${jobFailed.sort((a, b) => a - b).join(", ")}`);
+  } finally {
+    closeGrf(grf);
+  }
+}
+
+// Pull a small set of named files from an already-open GRF into a name->bytes
+// map (keyed by the wanted path), without reopening the archive.
+function collectGrfFiles(grf, wants) {
+  const map = new Map();
+  for (const want of wants) {
+    const entry = findBestEntry(grf, want);
+    if (entry) {
+      try {
+        map.set(want, extractFile(grf, entry));
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  return map;
 }
 
 main();

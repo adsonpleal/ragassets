@@ -29,11 +29,13 @@ services:
       TOKEN_FILE: "/secrets/accesstokens.conf"
       OUTPUT_DIR: "/zren/output"
       CACHE_DIR: "/cache"
+      ICONS_DIR: "/icons"
       GATEWAY_PORT: "8080"
     volumes:
       - zren-output:/zren/output:ro
       - zren-secrets:/secrets:ro
       - gateway-cache:/cache
+      - ./resources/icons:/icons:ro   # static icons from extract-grf.mjs --icons (optional)
     expose:
       - "8080"
     restart: unless-stopped
