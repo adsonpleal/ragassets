@@ -835,7 +835,9 @@ function parseSkillIds(map) {
 // BMP -> PNG conversion. RO icons are uncompressed BMPs (8-bit palettized,
 // some 24/32-bit) that use magenta #FF00FF as the transparency colorkey. We
 // decode to RGBA (keying magenta -> alpha 0) and re-encode as a PNG using only
-// node:zlib — no external image library.
+// node:zlib — no external image library. Some char-creation UI elements use a
+// solid corner background instead of magenta; those are keyed separately via
+// keyCornerBackground (see bmpToPng's keyCorners option).
 // ---------------------------------------------------------------------------
 
 function bmpToRgba(buf) {
@@ -867,6 +869,7 @@ function bmpToRgba(buf) {
 
   const rowSize = Math.floor((bpp * w + 31) / 32) * 4; // padded to 4 bytes
   const rgba = Buffer.alloc(w * h * 4);
+  let magenta = 0; // count of colorkeyed pixels (used to pick the alpha strategy)
   for (let row = 0; row < h; row++) {
     const srcRow = topDown ? row : h - 1 - row; // BMP rows are bottom-up
     const srcBase = dataOffset + srcRow * rowSize;
@@ -894,10 +897,50 @@ function bmpToRgba(buf) {
       rgba[di] = r;
       rgba[di + 1] = g;
       rgba[di + 2] = bl;
-      rgba[di + 3] = r === 255 && g === 0 && bl === 255 ? 0 : 255; // magenta key
+      const isMagenta = r === 255 && g === 0 && bl === 255;
+      if (isMagenta) magenta++;
+      rgba[di + 3] = isMagenta ? 0 : 255; // magenta key
     }
   }
-  return { width: w, height: h, rgba };
+  return { width: w, height: h, rgba, magenta };
+}
+
+// Some bitmaps don't use the magenta colorkey at all but sit on a solid
+// background that fills the area outside their (rounded) artwork — e.g. the
+// character-creation gender/arrow buttons, whose corners are a pale pink/grey
+// rather than #FF00FF. Make that background transparent by flood-filling inward
+// from the four corners: each corner seeds its own colour and connected pixels
+// within TOL of that seed are keyed. Connectivity (vs. a global colour match)
+// keeps interior pixels that merely happen to share the corner colour. If the
+// fill would swallow most of the image the corner colour was the artwork's own
+// fill (e.g. the white close button), so it's reverted and left opaque.
+const CORNER_TOL = 24; // max per-channel Manhattan distance from the corner seed
+const CORNER_GUARD = 0.5; // abort the fill if it would key >= this fraction
+
+function keyCornerBackground(width, height, rgba) {
+  const seen = new Uint8Array(width * height);
+  const keyed = [];
+  const stack = [];
+  for (const [sx, sy] of [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1]]) {
+    const si = (sy * width + sx) * 4;
+    stack.push([sx, sy, rgba[si], rgba[si + 1], rgba[si + 2]]);
+  }
+  while (stack.length) {
+    const [x, y, sr, sg, sb] = stack.pop();
+    if (x < 0 || y < 0 || x >= width || y >= height) continue;
+    const idx = y * width + x;
+    if (seen[idx]) continue;
+    const o = idx * 4;
+    if (Math.abs(rgba[o] - sr) + Math.abs(rgba[o + 1] - sg) + Math.abs(rgba[o + 2] - sb) > CORNER_TOL)
+      continue;
+    seen[idx] = 1;
+    rgba[o + 3] = 0;
+    keyed.push(o);
+    stack.push([x + 1, y, sr, sg, sb], [x - 1, y, sr, sg, sb], [x, y + 1, sr, sg, sb], [x, y - 1, sr, sg, sb]);
+  }
+  if (keyed.length >= width * height * CORNER_GUARD) {
+    for (const o of keyed) rgba[o + 3] = 255; // not a background border — revert
+  }
 }
 
 const PNG_CRC = (() => {
@@ -946,9 +989,14 @@ function encodePng(width, height, rgba) {
   ]);
 }
 
-function bmpToPng(bmpBytes) {
+function bmpToPng(bmpBytes, opts = {}) {
   const decoded = bmpToRgba(bmpBytes);
   if (!decoded) return null;
+  // For UI elements that carry no magenta colorkey, derive transparency from the
+  // solid corner background instead (gender/arrow/etc. buttons).
+  if (opts.keyCorners && decoded.magenta === 0) {
+    keyCornerBackground(decoded.width, decoded.height, decoded.rgba);
+  }
   return encodePng(decoded.width, decoded.height, decoded.rgba);
 }
 
@@ -960,7 +1008,9 @@ function bmpToPng(bmpBytes) {
 //   <out>/job/<id>.png         class icon        (renewalparty\icon_jobs_<id>.bmp)
 //   <out>/ui/<name>.png        char-creation UI  (make_character_ver2\<name>.bmp)
 // resnames come from System/iteminfo_new.lub; skill icon filenames are the
-// lowercased SKID constant. Magenta (#FF00FF) is mapped to transparent.
+// lowercased SKID constant. Magenta (#FF00FF) is mapped to transparent; UI
+// elements with no magenta key instead derive transparency from their corner
+// background (keyCornerBackground), which fixes the gender/arrow buttons.
 // ---------------------------------------------------------------------------
 
 const UI = "data/texture/유저인터페이스"; // "user interface" texture root
@@ -1019,7 +1069,7 @@ function extractIcons(grfPath, outBase, args) {
         fails.extract++;
         return false;
       }
-      const png = bmpToPng(bmp);
+      const png = bmpToPng(bmp, { keyCorners: kind === "ui" });
       if (!png) {
         fails.convert++;
         return false;
