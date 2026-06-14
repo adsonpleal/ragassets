@@ -1,9 +1,11 @@
 // zrenderer-gateway is a fast, public, caching HTTP layer in front of
-// zhad3/zrenderer (https://github.com/zhad3/zrenderer). It does no image
-// processing of its own: it maps query parameters to a zrenderer RenderRequest,
-// asks zrenderer to render, then caches and serves the resulting PNG/APNG bytes.
+// zhad3/zrenderer (https://github.com/zhad3/zrenderer). It mostly maps query
+// parameters to a zrenderer RenderRequest, asks zrenderer to render, then caches
+// and serves the resulting PNG/APNG bytes.
 //
-// All actual sprite rendering is done by zrenderer. This is just a layer on top.
+// The one exception is /gif, which renders the same way and then converts the
+// PNG/APNG to a GIF in-process (see gif.go). All actual sprite rendering is done
+// by zrenderer; this is just a layer on top.
 package main
 
 import (
@@ -92,6 +94,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/image", s.handleImage)
+	mux.HandleFunc("/gif", s.handleGif)
 	mux.HandleFunc("/icons/", s.handleIcon)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -119,6 +122,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "zrenderer-gateway — a caching layer over zhad3/zrenderer.\n\n"+
 		"Try: /image?job=1002            (still image)\n"+
 		"     /image?job=1002&action=0   (animation, APNG)\n"+
+		"     /gif?job=1002&action=0     (same, as an animated GIF)\n"+
 		"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n\n"+
 		"See the README for every supported parameter.\n")
 }
@@ -165,6 +169,58 @@ func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.serveFile(w, r, cachePath, key, contentType)
+}
+
+// handleGif renders the same thing /image would, then converts the PNG/APNG to a
+// GIF (cached separately, under the same query hash + ".gif"). It accepts every
+// /image parameter; only outputFormat=zip is rejected, since the response is a
+// single GIF image.
+func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	q := r.URL.Query()
+
+	body, ext, err := buildRenderRequest(q)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if ext == ".zip" {
+		http.Error(w, "outputFormat=zip is not supported on /gif (it returns a single GIF image)", http.StatusBadRequest)
+		return
+	}
+
+	key := cacheKey(q)
+	cachePath := filepath.Join(s.cfg.cacheDir, key+".gif")
+	// A distinct ETag/flight key so /gif never collides with /image's cache
+	// validators for the same query (their bytes differ).
+	tag := key + "-gif"
+
+	if fileExists(cachePath) {
+		s.serveFile(w, r, cachePath, tag, "image/gif")
+		return
+	}
+
+	_, err = s.flight.Do(tag, func() (struct{}, error) {
+		if fileExists(cachePath) {
+			return struct{}{}, nil // produced while we waited for the lock
+		}
+		srcPath, err := s.renderSource(body)
+		if err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, apngFileToGIF(srcPath, cachePath)
+	})
+	if err != nil {
+		log.Printf("gif render/convert failed for %s: %v", r.URL.RawQuery, err)
+		http.Error(w, "render failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	s.serveFile(w, r, cachePath, tag, "image/gif")
 }
 
 // serveFile streams a cached render with immutable cache headers and conditional
@@ -236,19 +292,30 @@ func (s *server) handleIcon(w http.ResponseWriter, r *http.Request) {
 // render asks zrenderer to render `body`, then copies the produced file from the
 // shared output volume into cachePath (atomically).
 func (s *server) render(body map[string]any, cachePath string) error {
+	srcPath, err := s.renderSource(body)
+	if err != nil {
+		return err
+	}
+	return copyToCache(srcPath, cachePath)
+}
+
+// renderSource asks zrenderer to render `body` and returns the path of the
+// produced file on the shared output volume. Callers either copy it verbatim
+// (PNG/APNG/ZIP) or post-process it (GIF).
+func (s *server) renderSource(body map[string]any) (string, error) {
 	token, err := s.tokens.get()
 	if err != nil {
-		return fmt.Errorf("access token unavailable: %w", err)
+		return "", fmt.Errorf("access token unavailable: %w", err)
 	}
 
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(s.cfg.zrendererURL, "/")+"/render", bytes.NewReader(payload))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -256,31 +323,30 @@ func (s *server) render(body map[string]any, cachePath string) error {
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("calling zrenderer: %w", err)
+		return "", fmt.Errorf("calling zrenderer: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode == http.StatusUnauthorized {
 		s.tokens.invalidate() // token may have been rotated; reload next time
-		return fmt.Errorf("zrenderer rejected the access token (401)")
+		return "", fmt.Errorf("zrenderer rejected the access token (401)")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("zrenderer returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return "", fmt.Errorf("zrenderer returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	var rr struct {
 		Output []string `json:"output"`
 	}
 	if err := json.Unmarshal(respBody, &rr); err != nil {
-		return fmt.Errorf("decoding zrenderer response: %w", err)
+		return "", fmt.Errorf("decoding zrenderer response: %w", err)
 	}
 	if len(rr.Output) == 0 {
-		return errors.New("zrenderer produced no output")
+		return "", errors.New("zrenderer produced no output")
 	}
 
-	srcPath := s.resolveOutputPath(rr.Output[0])
-	return copyToCache(srcPath, cachePath)
+	return s.resolveOutputPath(rr.Output[0]), nil
 }
 
 // resolveOutputPath maps a zrenderer output path (e.g. "output/1002/abc.png")

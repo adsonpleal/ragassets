@@ -62,11 +62,13 @@ client ──GET /image?job=1002&...──▶  gateway (Go)        ──POST /r
 - **Images vs. animations.** zrenderer composites a multi-frame render into a
   single **animated PNG (APNG)**; a single frame is a normal PNG. The gateway
   serves both as `Content-Type: image/png` (modern browsers animate APNG
-  natively) — so there is no separate GIF format and no image processing in the
-  gateway at all.
+  natively).
   - Pass an **`action`** (and no `frame`) → you get the **animation** (APNG).
   - Specify a **`frame`** → you get a **single still image**.
   - Neither → a single still image (frame `0`).
+  - Want a **GIF** instead? Send the same request to **`/gif`** rather than
+    `/image` (see [`GET /gif`](#get-gif)). Converting APNG→GIF is the *only*
+    image processing the gateway does — everything else is just caching bytes.
 - **Concurrent requests for the same URL trigger exactly one render** (in-process
   single-flight), and zrenderer's own `returnExistingFiles` cache is a second
   backstop.
@@ -178,6 +180,37 @@ standby pose, `--action=93` a player attack variant (`88 + 5`) facing direction 
 
 Note: body direction is part of `action`; the separate `headdir` parameter only
 rotates the **head**.
+
+### `GET /gif`
+
+Exactly like [`GET /image`](#get-image) — **every query parameter above works the
+same way**, including the still-vs-animation rule — except the rendered PNG/APNG
+is converted to a **GIF** before it's cached and served (`Content-Type:
+image/gif`):
+
+- An **`action`** (and no `frame`) → an **animated, infinitely-looping GIF**.
+- A **`frame`** (or neither) → a **single-frame GIF** (a still image).
+
+```
+/gif?job=1002&action=0                   # animated Poring, as a GIF
+/gif?job=1002                            # still Poring, as a GIF
+/gif?job=4252&head=1&action=40           # Dragon Knight attack, as a GIF
+/gif?job=1&gender=female&headgear=4,125&garment=1&weapon=2&head=4&action=32
+```
+
+Use this for clients that can't display APNG (some chat embeds, link-preview
+crawlers, older image tooling). Two caveats are inherent to the GIF format:
+
+- **Hard-edged transparency.** GIF has a single fully-transparent palette index,
+  not an alpha channel, so the sprite's soft (antialiased) edges harden. Prefer
+  `/image` (APNG) when you can keep crisp edges.
+- **256 colors per frame.** Each frame is quantized to its own ≤256-color
+  palette (with a reserved transparent slot). RO sprites usually fit comfortably,
+  so quality stays high.
+
+The same immutable cache headers and `ETag`/`304` support as `/image` apply. The
+only parameter that behaves differently is **`outputFormat`**: `zip` is rejected
+(`400`), since the response is always a single GIF image.
 
 ### `GET /icons/{type}/{name}.png`
 

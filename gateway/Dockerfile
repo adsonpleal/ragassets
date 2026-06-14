@@ -2,8 +2,11 @@
 FROM golang:1.22-alpine AS build
 WORKDIR /src
 
-# No external dependencies — copy go.mod first for layer caching, then sources.
-COPY go.mod ./
+# Two small pure-Go deps (APNG decode + color quantization, used only by /gif).
+# Copy the module files first and pre-fetch the deps for layer caching (reused
+# unless go.mod/go.sum change), then copy sources.
+COPY go.mod go.sum ./
+RUN go mod download github.com/kettek/apng github.com/ericpauley/go-quantize
 COPY *.go ./
 
 # CGO off → fully static binary that runs on the empty distroless/static image.
