@@ -23,3 +23,8 @@ continuously (no version tags), so entries are grouped by date.
   prefer `/image` (APNG) for crisp edges.
 - Added two small pure-Go dependencies used only by `/gif`: `github.com/kettek/apng`
   (APNG decode) and `github.com/ericpauley/go-quantize` (color quantization).
+- All served assets (`/image`, `/gif`, `/icons/*`) now send
+  `Access-Control-Allow-Origin: *`, so browsers can read the bytes via `fetch()`
+  — e.g. to download a sprite or convert it client-side, not just embed it in an
+  `<img>`. They're public, read-only, no-credential assets, so a wildcard origin
+  is safe and needs no preflight for a simple GET.

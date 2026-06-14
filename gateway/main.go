@@ -242,6 +242,10 @@ func (s *server) serveFile(w http.ResponseWriter, r *http.Request, path, key, co
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.Header().Set("Etag", `"`+key+`"`)
+	// Public read-only assets, meant to be embedded (and now fetched/downloaded)
+	// from anywhere — allow any origin to read the bytes. A simple GET needs no
+	// preflight, so this single header is enough for cross-origin fetch().
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	// http.ServeContent honors If-None-Match against the Etag we set, plus ranges.
 	http.ServeContent(w, r, "", fi.ModTime(), f)
 }
