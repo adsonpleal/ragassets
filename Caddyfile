@@ -1,5 +1,7 @@
 # Caddy reverse proxy: terminates TLS (automatic Let's Encrypt) and forwards to
 # the gateway on the internal compose network. Used by docker-compose.prod.yml.
-ragassets.duckdns.org {
+# Both hostnames are served (each gets its own auto-provisioned certificate);
+# point each domain's A record at this host's public IP before starting.
+ragassets.duckdns.org, assets.latam-tools.com.br {
 	reverse_proxy gateway:8080
 }

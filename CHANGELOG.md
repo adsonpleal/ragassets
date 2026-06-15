@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-06-15
+
+### Changed
+- The public instance is now reachable at **`https://assets.latam-tools.com.br`**
+  (its own auto-provisioned Let's Encrypt certificate); documentation and the
+  README gallery now point at this domain. The previous
+  `https://ragassets.duckdns.org` hostname continues to work — Caddy serves both.
+
 ## 2026-06-14
 
 ### Added
