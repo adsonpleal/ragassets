@@ -1,40 +1,22 @@
-# Production deployment: zrenderer + gateway (internal) behind a Caddy reverse
-# proxy that terminates TLS with an automatic Let's Encrypt certificate.
+# Production deployment: the Go gateway (internal) behind a Caddy reverse proxy
+# that terminates TLS with an automatic Let's Encrypt certificate.
 #
 #   docker compose -f docker-compose.prod.yml up -d --build
 #
-# Only Caddy is published to the host (80/443). The gateway is reachable only on
-# the internal network as `gateway:8080`. Point your domain's A record at this
-# host's public IP before starting, so Let's Encrypt can validate.
+# Rendering is in-process (no zrenderer container). Only Caddy is published to the
+# host (80/443); the gateway is reachable only on the internal network as
+# `gateway:8080`. Point your domain's A record at this host's public IP before
+# starting, so Let's Encrypt can validate.
 
 services:
-  zrenderer:
-    image: zhade/zrenderer:latest
-    user: root
-    volumes:
-      - ./zrenderer.docker.conf:/zren/zrenderer.conf
-      - ./resources:/zren/resources
-      - zren-output:/zren/output
-      - zren-secrets:/zren/secrets
-    expose:
-      - "11011"
-    restart: unless-stopped
-
   gateway:
     build: ./gateway
-    depends_on:
-      - zrenderer
     environment:
-      ZRENDERER_URL: "http://zrenderer:11011"
-      TOKEN_FILE: "/secrets/accesstokens.conf"
-      OUTPUT_DIR: "/zren/output"
-      CACHE_DIR: "/cache"
+      RESOURCE_DIR: "/resources"
       ICONS_DIR: "/icons"
       GATEWAY_PORT: "8080"
     volumes:
-      - zren-output:/zren/output:ro
-      - zren-secrets:/secrets:ro
-      - gateway-cache:/cache
+      - ./resources:/resources:ro
       - ./resources/icons:/icons:ro   # static icons from extract-grf.mjs --icons (optional)
     expose:
       - "8080"
@@ -54,8 +36,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  zren-output:
-  zren-secrets:
-  gateway-cache:
   caddy-data:
   caddy-config:

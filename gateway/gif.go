@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"image"
@@ -20,8 +21,6 @@ import (
 	"image/draw"
 	"image/gif"
 	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/ericpauley/go-quantize/quantize"
 	"github.com/kettek/apng"
@@ -31,36 +30,19 @@ import (
 // transparent GIF index. GIF has no partial transparency, so we pick a 50% cut.
 const gifAlphaThreshold = 0x8000
 
-// apngFileToGIF decodes the PNG/APNG at srcPath and writes a GIF to dstPath
-// atomically (temp file + rename). A normal single-image PNG yields a one-frame
-// GIF; a multi-frame APNG yields an animated, infinitely-looping GIF.
-func apngFileToGIF(srcPath, dstPath string) error {
-	f, err := os.Open(srcPath)
+// apngBytesToGIF decodes PNG/APNG bytes and encodes them as GIF bytes. A
+// single-image PNG yields a one-frame GIF; a multi-frame APNG yields an animated,
+// infinitely-looping GIF.
+func apngBytesToGIF(data []byte) ([]byte, error) {
+	g, err := apngToGIF(bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("opening render output %q: %w", srcPath, err)
+		return nil, fmt.Errorf("converting APNG to GIF: %w", err)
 	}
-	defer f.Close()
-
-	g, err := apngToGIF(f)
-	if err != nil {
-		return fmt.Errorf("converting APNG to GIF: %w", err)
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, g); err != nil {
+		return nil, err
 	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(dstPath), ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after a successful rename
-
-	if err := gif.EncodeAll(tmp, g); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, dstPath)
+	return buf.Bytes(), nil
 }
 
 // apngToGIF builds a *gif.GIF from an (A)PNG stream.

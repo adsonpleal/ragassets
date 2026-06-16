@@ -6,11 +6,14 @@ requests are served instantly. It also serves the client's **item, collection,
 skill and class (job) icons** as static transparent PNGs — those are plain
 files extracted straight from the GRF, no rendering involved.
 
-> **All of the actual rendering is done by [zrenderer](https://github.com/zhad3/zrenderer)
-> by [zhad3](https://github.com/zhad3).** This project is *just a caching gateway on
-> top of it* — it maps URL query parameters to a zrenderer render request, asks
-> zrenderer to render, then caches and serves the bytes. Huge thanks to zhad3 for
-> zrenderer; please star and support the upstream project. See its
+> **Rendering is done in-process by a native Go reimplementation of
+> [zrenderer](https://github.com/zhad3/zrenderer)'s algorithm** (under
+> `gateway/internal/render`): the SPR/ACT/PAL/IMF parsers, sprite compositing,
+> z-ordering, palette application and APNG output. There is no separate renderer
+> service — the gateway reads the extracted GRF assets and renders directly. The
+> rendering logic is a faithful port of zhad3's [zrenderer](https://github.com/zhad3/zrenderer)
+> (output is pixel-identical for player/monster sprites); huge thanks to zhad3 —
+> please star and support the original project. See its
 > [API docs](https://z0q.neocities.org/ragnarok-online-tools/zrenderer/api/).
 
 ---
@@ -48,41 +51,42 @@ monsters. Every one is just a URL — see the [API](#get-image) below.
 ## How it works
 
 ```
-client ──GET /image?job=1002&...──▶  gateway (Go)        ──POST /render──▶  zrenderer
-                                       │  cache hit? serve instantly         (does the work,
-                                       │  miss? render once, cache, serve     writes PNG/APNG)
+client ──GET /image?job=1002&...──▶  gateway (Go)
+                                       │  render in-process, stream bytes
+                                       │  (internal/render: parse SPR/ACT/PAL/IMF,
+                                       │   composite layers, z-order, APNG encode)
                                        ▼
-                                  disk cache (immutable, hashed by query)
+                              immutable bytes + ETag → browser/CDN caches them
 ```
 
-- **The full query string is the cache key.** `GET /image?job=1002&action=0` is
-  hashed (order-independent) into a cache entry. Once rendered, responses are
-  served from disk with `Cache-Control: public, max-age=31536000, immutable` and
-  an `ETag`, so browsers and CDNs cache them forever.
-- **Images vs. animations.** zrenderer composites a multi-frame render into a
-  single **animated PNG (APNG)**; a single frame is a normal PNG. The gateway
-  serves both as `Content-Type: image/png` (modern browsers animate APNG
-  natively).
+- **Renders are served directly; caching is delegated to the client.** The
+  gateway keeps **no disk cache** — every render is fast and in-process. Each
+  response carries `Cache-Control: public, max-age=31536000, immutable` and an
+  `ETag` derived (order-independently) from the query string, so browsers and
+  CDNs cache them forever and a revalidating client gets a `304` (answered
+  without re-rendering).
+- **Images vs. animations.** A multi-frame render is composited into a single
+  **animated PNG (APNG)**; a single frame is a normal PNG. The gateway serves
+  both as `Content-Type: image/png` (modern browsers animate APNG natively).
   - Pass an **`action`** (and no `frame`) → you get the **animation** (APNG).
   - Specify a **`frame`** → you get a **single still image**.
   - Neither → a single still image (frame `0`).
   - Want a **GIF** instead? Send the same request to **`/gif`** rather than
-    `/image` (see [`GET /gif`](#get-gif)). Converting APNG→GIF is the *only*
-    image processing the gateway does — everything else is just caching bytes.
+    `/image` (see [`GET /gif`](#get-gif)). The APNG→GIF conversion is the only
+    image processing on top of rendering.
 - **Concurrent requests for the same URL trigger exactly one render** (in-process
-  single-flight), and zrenderer's own `returnExistingFiles` cache is a second
-  backstop.
+  single-flight); parsed sprite/palette resources are cached in memory and reused
+  across requests.
 - **`GET /icons/*` is plain static file serving** — the icons are extracted
   once from the client GRF by `extract-grf.mjs --icons` (see
-  [GRF extraction](#resources--grf-extraction-required)); zrenderer is not
-  involved at all.
+  [GRF extraction](#resources--grf-extraction-required)); no rendering involved.
 
 ## API
 
 ### `GET /image`
 
-Renders (or serves from cache) a sprite. Every meaningful zrenderer render
-parameter is available as a query parameter:
+Renders a sprite. Every meaningful render parameter is available as a query
+parameter:
 
 | Query param | Type | Notes |
 |---|---|---|
@@ -93,23 +97,23 @@ parameter is available as a query parameter:
 | `head` | integer | Player head id. |
 | `outfit` | integer | Alternate outfit (`0` = default). |
 | `headgear` | comma-separated ints | Up to 3, e.g. `headgear=4,125`. |
+| `headgearBehind` | comma-separated ints | Headgear ids that should render **behind** the character (effect-type accessories such as auras/halos, e.g. the Sun God's Ornament `2669`). RO decides this in client code with no GRF signal, so the caller marks them. |
 | `garment` | integer | |
 | `weapon` | integer | |
 | `shield` | integer | |
 | `bodyPalette` | integer | `-1` = standard. |
 | `headPalette` | integer | `-1` = standard. |
-| `headdir` | `straight`/`right`/`left`/`all` or `0`/`1`/`2`/`3` | Default all. |
+| `headdir` | `straight`/`left`/`right`/`all` or `0`/`1`/`2`/`3` | Default all. For stand/sit, `straight`/`left`/`right` pin the head to that facing across the whole animation (the body still animates); `all` cycles the head through directions. |
 | `madogearType` | `robot`/`suit` or `0`/`2` | |
 | `enableShadow` | boolean | `true`/`false`. |
 | `canvas` | string | `WxH±X±Y`, e.g. `canvas=200x200+75+175`. |
 | `outputFormat` | `png`/`zip` or `0`/`1` | Default `png`. `zip` returns a ZIP of PNGs. |
 
-> Server/deployment-level zrenderer flags (resource path, output dir, host/port,
-> token file, TLS, CORS, log level, `singleframes`, `enableUniqueFilenames`,
-> `returnExistingFiles`) are fixed by the deployment and intentionally **not**
-> exposed as query parameters.
+> Deployment-level settings (resource path, port) are configured via environment
+> variables, not query parameters.
 
-A missing `job` returns `400`. Upstream render errors return `502`.
+A missing or malformed `job`/parameter returns `400`. A render failure (e.g. a
+job whose sprite isn't in the extracted assets) returns `500`.
 
 ### Examples
 
@@ -185,8 +189,7 @@ rotates the **head**.
 
 Exactly like [`GET /image`](#get-image) — **every query parameter above works the
 same way**, including the still-vs-animation rule — except the rendered PNG/APNG
-is converted to a **GIF** before it's cached and served (`Content-Type:
-image/gif`):
+is converted to a **GIF** before it's served (`Content-Type: image/gif`):
 
 - An **`action`** (and no `frame`) → an **animated, infinitely-looping GIF**.
 - A **`frame`** (or neither) → a **single-frame GIF** (a still image).
@@ -257,8 +260,8 @@ Liveness check — returns `200 ok`.
 
 ## Running it
 
-Everything runs via Docker Compose: the gateway (built from `./gateway`) and the
-official `zhade/zrenderer:latest` image.
+A single self-contained service, built from `./gateway`, that renders in-process
+and reads assets from `./resources`.
 
 ```bash
 # 1. Provide game assets (see "Resources" below) into ./resources
@@ -267,19 +270,18 @@ docker compose up --build
 ```
 
 - The gateway is published on **`http://localhost:8080`** (override with
-  `GATEWAY_PORT`, see `.env.example`). zrenderer itself is **not** exposed to the
-  host — only the gateway can reach it on the internal network.
-- **Access token:** on first run zrenderer auto-generates an access token into the
-  shared `secrets` volume and prints it to its logs. The gateway reads that same
-  file automatically. If you'd rather pin it, set `ZRENDERER_TOKEN` (grab the value
-  with `docker compose logs zrenderer`).
+  `GATEWAY_PORT`, see `.env.example`).
+- `./resources` is mounted read-only at `/resources` (set via `RESOURCE_DIR`).
+  There is no render cache to persist — renders are served directly and cached by
+  the client (see [How it works](#how-it-works)).
 
 ### Layout
 
 ```
-docker-compose.yml        # gateway + zrenderer, shared output/secrets/cache volumes
-zrenderer.docker.conf     # zrenderer server config
-gateway/                  # the Go caching gateway (this project)
+docker-compose.yml        # the gateway service
+gateway/                  # the Go gateway + in-process renderer (this project)
+gateway/internal/render/  # the native zrenderer reimplementation (parsers, raster, engine)
+gateway/cmd/gen-resolver/ # offline tool: bakes id→sprite-name tables from the client .lub
 resources/                # YOUR extracted GRF assets (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*
 extract-grf.mjs           # helper to extract a GRF into resources/
@@ -288,7 +290,7 @@ extract-grf.mjs           # helper to extract a GRF into resources/
 ## Resources / GRF extraction (required)
 
 **This project distributes no Ragnarok Online game assets.** To render anything,
-zrenderer needs the sprite/palette data from a Ragnarok Online client's GRF
+the gateway needs the sprite/palette data from a Ragnarok Online client's GRF
 archive, extracted into `./resources`. **You must extract your own GRF** from a
 client you are entitled to use.
 
@@ -304,8 +306,12 @@ node extract-grf.mjs --extract resources --grf path/to/data.grf \
   --match "data\\(sprite|palette|imf|luafiles514)\\"
 ```
 
-This populates `resources/data/sprite`, `resources/data/palette`, etc., which
-zrenderer reads via `resourcepath=resources` in `zrenderer.docker.conf`.
+This populates `resources/data/sprite`, `resources/data/palette`,
+`resources/data/imf`, `resources/data/luafiles514`, etc., which the gateway reads
+via `RESOURCE_DIR` (default `/resources` in the container). The headgear/garment
+ID→sprite-name tables are baked from the client `luafiles514/.lub` into the binary
+by `gateway/cmd/gen-resolver` — re-run it when you update the client (see that
+directory's `dump.lua` and `main.go`).
 
 To serve the static icons (`/icons/*`), run the icon extraction step too:
 
@@ -338,7 +344,9 @@ stored filename. Stored names use **backslash** separators, so escape them
 ## Credits & license
 
 - **[zrenderer](https://github.com/zhad3/zrenderer)** by **[zhad3](https://github.com/zhad3)**
-  — does 100% of the sprite rendering. This project is only a layer on top.
+  — the original D renderer this project's `internal/render` engine is ported
+  from. All the hard-won RO sprite knowledge (formats, layering, head direction)
+  is theirs; please star and support it.
 - The GRF extractor's DES routine is ported from
   **[grf-loader](https://github.com/vthibault/grf-loader)** (MIT). The GRF reader,
   the icon pipeline and the mini Lua 5.1 VM originate from

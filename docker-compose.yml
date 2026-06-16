@@ -1,46 +1,19 @@
-# Public RO sprite image/animation provider:
-#   gateway (this repo)  ──▶  zrenderer (official image, does the rendering)
+# Public RO sprite image/animation provider.
 #
-# Only the gateway is published to the host. zrenderer stays on the internal
-# compose network. See README.md for usage.
+# Rendering is done in-process by the Go gateway (see gateway/internal/render);
+# there is no longer a separate zrenderer container. The gateway reads extracted
+# GRF assets from ./resources (populate it with extract-grf.mjs — see README.md).
 
 services:
-  zrenderer:
-    image: zhade/zrenderer:latest
-    # The image writes output + the generated token; run as root so the shared
-    # volumes are writable regardless of host UID mapping.
-    user: root
-    volumes:
-      - ./zrenderer.docker.conf:/zren/zrenderer.conf
-      - ./resources:/zren/resources           # your extracted GRF assets (read by zrenderer)
-      - zren-output:/zren/output               # renders land here
-      - zren-secrets:/zren/secrets             # auto-generated access token lives here
-    expose:
-      - "11011"                                # internal only — NOT published to the host
-    restart: unless-stopped
-
   gateway:
     build: ./gateway
-    depends_on:
-      - zrenderer
     environment:
-      ZRENDERER_URL: "http://zrenderer:11011"
-      TOKEN_FILE: "/secrets/accesstokens.conf"
-      OUTPUT_DIR: "/zren/output"
-      CACHE_DIR: "/cache"
+      RESOURCE_DIR: "/resources"
       ICONS_DIR: "/icons"
       GATEWAY_PORT: "8080"
-      # ZRENDERER_TOKEN: "..."                 # optional: skip reading the token file
     volumes:
-      - zren-output:/zren/output:ro            # read renders produced by zrenderer
-      - zren-secrets:/secrets:ro               # read the generated access token
-      - gateway-cache:/cache                   # persistent gateway cache
-      - ./resources/icons:/icons:ro            # static icons from extract-grf.mjs --icons (optional)
+      - ./resources:/resources:ro          # extracted GRF assets (data/sprite, palette, imf, ...)
+      - ./resources/icons:/icons:ro        # static icons from extract-grf.mjs --icons (optional)
     ports:
-      - "${GATEWAY_PORT:-8080}:8080"           # the only public-facing port
+      - "${GATEWAY_PORT:-8080}:8080"        # the only public-facing port
     restart: unless-stopped
-
-volumes:
-  zren-output:
-  zren-secrets:
-  gateway-cache:

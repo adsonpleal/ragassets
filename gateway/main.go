@@ -1,19 +1,20 @@
-// zrenderer-gateway is a fast, public, caching HTTP layer in front of
-// zhad3/zrenderer (https://github.com/zhad3/zrenderer). It mostly maps query
-// parameters to a zrenderer RenderRequest, asks zrenderer to render, then caches
-// and serves the resulting PNG/APNG bytes.
+// zrenderer-gateway is a fast, public HTTP layer that renders Ragnarok Online
+// sprites in-process (see internal/render, a native Go reimplementation of
+// zhad3/zrenderer) and serves them as PNG/APNG. It maps query parameters to an
+// engine.Request, renders, and streams the bytes with long-lived immutable cache
+// headers (plus an ETag derived from the query) so the browser/CDN does the
+// caching — the server itself keeps no on-disk cache.
 //
-// The one exception is /gif, which renders the same way and then converts the
-// PNG/APNG to a GIF in-process (see gif.go). All actual sprite rendering is done
-// by zrenderer; this is just a layer on top.
+// Concurrent identical requests are coalesced by a single-flight group so a burst
+// of the same query renders only once. /gif renders the same way and converts the
+// PNG/APNG to a GIF in-process (see gif.go); /icons serves static images that
+// extract-grf.mjs pulled out of the client GRF.
 package main
 
 import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -27,6 +28,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ragassets/zrenderer-gateway/internal/render/engine"
+	"github.com/ragassets/zrenderer-gateway/internal/render/resolve"
 )
 
 // ---------------------------------------------------------------------------
@@ -34,24 +38,16 @@ import (
 // ---------------------------------------------------------------------------
 
 type config struct {
-	zrendererURL string
-	tokenFile    string
-	tokenEnv     string
-	outputDir    string
-	cacheDir     string
-	iconsDir     string
-	port         string
+	resourceDir string // extracted GRF assets (contains data/)
+	iconsDir    string
+	port        string
 }
 
 func loadConfig() config {
 	return config{
-		zrendererURL: env("ZRENDERER_URL", "http://zrenderer:11011"),
-		tokenFile:    env("TOKEN_FILE", "/secrets/accesstokens.conf"),
-		tokenEnv:     os.Getenv("ZRENDERER_TOKEN"),
-		outputDir:    env("OUTPUT_DIR", "/zren/output"),
-		cacheDir:     env("CACHE_DIR", "/cache"),
-		iconsDir:     env("ICONS_DIR", "/icons"),
-		port:         env("GATEWAY_PORT", "8080"),
+		resourceDir: env("RESOURCE_DIR", "/resources"),
+		iconsDir:    env("ICONS_DIR", "/icons"),
+		port:        env("GATEWAY_PORT", "8080"),
 	}
 }
 
@@ -68,21 +64,19 @@ func env(key, def string) string {
 
 type server struct {
 	cfg    config
-	client *http.Client
-	tokens *tokenLoader
+	eng    *engine.Engine
 	flight *flightGroup
 }
 
 func main() {
 	cfg := loadConfig()
-	if err := os.MkdirAll(cfg.cacheDir, 0o755); err != nil {
-		log.Fatalf("cannot create cache dir %q: %v", cfg.cacheDir, err)
+	if fi, err := os.Stat(filepath.Join(cfg.resourceDir, "data")); err != nil || !fi.IsDir() {
+		log.Fatalf("resource dir %q has no data/ subdir — run extract-grf.mjs (RESOURCE_DIR=%s)", cfg.resourceDir, cfg.resourceDir)
 	}
 
 	s := &server{
 		cfg:    cfg,
-		client: &http.Client{Timeout: 120 * time.Second},
-		tokens: &tokenLoader{file: cfg.tokenFile, override: cfg.tokenEnv},
+		eng:    engine.New(cfg.resourceDir, resolve.DefaultTables()),
 		flight: newFlightGroup(),
 	}
 
@@ -103,7 +97,7 @@ func main() {
 	mux.HandleFunc("/", s.handleRoot)
 
 	addr := ":" + cfg.port
-	log.Printf("zrenderer-gateway listening on %s → %s (cache: %s)", addr, cfg.zrendererURL, cfg.cacheDir)
+	log.Printf("zrenderer-gateway listening on %s (resources: %s)", addr, cfg.resourceDir)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      logRequests(mux),
@@ -139,36 +133,34 @@ func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 
-	body, ext, err := buildRenderRequest(q)
+	req, ext, err := buildRequest(q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	key := cacheKey(q)
-	cachePath := filepath.Join(s.cfg.cacheDir, key+ext)
+	etag := etagFor(q)
 	contentType := contentTypeForExt(ext)
 
-	// Fast path: already cached.
-	if fileExists(cachePath) {
-		s.serveFile(w, r, cachePath, key, contentType)
+	// The ETag is a pure function of the (immutable) query, so a revalidating
+	// client that already holds these bytes can be answered without rendering.
+	if ifNoneMatch(r, etag) {
+		notModified(w, etag)
 		return
 	}
 
-	// Slow path: render once even under concurrent identical requests.
-	_, err = s.flight.Do(key, func() (struct{}, error) {
-		if fileExists(cachePath) {
-			return struct{}{}, nil // produced while we waited for the lock
-		}
-		return struct{}{}, s.render(body, cachePath)
+	// Render once even under a burst of identical requests (single-flight); the
+	// bytes are served directly and cached only by the browser/CDN.
+	data, err := s.flight.Do(etag+ext, func() ([]byte, error) {
+		return s.renderImage(req, ext)
 	})
 	if err != nil {
 		log.Printf("render failed for %s: %v", r.URL.RawQuery, err)
-		http.Error(w, "render failed: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "render failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	s.serveFile(w, r, cachePath, key, contentType)
+	s.serveBytes(w, r, data, etag, contentType)
 }
 
 // handleGif renders the same thing /image would, then converts the PNG/APNG to a
@@ -183,7 +175,7 @@ func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 
-	body, ext, err := buildRenderRequest(q)
+	req, ext, err := buildRequest(q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -193,61 +185,79 @@ func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := cacheKey(q)
-	cachePath := filepath.Join(s.cfg.cacheDir, key+".gif")
-	// A distinct ETag/flight key so /gif never collides with /image's cache
-	// validators for the same query (their bytes differ).
-	tag := key + "-gif"
+	// A distinct ETag so /gif never collides with /image's validators for the
+	// same query (their bytes differ).
+	etag := etagFor(q) + "-gif"
 
-	if fileExists(cachePath) {
-		s.serveFile(w, r, cachePath, tag, "image/gif")
+	if ifNoneMatch(r, etag) {
+		notModified(w, etag)
 		return
 	}
 
-	_, err = s.flight.Do(tag, func() (struct{}, error) {
-		if fileExists(cachePath) {
-			return struct{}{}, nil // produced while we waited for the lock
-		}
-		srcPath, err := s.renderSource(body)
+	data, err := s.flight.Do(etag, func() ([]byte, error) {
+		png, err := s.renderImage(req, ".png")
 		if err != nil {
-			return struct{}{}, err
+			return nil, err
 		}
-		return struct{}{}, apngFileToGIF(srcPath, cachePath)
+		return apngBytesToGIF(png)
 	})
 	if err != nil {
 		log.Printf("gif render/convert failed for %s: %v", r.URL.RawQuery, err)
-		http.Error(w, "render failed: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "render failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	s.serveFile(w, r, cachePath, tag, "image/gif")
+	s.serveBytes(w, r, data, etag, "image/gif")
 }
 
-// serveFile streams a cached render with immutable cache headers and conditional
-// request support (ETag / 304).
-func (s *server) serveFile(w http.ResponseWriter, r *http.Request, path, key, contentType string) {
-	f, err := os.Open(path)
-	if err != nil {
-		http.Error(w, "cache read error", http.StatusInternalServerError)
-		return
-	}
-	defer f.Close()
+// serveBytes streams freshly rendered bytes with immutable cache headers and
+// conditional-request support (ETag / 304 / ranges, via http.ServeContent).
+func (s *server) serveBytes(w http.ResponseWriter, r *http.Request, data []byte, etag, contentType string) {
+	s.serveReader(w, r, bytes.NewReader(data), time.Time{}, etag, contentType)
+}
 
-	fi, err := f.Stat()
-	if err != nil {
-		http.Error(w, "cache stat error", http.StatusInternalServerError)
-		return
-	}
-
+// serveReader is the shared response path for renders (a bytes.Reader) and icons
+// (an open *os.File). It sets the asset cache/CORS headers and lets
+// http.ServeContent handle If-None-Match against our ETag plus range requests.
+func (s *server) serveReader(w http.ResponseWriter, r *http.Request, content io.ReadSeeker, modTime time.Time, etag, contentType string) {
 	w.Header().Set("Content-Type", contentType)
+	setAssetHeaders(w, etag)
+	http.ServeContent(w, r, "", modTime, content)
+}
+
+// setAssetHeaders applies the long-lived immutable cache policy and the wildcard
+// CORS header shared by every served asset (renders and icons). The bytes are
+// public, read-only, and content-addressed by their ETag, so any origin may read
+// them and a simple GET needs no preflight.
+func setAssetHeaders(w http.ResponseWriter, etag string) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	w.Header().Set("Etag", `"`+key+`"`)
-	// Public read-only assets, meant to be embedded (and now fetched/downloaded)
-	// from anywhere — allow any origin to read the bytes. A simple GET needs no
-	// preflight, so this single header is enough for cross-origin fetch().
+	w.Header().Set("Etag", `"`+etag+`"`)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	// http.ServeContent honors If-None-Match against the Etag we set, plus ranges.
-	http.ServeContent(w, r, "", fi.ModTime(), f)
+}
+
+// notModified answers a conditional request whose validator already matches: it
+// sends the cache/CORS headers (so intermediaries keep caching) and a bare 304.
+func notModified(w http.ResponseWriter, etag string) {
+	setAssetHeaders(w, etag)
+	w.WriteHeader(http.StatusNotModified)
+}
+
+// ifNoneMatch reports whether the request's If-None-Match header already lists
+// our (strong) ETag — i.e. the client holds these exact bytes. Handles a
+// comma-separated list, the "*" wildcard, and a weak "W/" prefix.
+func ifNoneMatch(r *http.Request, etag string) bool {
+	inm := r.Header.Get("If-None-Match")
+	if inm == "" {
+		return false
+	}
+	quoted := `"` + etag + `"`
+	for _, part := range strings.Split(inm, ",") {
+		p := strings.TrimSpace(part)
+		if p == "*" || p == quoted || p == "W/"+quoted {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -277,210 +287,34 @@ func (s *server) handleIcon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := filepath.Join(s.cfg.iconsDir, parts[0], parts[1])
-	fi, err := os.Stat(path)
-	if err != nil || fi.IsDir() {
+	f, err := os.Open(path)
+	if err != nil {
 		http.NotFound(w, r) // unknown id, or icons not extracted yet
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		http.NotFound(w, r)
 		return
 	}
 
 	// Icons are re-extracted in place, so derive the ETag from mtime+size
 	// (renders use their query hash instead).
 	etag := fmt.Sprintf("%x-%x", fi.ModTime().UnixNano(), fi.Size())
-	s.serveFile(w, r, path, etag, "image/png")
+	s.serveReader(w, r, f, fi.ModTime(), etag, "image/png")
 }
 
 // ---------------------------------------------------------------------------
-// Rendering: query → RenderRequest → zrenderer → cache file
+// ETag
 // ---------------------------------------------------------------------------
 
-// render asks zrenderer to render `body`, then copies the produced file from the
-// shared output volume into cachePath (atomically).
-func (s *server) render(body map[string]any, cachePath string) error {
-	srcPath, err := s.renderSource(body)
-	if err != nil {
-		return err
-	}
-	return copyToCache(srcPath, cachePath)
-}
-
-// renderSource asks zrenderer to render `body` and returns the path of the
-// produced file on the shared output volume. Callers either copy it verbatim
-// (PNG/APNG/ZIP) or post-process it (GIF).
-func (s *server) renderSource(body map[string]any) (string, error) {
-	token, err := s.tokens.get()
-	if err != nil {
-		return "", fmt.Errorf("access token unavailable: %w", err)
-	}
-
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(s.cfg.zrendererURL, "/")+"/render", bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-accesstoken", token)
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("calling zrenderer: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode == http.StatusUnauthorized {
-		s.tokens.invalidate() // token may have been rotated; reload next time
-		return "", fmt.Errorf("zrenderer rejected the access token (401)")
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("zrenderer returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-
-	var rr struct {
-		Output []string `json:"output"`
-	}
-	if err := json.Unmarshal(respBody, &rr); err != nil {
-		return "", fmt.Errorf("decoding zrenderer response: %w", err)
-	}
-	if len(rr.Output) == 0 {
-		return "", errors.New("zrenderer produced no output")
-	}
-
-	return s.resolveOutputPath(rr.Output[0]), nil
-}
-
-// resolveOutputPath maps a zrenderer output path (e.g. "output/1002/abc.png")
-// to a file on the shared output volume mounted at cfg.outputDir.
-func (s *server) resolveOutputPath(p string) string {
-	p = filepath.ToSlash(p)
-	if i := strings.Index(p, "output/"); i >= 0 {
-		p = p[i+len("output/"):]
-	}
-	p = strings.TrimPrefix(p, "/")
-	return filepath.Join(s.cfg.outputDir, filepath.FromSlash(p))
-}
-
-// ---------------------------------------------------------------------------
-// Query parameter → RenderRequest mapping
-// ---------------------------------------------------------------------------
-
-// buildRenderRequest converts the incoming query params into a zrenderer
-// RenderRequest body and returns the expected output file extension.
-//
-// Still-vs-animation rule (relies on zrenderer's frame default of -1 = all frames):
-//   - frame present                 → still image (that frame)
-//   - frame absent, action present  → animation (APNG of all frames)
-//   - frame absent, action absent   → still image (frame 0)
-func buildRenderRequest(q url.Values) (map[string]any, string, error) {
-	jobs := splitCSV(q.Get("job"))
-	if len(jobs) == 0 {
-		return nil, "", errors.New("missing required 'job' parameter, e.g. /image?job=1002")
-	}
-
-	body := map[string]any{"job": jobs}
-
-	// Integer params passed straight through.
-	for _, name := range []string{"action", "frame", "head", "outfit", "garment", "weapon", "shield", "bodyPalette", "headPalette"} {
-		if q.Has(name) {
-			n, err := parseInt(name, q.Get(name))
-			if err != nil {
-				return nil, "", err
-			}
-			body[name] = n
-		}
-	}
-
-	// headgear: comma-separated ints (up to 3).
-	if q.Has("headgear") {
-		var ids []int
-		for _, part := range splitCSV(q.Get("headgear")) {
-			n, err := parseInt("headgear", part)
-			if err != nil {
-				return nil, "", err
-			}
-			ids = append(ids, n)
-		}
-		body["headgear"] = ids
-	}
-
-	// Enum-ish params: accept friendly names or raw ints.
-	// Enum integer values below match zrenderer's config.d toInt() mappings.
-	if q.Has("gender") {
-		n, err := parseEnum("gender", q.Get("gender"), map[string]int{"female": 0, "male": 1}, []int{0, 1})
-		if err != nil {
-			return nil, "", err
-		}
-		body["gender"] = n
-	}
-	if q.Has("headdir") {
-		n, err := parseEnum("headdir", q.Get("headdir"),
-			map[string]int{"straight": 0, "right": 1, "left": 2, "all": 3}, []int{0, 1, 2, 3})
-		if err != nil {
-			return nil, "", err
-		}
-		body["headdir"] = n
-	}
-	if q.Has("madogearType") {
-		n, err := parseEnum("madogearType", q.Get("madogearType"),
-			map[string]int{"robot": 0, "unused": 1, "suit": 2}, []int{0, 1, 2})
-		if err != nil {
-			return nil, "", err
-		}
-		body["madogearType"] = n
-	}
-
-	if q.Has("enableShadow") {
-		b, err := parseBool("enableShadow", q.Get("enableShadow"))
-		if err != nil {
-			return nil, "", err
-		}
-		body["enableShadow"] = b
-	}
-	if q.Has("canvas") {
-		body["canvas"] = q.Get("canvas")
-	}
-
-	// outputFormat decides the file extension we cache/serve.
-	ext := ".png"
-	if q.Has("outputFormat") {
-		n, err := parseEnum("outputFormat", q.Get("outputFormat"),
-			map[string]int{"png": 0, "zip": 1}, []int{0, 1})
-		if err != nil {
-			return nil, "", err
-		}
-		body["outputFormat"] = n
-		if n == 1 {
-			ext = ".zip"
-		}
-	}
-
-	// Apply the still-vs-animation rule. `frame` is set explicitly (rather than
-	// relying on zrenderer's omitted-field default) so the behavior is guaranteed:
-	//   - action present → frame -1 (all frames → animated APNG)
-	//   - otherwise      → frame 0  (single still image)
-	if !q.Has("frame") {
-		if q.Has("action") {
-			body["frame"] = -1
-		} else {
-			body["frame"] = 0
-		}
-	}
-
-	return body, ext, nil
-}
-
-// ---------------------------------------------------------------------------
-// Cache key
-// ---------------------------------------------------------------------------
-
-// cacheKey is a stable hash of the (canonicalized) query parameters: keys and
+// etagFor is a stable hash of the (canonicalized) query parameters: keys and
 // repeated values sorted, empty values dropped. Identical query params — in any
-// order — map to the same cache entry.
-func cacheKey(q url.Values) string {
+// order — produce the same ETag. A render is fully determined by its query, so
+// this doubles as a content validator for conditional requests.
+func etagFor(q url.Values) string {
 	keys := make([]string, 0, len(q))
 	for k := range q {
 		keys = append(keys, k)
@@ -506,77 +340,6 @@ func cacheKey(q url.Values) string {
 }
 
 // ---------------------------------------------------------------------------
-// Access token loader
-// ---------------------------------------------------------------------------
-
-var tokenPattern = regexp.MustCompile(`^[0-9a-z]{32}$`)
-
-// tokenLoader lazily reads the access token that zrenderer auto-generates into
-// the shared secrets file. The file may not exist yet on first boot, so reads
-// are retried for a short window.
-type tokenLoader struct {
-	file     string
-	override string
-
-	mu    sync.Mutex
-	token string
-}
-
-func (t *tokenLoader) get() (string, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.token != "" {
-		return t.token, nil
-	}
-	if t.override != "" {
-		t.token = t.override
-		return t.token, nil
-	}
-
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		tok, err := readToken(t.file)
-		if err == nil {
-			t.token = tok
-			log.Printf("loaded access token from %s", t.file)
-			return tok, nil
-		}
-		if time.Now().After(deadline) {
-			return "", fmt.Errorf("reading token from %s: %w", t.file, err)
-		}
-		time.Sleep(time.Second)
-	}
-}
-
-func (t *tokenLoader) invalidate() {
-	t.mu.Lock()
-	t.token = ""
-	t.mu.Unlock()
-}
-
-// readToken parses zrenderer's accesstokens.conf:
-//
-//	<lastId>
-//	<id>,<token>,<description>,<capabilities...>
-//
-// The token is a 32-char [0-9a-z] field. We return the first one we find.
-func readToken(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		for _, field := range strings.Split(strings.TrimSpace(line), ",") {
-			if tokenPattern.MatchString(field) {
-				return field, nil
-			}
-		}
-	}
-	return "", errors.New("no access token found in file yet")
-}
-
-// ---------------------------------------------------------------------------
 // Single-flight (stdlib-only): dedup concurrent identical renders
 // ---------------------------------------------------------------------------
 
@@ -587,13 +350,16 @@ type flightGroup struct {
 
 type flightCall struct {
 	wg  sync.WaitGroup
-	val struct{}
+	val []byte
 	err error
 }
 
 func newFlightGroup() *flightGroup { return &flightGroup{m: make(map[string]*flightCall)} }
 
-func (g *flightGroup) Do(key string, fn func() (struct{}, error)) (struct{}, error) {
+// Do runs fn for key, sharing the single in-flight result with every concurrent
+// caller of the same key. The returned bytes must be treated as read-only (they
+// are shared across callers).
+func (g *flightGroup) Do(key string, fn func() ([]byte, error)) ([]byte, error) {
 	g.mu.Lock()
 	if c, ok := g.m[key]; ok {
 		g.mu.Unlock()
@@ -674,36 +440,6 @@ func contentTypeForExt(ext string) string {
 	default:
 		return "image/png" // covers PNG and APNG
 	}
-}
-
-func fileExists(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && !fi.IsDir()
-}
-
-// copyToCache copies src → dst atomically (temp file + rename).
-func copyToCache(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("opening render output %q: %w", src, err)
-	}
-	defer in.Close()
-
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after a successful rename
-
-	if _, err := io.Copy(tmp, in); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, dst)
 }
 
 func logRequests(next http.Handler) http.Handler {
