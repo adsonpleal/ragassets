@@ -5,6 +5,17 @@ continuously (no version tags), so entries are grouped by date.
 
 ## 2026-06-16
 
+### Fixed
+- **Effect headgears now draw behind the character automatically, per direction.**
+  Big effect accessories (auras, halos, the Sun God's Ornament `2669`) used to
+  render on top of the body. RO's `TB_Layer_Priority` table gives every accessory
+  a per-direction draw priority (negative = behind), so this is now derived from
+  client data: the Sun God hangs behind you when you face the camera and in front
+  when you face away — no per-id flagging by the caller. The `headgearBehind`
+  query param is kept as a manual override for ids the table doesn't cover. The
+  table is baked offline by `gen-resolver` into a new embedded
+  `resolve/data/layer_priority.json` (549 accessories); `tables.json` is unchanged.
+
 ### Removed
 - **The server-side render cache is gone.** Rendering is now in-process and fast,
   so the gateway renders on every request and streams the bytes directly instead

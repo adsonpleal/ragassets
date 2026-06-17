@@ -221,7 +221,8 @@ func (e *Engine) processPlayer(req Request, requestFrame *int) ([]*sprite.Sprite
 			hg.TypeOrder = h
 			hg.Parent = body
 			hg.HeadDir = req.HeadDir
-			hg.Behind = containsU32(req.HeadgearBehind, id)
+			hg.AccessoryID = id
+			// Behind is computed per direction in sortDelegate (TB_Layer_Priority).
 			if resolve.IsDoram(jobID) {
 				if x, y, ok := e.tables.DoramOffset(id, int(req.Action%8), g.Int()); ok {
 					hg.OffsetAdjust = geom.Vec3{X: float32(x), Y: float32(y)}
@@ -423,6 +424,12 @@ func (e *Engine) sortDelegate(sprites []*sprite.Sprite, req Request, bodyImf *ro
 			switch {
 			case s.Type == sprite.TypeGarment:
 				s.ZIndex = e.garmentZIndex(req, f, direction)
+			case s.Type == sprite.TypeAccessory:
+				// Per-direction behind/front from the client's layer-priority table
+				// (so e.g. the Sun God's Ornament hangs behind you facing the camera
+				// and in front when you face away).
+				s.Behind = e.accessoryBehind(req, s.AccessoryID, direction)
+				s.ZIndex = sprite.ZIndexForSprite(s, direction, -1, -1, nil)
 			case s.Type == sprite.TypePlayerHead && bodyImf != nil:
 				s.ZIndex = sprite.ZIndexForSprite(s, direction, int(req.Action), f, bodyImf)
 			default:
@@ -445,6 +452,19 @@ func (e *Engine) sortDelegate(sprites []*sprite.Sprite, req Request, bodyImf *ro
 // front of the body for back-facing directions (2..6) and behind for the
 // front-facing ones (0,1,7) — so a cape hangs behind you when you face the
 // camera and over your back when you face away.
+// accessoryBehind decides whether a headgear draws behind the body for the given
+// facing direction. The client's TB_Layer_Priority table is authoritative (a
+// negative per-direction priority means behind); the headgearBehind request param
+// is a manual override that forces behind in all directions for ids the table
+// doesn't cover.
+func (e *Engine) accessoryBehind(req Request, accessoryID uint32, direction int) bool {
+	if containsU32(req.HeadgearBehind, accessoryID) {
+		return true
+	}
+	behind, _ := e.tables.HeadgearBehind(accessoryID, direction)
+	return behind
+}
+
 func (e *Engine) garmentZIndex(req Request, frame, direction int) int {
 	onTop := direction >= 2 && direction <= 6
 	if onTop {

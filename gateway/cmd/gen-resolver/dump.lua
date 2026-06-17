@@ -32,6 +32,7 @@ for _, n in ipairs({
   "weapontable", "weapontable_f",
   "npcidentity", "jobidentity", "jobname", "jobname_f",
   "shadowtable", "shadowtable_f",
+  "tb_layer_priority",
 }) do
   tryload(datadir, n)
 end
@@ -154,6 +155,38 @@ do
               f:write(id .. "\t" .. dir .. "\t" .. g .. "\t" .. xi .. "\t" .. yi .. "\n")
             end
           end
+        end
+      end
+    end
+  end
+  f:close()
+end
+
+-- TB_Layer_Priority.Items_List: per-accessory, per-direction draw priority that
+-- RO uses to decide whether a headgear/effect draws behind or in front of the
+-- body. A negative priority (per direction, falling back to Default) means the
+-- accessory is drawn behind the character. Emitted as:
+--   id <tab> default <tab> dir:prio,dir:prio,...   (default empty if absent)
+-- Rows that carry no Default and no Direction overrides (e.g. isIgnoreRiding-only
+-- entries) are skipped — they hold no layering information.
+do
+  local f = open("layerpriority.tsv")
+  local items = type(TB_Layer_Priority) == "table" and TB_Layer_Priority.Items_List
+  if type(items) == "table" then
+    for id, item in pairs(items) do
+      if type(id) == "number" and type(item) == "table" then
+        local def = item.Default
+        local dirs = {}
+        if type(item.Direction) == "table" then
+          for d, v in pairs(item.Direction) do
+            if type(d) == "number" and type(v) == "number" then
+              dirs[#dirs + 1] = math.floor(d) .. ":" .. math.floor(v)
+            end
+          end
+        end
+        if type(def) == "number" or #dirs > 0 then
+          local defs = (type(def) == "number") and tostring(math.floor(def)) or ""
+          f:write(math.floor(id) .. "\t" .. defs .. "\t" .. table.concat(dirs, ",") .. "\n")
         end
       end
     end

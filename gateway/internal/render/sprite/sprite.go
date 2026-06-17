@@ -39,14 +39,16 @@ type Sprite struct {
 	// Palette overrides the SPR's embedded palette when non-nil (body/head dye).
 	Palette roformat.Palette
 
-	Type      Type
-	TypeOrder int                  // ordering within a type (accessory 0..2, etc.)
-	ZIndex    int                  // assigned by the engine before sorting
-	HeadDir   rotype.HeadDirection // head facing (head/accessory only)
-	Parent    *Sprite              // attach-point parent (body), nil if unparented
+	Type        Type
+	TypeOrder   int                  // ordering within a type (accessory 0..2, etc.)
+	AccessoryID uint32               // headgear view id (accessory layer-priority lookup)
+	ZIndex      int                  // assigned by the engine before sorting
+	HeadDir     rotype.HeadDirection // head facing (head/accessory only)
+	Parent      *Sprite              // attach-point parent (body), nil if unparented
 	// Behind draws this accessory behind the body/head (effect-type headgears such
-	// as auras/halos). RO decides this in client code with no GRF signal, so the
-	// caller marks these ids explicitly.
+	// as auras/halos). The engine sets it per frame from the client's
+	// TB_Layer_Priority table (a negative per-direction priority), so it can flip
+	// as the character turns; the headgearBehind request param forces it on.
 	Behind bool
 
 	// OffsetAdjust is an extra parent-attach offset (doram headgear positioning).

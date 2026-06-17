@@ -80,6 +80,11 @@ type Tables interface {
 	JobName(jobID uint32) string
 	// IsTopLayer reports whether a garment is a top layer (IsTopLayer).
 	IsTopLayer(garmentID uint32) bool
+	// HeadgearBehind reports whether accessory id should draw behind the body for
+	// the given facing direction (0..7), per the client's TB_Layer_Priority table
+	// (a negative effective priority means "behind"). ok is false when the
+	// accessory has no layer-priority entry, in which case it draws in front.
+	HeadgearBehind(accessoryID uint32, direction int) (behind, ok bool)
 	// ShadowFactor returns the shadow scale for a job (ReqshadowFactor); 1 default.
 	ShadowFactor(jobID uint32) float32
 	// DoramOffset returns the per-direction headgear offset for doram characters
@@ -98,5 +103,6 @@ func (NopTables) WeaponName(uint32) string                      { return "" }
 func (NopTables) RealWeaponID(id uint32) uint32                 { return id }
 func (NopTables) JobName(uint32) string                         { return "" }
 func (NopTables) IsTopLayer(uint32) bool                        { return false }
+func (NopTables) HeadgearBehind(uint32, int) (bool, bool)       { return false, false }
 func (NopTables) ShadowFactor(uint32) float32                   { return 1 }
 func (NopTables) DoramOffset(uint32, int, int) (int, int, bool) { return 0, 0, false }

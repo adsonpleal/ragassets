@@ -6,6 +6,11 @@
 // job names additionally get backslashes converted to forward slashes, matching
 // resolver.d's substitute("\\", dirSeparator).
 //
+// It also writes layer_priority.json next to the tables JSON: the client's
+// TB_Layer_Priority.Items_List (per-accessory, per-direction draw priority). This
+// is pure numeric data (no name decoding), kept in its own embedded file so the
+// proven tables.json is untouched when only the layer-priority data changes.
+//
 // Usage: gen-resolver <dump_dir> <out_json>
 package main
 
@@ -30,6 +35,15 @@ type tablesJSON struct {
 	RealWeapon map[string]uint32 `json:"realWeapon"`
 	JobName    map[string]string `json:"jobName"`
 	IsTopLayer map[string]bool   `json:"isTopLayer"`
+}
+
+// layerPrioJSON is one TB_Layer_Priority.Items_List entry: a Default priority
+// (absent for direction-only entries) plus per-direction overrides keyed by
+// facing direction ("0".."7"). A negative effective priority means "draw behind
+// the body".
+type layerPrioJSON struct {
+	Default *int           `json:"default,omitempty"`
+	Dir     map[string]int `json:"dir,omitempty"`
 }
 
 func main() {
@@ -104,6 +118,51 @@ func main() {
 	fmt.Printf("wrote %s: accname=%d robe=%d/%d weapon=%d realweapon=%d jobname=%d istoplayer=%d\n",
 		outPath, len(t.AccName), len(t.Robe), len(t.RobeEng), len(t.Weapon),
 		len(t.RealWeapon), len(t.JobName), len(t.IsTopLayer))
+
+	// Layer priority (TB_Layer_Priority.Items_List) → its own file. Numeric only,
+	// so no name decoding; kept separate so tables.json is untouched by it.
+	layerPath := filepath.Join(filepath.Dir(outPath), "layer_priority.json")
+	writeLayerPriority(dumpDir, layerPath)
+}
+
+// writeLayerPriority parses layerpriority.tsv (id <tab> default <tab>
+// dir:prio,dir:prio,...) and writes layer_priority.json.
+func writeLayerPriority(dumpDir, outPath string) {
+	lp := map[string]layerPrioJSON{}
+	forEachLine(dumpDir, "layerpriority.tsv", func(f []string) {
+		if len(f) < 2 {
+			return
+		}
+		e := layerPrioJSON{}
+		if f[1] != "" {
+			if v, err := strconv.Atoi(f[1]); err == nil {
+				e.Default = &v
+			}
+		}
+		if len(f) >= 3 && f[2] != "" {
+			e.Dir = map[string]int{}
+			for _, pair := range strings.Split(f[2], ",") {
+				kv := strings.SplitN(pair, ":", 2)
+				if len(kv) != 2 {
+					continue
+				}
+				if v, err := strconv.Atoi(kv[1]); err == nil {
+					e.Dir[kv[0]] = v
+				}
+			}
+		}
+		if e.Default != nil || len(e.Dir) > 0 {
+			lp[f[0]] = e
+		}
+	})
+	out, err := json.MarshalIndent(lp, "", "  ")
+	if err != nil {
+		fatal(err)
+	}
+	if err := os.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("wrote %s: layerPriority=%d\n", outPath, len(lp))
 }
 
 var eucDecoder = korean.EUCKR.NewDecoder()

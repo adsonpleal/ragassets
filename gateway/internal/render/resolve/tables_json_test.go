@@ -35,6 +35,37 @@ func TestDefaultTablesLoads(t *testing.T) {
 	}
 }
 
+// TestHeadgearBehind checks the baked TB_Layer_Priority rule: the Sun God's
+// Ornament (2669) draws behind the body for front/side-facing directions and in
+// front when facing away; always-behind and unknown ids behave accordingly.
+func TestHeadgearBehind(t *testing.T) {
+	tbl := DefaultTables()
+
+	// 2669: Default 304 with per-direction overrides -100 for 0,1,2,6,7.
+	for _, d := range []int{0, 1, 2, 6, 7} {
+		if behind, ok := tbl.HeadgearBehind(2669, d); !ok || !behind {
+			t.Errorf("HeadgearBehind(2669, %d) = (%v,%v), want behind", d, behind, ok)
+		}
+	}
+	for _, d := range []int{3, 4, 5} { // no override → falls back to Default 304 (front)
+		if behind, ok := tbl.HeadgearBehind(2669, d); !ok || behind {
+			t.Errorf("HeadgearBehind(2669, %d) = (%v,%v), want front", d, behind, ok)
+		}
+	}
+
+	// 2803: Default -300, no overrides → behind in every direction.
+	for d := 0; d < 8; d++ {
+		if behind, ok := tbl.HeadgearBehind(2803, d); !ok || !behind {
+			t.Errorf("HeadgearBehind(2803, %d) = (%v,%v), want behind", d, behind, ok)
+		}
+	}
+
+	// Unknown id → no entry.
+	if _, ok := tbl.HeadgearBehind(99999999, 0); ok {
+		t.Error("HeadgearBehind(unknown) reported ok=true")
+	}
+}
+
 // TestResolverWithRealTables exercises the resolver path builders against the
 // generated tables for headgear/garment.
 func TestResolverWithRealTables(t *testing.T) {

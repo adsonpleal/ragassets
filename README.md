@@ -97,7 +97,7 @@ parameter:
 | `head` | integer | Player head id. |
 | `outfit` | integer | Alternate outfit (`0` = default). |
 | `headgear` | comma-separated ints | Up to 3, e.g. `headgear=4,125`. |
-| `headgearBehind` | comma-separated ints | Headgear ids that should render **behind** the character (effect-type accessories such as auras/halos, e.g. the Sun God's Ornament `2669`). RO decides this in client code with no GRF signal, so the caller marks them. |
+| `headgearBehind` | comma-separated ints | **Usually unnecessary** — whether an effect headgear (aura/halo/the Sun God's Ornament `2669`) draws behind the character is decided automatically per direction from the client's layer-priority table. This param is a manual override that forces the listed ids behind in every direction (for accessories the client table doesn't cover). |
 | `garment` | integer | |
 | `weapon` | integer | |
 | `shield` | integer | |
