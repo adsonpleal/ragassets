@@ -3,8 +3,8 @@
 `ragassets` is a thin, fast HTTP layer that renders and serves Ragnarok Online
 sprites as images and animations, with aggressive on-disk caching so repeat
 requests are served instantly. It also serves the client's **item, collection,
-skill and class (job) icons** as static transparent PNGs — those are plain
-files extracted straight from the GRF, no rendering involved.
+skill, class (job) and status-effect (buff/debuff) icons** as static transparent
+PNGs — those are plain files extracted straight from the GRF, no rendering involved.
 
 > **Rendering is done in-process by a native Go reimplementation of
 > [zrenderer](https://github.com/zhad3/zrenderer)'s algorithm** (under
@@ -227,6 +227,7 @@ Serves a static image extracted from the client GRF (see
 | `collection` | Larger item description image (~75×100) | item id |
 | `skill` | Skill icon (~24×24) | skill id |
 | `job` | Class/job icon | job id |
+| `status` | Status-effect (buff/debuff) icon (32×32) | EFST status id |
 | `ui` | Character-creation UI element | client filename (see below) |
 
 ```
@@ -234,13 +235,20 @@ Serves a static image extracted from the client GRF (see
 /icons/collection/501.png    # Red Potion description image
 /icons/skill/28.png          # Heal
 /icons/job/4252.png          # Dragon Knight
+/icons/status/883.png        # Poison status icon
+/icons/status/876.png        # Freezing status icon
 /icons/ui/bt_female_on.png   # gender toggle, female, selected
 ```
 
-The source BMPs use magenta (`#FF00FF`) as the transparency colorkey; the
-extractor converts that to a real PNG alpha channel. Responses carry the same
+The source images carry transparency either via a magenta (`#FF00FF`) colorkey
+(item/collection/skill/job/ui BMPs) or a real alpha channel (status-effect TGAs);
+the extractor normalizes both to a PNG alpha channel. Responses carry the same
 immutable cache headers and `ETag`/`304` support as `/image`. Unknown names
 (or types) return `404`.
+
+The `status` type is keyed by the client's **EFST** status id (the numeric ids in
+`luafiles514/.../stateicon/efstids.lub`). Not every EFST has an icon — only those
+the client maps to an image in `stateiconimginfo.lub` are served.
 
 The `ui` type exposes the character-creation screen's elements under their
 original client filenames:
@@ -319,13 +327,14 @@ To serve the static icons (`/icons/*`), run the icon extraction step too:
 node extract-grf.mjs --icons resources/icons --grf path/to/data.grf
 ```
 
-This decodes the item/collection/skill/job icon BMPs (keyed by numeric id) and
-the character-creation UI elements (keyed by their client basename) into
-transparent PNGs under `resources/icons/{item,collection,skill,job,ui}/`,
-which the gateway serves directly. Item ids are resolved via
-`System/iteminfo_new.lub` (found automatically next to the GRF; override with
-`--iteminfo <path>`), skill ids via `skillid.lub` inside the GRF. Rerunning
-overwrites in place.
+This decodes the item/collection/skill/job icon BMPs (keyed by numeric id), the
+status-effect icon TGAs (keyed by EFST id) and the character-creation UI elements
+(keyed by their client basename) into transparent PNGs under
+`resources/icons/{item,collection,skill,job,status,ui}/`, which the gateway serves
+directly. Item ids are resolved via `System/iteminfo_new.lub` (found automatically
+next to the GRF; override with `--iteminfo <path>`), skill ids via `skillid.lub`,
+and status icons via the `stateicon/efstids.lub` + `stateicon/stateiconimginfo.lub`
+tables — all inside the GRF. Rerunning overwrites in place.
 
 Other modes:
 

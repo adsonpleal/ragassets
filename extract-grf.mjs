@@ -831,6 +831,39 @@ function parseSkillIds(map) {
   return ids;
 }
 
+// EFST status-effect id -> icon filename. efstids.lub defines the global
+// EFST_IDs (name -> numeric id); stateiconimginfo.lub then builds
+// StateIconImgList[priority][EFST_IDs[name]] = "<file>.tga", so it must run over
+// the SAME globals AFTER efstids for those lookups to resolve. We flatten the
+// per-priority sub-tables down to id -> filename (the filename is a client
+// string — EUC-KR for the Korean names — resolved against the GRF later).
+function parseStatusIcons(map) {
+  const out = new Map();
+  const efst = map.get("data/luafiles514/lua files/stateicon/efstids.lub");
+  const img = map.get("data/luafiles514/lua files/stateicon/stateiconimginfo.lub");
+  if (!efst || !img) {
+    console.error("! stateicon lua tables not found in GRF; skipping status icons");
+    return out;
+  }
+  try {
+    const globals = new LuaTable();
+    runChunkInto(efst, globals);
+    runChunkInto(img, globals);
+    const list = globals.get("StateIconImgList");
+    if (list instanceof LuaTable) {
+      for (const [, sub] of list.map) {
+        if (!(sub instanceof LuaTable)) continue;
+        for (const [id, file] of sub.map) {
+          if (typeof id === "number" && typeof file === "string" && file) out.set(id, file);
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`! stateicon tables could not be executed (${err.message}); skipping status icons`);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // BMP -> PNG conversion. RO icons are uncompressed BMPs (8-bit palettized,
 // some 24/32-bit) that use magenta #FF00FF as the transparency colorkey. We
@@ -1000,12 +1033,73 @@ function bmpToPng(bmpBytes, opts = {}) {
   return encodePng(decoded.width, decoded.height, decoded.rgba);
 }
 
+// Status (EFST) icons ship as TARGA rather than BMP. They are uncompressed
+// true-colour (24/32-bit BGR(A)); 32-bit carries a real alpha channel while
+// 24-bit is fully opaque. Decode to RGBA and re-use the PNG encoder. RLE
+// (image type 10) is handled too, in case a future client patch uses it.
+function tgaToRgba(buf) {
+  const b = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+  if (b.length < 18) return null;
+  const idLen = b[0];
+  const colorMapType = b[1];
+  const imageType = b[2];
+  if (colorMapType !== 0 || (imageType !== 2 && imageType !== 10)) return null; // truecolor only
+  const w = b.readUInt16LE(12);
+  const h = b.readUInt16LE(14);
+  const bpp = b[16];
+  const desc = b[17];
+  if (w <= 0 || h <= 0 || (bpp !== 24 && bpp !== 32)) return null;
+  const bytesPP = bpp / 8;
+  const topDown = (desc & 0x20) !== 0; // bit 5: 1 = top-left origin, else bottom-up
+  let p = 18 + idLen; // no color map (colorMapType 0), so skip only the image id field
+  const px = w * h;
+  const src = Buffer.alloc(px * bytesPP); // pixels in stored (row) order
+  if (imageType === 2) {
+    if (p + px * bytesPP > b.length) return null;
+    b.copy(src, 0, p, p + px * bytesPP);
+  } else {
+    let o = 0; // RLE: alternating run-length (0x80 bit) and raw packets
+    while (o < src.length && p < b.length) {
+      const count = (b[p++] & 0x7f) + 1;
+      if (b[p - 1] & 0x80) {
+        for (let i = 0; i < count && o < src.length; i++, o += bytesPP) b.copy(src, o, p, p + bytesPP);
+        p += bytesPP;
+      } else {
+        const n = count * bytesPP;
+        b.copy(src, o, p, p + n);
+        o += n;
+        p += n;
+      }
+    }
+  }
+  const rgba = Buffer.alloc(px * 4);
+  for (let row = 0; row < h; row++) {
+    const srcRow = topDown ? row : h - 1 - row;
+    for (let x = 0; x < w; x++) {
+      const so = (srcRow * w + x) * bytesPP;
+      const di = (row * w + x) * 4;
+      rgba[di] = src[so + 2]; // stored BGR(A)
+      rgba[di + 1] = src[so + 1];
+      rgba[di + 2] = src[so];
+      rgba[di + 3] = bpp === 32 ? src[so + 3] : 255;
+    }
+  }
+  return { width: w, height: h, rgba };
+}
+
+function tgaToPng(tgaBytes) {
+  const decoded = tgaToRgba(tgaBytes);
+  if (!decoded) return null;
+  return encodePng(decoded.width, decoded.height, decoded.rgba);
+}
+
 // ---------------------------------------------------------------------------
 // Icon extraction — decodes each BMP to a transparent PNG keyed by numeric id:
 //   <out>/item/<id>.png        inventory icon    (item\<resname>.bmp)
 //   <out>/collection/<id>.png  description image (collection\<resname>.bmp)
 //   <out>/skill/<id>.png       skill icon        (item\<skid-const>.bmp)
 //   <out>/job/<id>.png         class icon        (renewalparty\icon_jobs_<id>.bmp)
+//   <out>/status/<id>.png      EFST status icon  (texture\effect\<file>.tga)
 //   <out>/ui/<name>.png        char-creation UI  (make_character_ver2\<name>.bmp)
 // resnames come from System/iteminfo_new.lub; skill icon filenames are the
 // lowercased SKID constant. Magenta (#FF00FF) is mapped to transparent; UI
@@ -1051,6 +1145,7 @@ function extractIcons(grfPath, outBase, args) {
       collection: join(root, "collection"),
       skill: join(root, "skill"),
       job: join(root, "job"),
+      status: join(root, "status"),
       ui: join(root, "ui"),
     };
     for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
@@ -1059,7 +1154,7 @@ function extractIcons(grfPath, outBase, args) {
     const idx = indexIcons(grf);
     console.error(`  ${idx.size} icon files indexed`);
 
-    const counts = { item: 0, collection: 0, skill: 0, job: 0, ui: 0 };
+    const counts = { item: 0, collection: 0, skill: 0, job: 0, status: 0, ui: 0 };
     const fails = { extract: 0, convert: 0 };
     const writeIcon = (kind, id, entry) => {
       let bmp;
@@ -1109,6 +1204,56 @@ function extractIcons(grfPath, outBase, args) {
       if (m && !writeIcon("job", m[1], entry)) jobFailed.push(Number(m[1]));
     }
 
+    // Status (EFST) icons: TARGA images under data/texture/effect/, keyed by the
+    // numeric EFST id from the stateicon lua tables. The mapped filename is a
+    // client string (EUC-KR for Korean names), decoded the same way as GRF entry
+    // names so it matches the indexed path.
+    const statusMap = parseStatusIcons(
+      collectGrfFiles(grf, [
+        "data/luafiles514/lua files/stateicon/efstids.lub",
+        "data/luafiles514/lua files/stateicon/stateiconimginfo.lub",
+      ]),
+    );
+    if (statusMap.size) {
+      const effectIdx = new Map(); // normalized effect-folder path -> best entry
+      for (const f of grf.files) {
+        if (!(f.flags & 0x01)) continue;
+        const n = normalize(f.filename);
+        if (!n.startsWith("data/texture/effect/") || !n.endsWith(".tga")) continue;
+        const prev = effectIdx.get(n);
+        if (!prev || f.uncompSize > prev.uncompSize) effectIdx.set(n, f);
+      }
+      const statusMissing = [];
+      for (const [id, file] of statusMap) {
+        // The lua VM keeps strings as latin1; recover the raw bytes and decode
+        // them the same way GRF entry names are (EUC-KR for the Korean filenames).
+        const name = decodeName(Buffer.from(file, "latin1"));
+        const entry = effectIdx.get(normalize(`data/texture/effect/${name}`));
+        if (!entry) {
+          statusMissing.push(file);
+          continue;
+        }
+        let tga;
+        try {
+          tga = extractFile(grf, entry);
+        } catch {
+          fails.extract++;
+          continue;
+        }
+        const png = tgaToPng(tga);
+        if (!png) {
+          fails.convert++;
+          continue;
+        }
+        writeFileSync(join(dirs.status, `${id}.png`), png);
+        counts.status++;
+      }
+      if (statusMissing.length)
+        console.error(
+          `  status icons not in GRF: ${[...new Set(statusMissing)].sort().join(", ")}`,
+        );
+    }
+
     // Character-creation UI elements, keyed by their original basename
     // (bt_male_on, img_hairstyle_girl05, color03_press, ...).
     for (const [name, entry] of idx) {
@@ -1119,7 +1264,7 @@ function extractIcons(grfPath, outBase, args) {
     }
 
     console.error(
-      `\nIcons (PNG) → ${root}\n  item: ${counts.item}  collection: ${counts.collection}  skill: ${counts.skill}  job: ${counts.job}  ui: ${counts.ui}` +
+      `\nIcons (PNG) → ${root}\n  item: ${counts.item}  collection: ${counts.collection}  skill: ${counts.skill}  job: ${counts.job}  status: ${counts.status}  ui: ${counts.ui}` +
         (fails.extract ? `\n  ${fails.extract} entry(s) failed to extract` : "") +
         (fails.convert ? `\n  ${fails.convert} BMP(s) skipped (unsupported encoding)` : ""),
     );

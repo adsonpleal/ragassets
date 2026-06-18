@@ -266,9 +266,9 @@ func ifNoneMatch(r *http.Request, etag string) bool {
 // ---------------------------------------------------------------------------
 
 // The kinds and the filenames mirror what extract-grf.mjs --icons produces —
-// numeric-id PNGs for item/collection/skill/job and client-basename PNGs for
-// ui (character-creation elements). Keep in sync with extractIcons() there.
-var iconKinds = map[string]bool{"item": true, "collection": true, "skill": true, "job": true, "ui": true}
+// numeric-id PNGs for item/collection/skill/job/status and client-basename PNGs
+// for ui (character-creation elements). Keep in sync with extractIcons() there.
+var iconKinds = map[string]bool{"item": true, "collection": true, "skill": true, "job": true, "status": true, "ui": true}
 var iconFilePattern = regexp.MustCompile(`^[a-z0-9_]+\.png$`)
 
 // handleIcon serves /icons/{type}/{name}.png from the icons dir. The kind
