@@ -147,3 +147,72 @@ func TestImageNotModified(t *testing.T) {
 		t.Errorf("304 response has a non-empty body (%d bytes)", rec.Body.Len())
 	}
 }
+
+// effectsServer builds a server backed by a throwaway effects dir holding one
+// effect bundle + a catalogue, so the /effects handler can be exercised without
+// the full extracted resources.
+func effectsServer(t *testing.T) *server {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "c_spot_light"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(rel, body string) {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("index.json", `{"items":[{"id":410127,"name":"Holofote","slots":["mid"],"effect":"c_spot_light"}]}`)
+	write(filepath.Join("c_spot_light", "effect.json"), `{"key":"c_spot_light","fps":60,"maxKey":150,"layers":[]}`)
+	write(filepath.Join("c_spot_light", "tex_0.png"), "\x89PNG\r\n\x1a\n")
+	return &server{cfg: config{effectsDir: dir, port: "0"}, flight: newFlightGroup()}
+}
+
+func TestEffectEndpoint(t *testing.T) {
+	s := effectsServer(t)
+	cases := []struct {
+		path string
+		code int
+		ct   string
+	}{
+		{"/effects/index.json", http.StatusOK, "application/json"},
+		{"/effects/c_spot_light/effect.json", http.StatusOK, "application/json"},
+		{"/effects/c_spot_light/tex_0.png", http.StatusOK, "image/png"},
+		{"/effects/c_spot_light/tex_9.png", http.StatusNotFound, ""},       // valid pattern, no such file
+		{"/effects/nope/effect.json", http.StatusNotFound, ""},             // unknown key
+		{"/effects/c_spot_light/secret.txt", http.StatusNotFound, ""},      // disallowed filename
+		{"/effects/c_spot_light", http.StatusNotFound, ""},                 // missing file segment
+		{"/effects/c_spot_light/sub/effect.json", http.StatusNotFound, ""}, // too many segments
+	}
+	for _, c := range cases {
+		rec := get(t, s, s.handleEffect, c.path)
+		if rec.Code != c.code {
+			t.Errorf("%s: status = %d, want %d", c.path, rec.Code, c.code)
+		}
+		if c.code == http.StatusOK {
+			if ct := rec.Header().Get("Content-Type"); ct != c.ct {
+				t.Errorf("%s: content-type = %q, want %q", c.path, ct, c.ct)
+			}
+			if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+				t.Errorf("%s: missing CORS header", c.path)
+			}
+		}
+	}
+}
+
+// TestEffectTraversal makes sure the strict key/filename patterns reject path
+// traversal even when the raw request path contains "..".
+func TestEffectTraversal(t *testing.T) {
+	s := effectsServer(t)
+	for _, p := range []string{
+		"/effects/../index.json",
+		"/effects/c_spot_light/..%2feffect.json",
+		"/effects/..%2f..%2fmain.go",
+	} {
+		rec := httptest.NewRecorder()
+		s.handleEffect(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", p, rec.Code)
+		}
+	}
+}

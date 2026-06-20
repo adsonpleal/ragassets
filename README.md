@@ -262,6 +262,36 @@ original client filenames:
 | Hair colors | `color01`…`color09` with states `off`, `on`, `over`, `press` (e.g. `color03_on`) |
 | Misc | `bt_make_*`, `bt_close_*`, `bt_doublecheck_*`, `bt_hairstyle_*`, `img_human_on/off`, `img_doram_*`, `bg_makebg` |
 
+### `GET /effects/...` — effect-only costumes
+
+Some costumes have **no character sprite** — auras, falling petals, spotlights,
+ghosts, weather. The client draws them with its `.str` world-effect system, so the
+sprite renderer above can't produce them. `extract-grf.mjs --effects` pulls each
+one's `.str` out of the GRF as a small JSON + PNG bundle (see
+[GRF extraction](#resources--grf-extraction-required)); the gateway serves those
+bundles for the [latamvisuais](https://github.com/adsonpleal/latamvisuais) map
+simulator to render client-side. These endpoints return `404` until you run the
+`--effects` step.
+
+| Path | What you get |
+|---|---|
+| `GET /effects/index.json` | Catalogue: `{"items":[{"id","name","slots","effect"}]}` — one entry per effect-only costume (`effect` is the bundle key; there is no character `view`). |
+| `GET /effects/{key}/effect.json` | The parsed `.str` animation: `{"key","fps","maxKey","layers":[{"textures":[…],"anims":[…]}]}`. |
+| `GET /effects/{key}/tex_N.png` | That effect's layer textures (TGA alpha kept; BMP magenta-keyed → alpha). |
+
+```
+/effects/index.json
+/effects/c_spot_light/effect.json
+/effects/c_spot_light/tex_0.png
+```
+
+`key` is a costume resource-name slug (`[a-z0-9_]`); the few Korean-named effects
+get an ASCII key from their `.str` folder instead (e.g. `angel_fluttering`).
+Responses carry the same immutable cache headers, `ETag`/`304` and wildcard CORS as
+`/icons`. Not every effect-only costume resolves to a `.str` automatically — the
+extraction step prints a resolved/unresolved/excluded report and a manual override
+table covers the rest (see below).
+
 ### `GET /healthz`
 
 Liveness check — returns `200 ok`.
@@ -292,6 +322,7 @@ gateway/internal/render/  # the native zrenderer reimplementation (parsers, rast
 gateway/cmd/gen-resolver/ # offline tool: bakes id→sprite-name tables from the client .lub
 resources/                # YOUR extracted GRF assets (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*
+resources/effects/        # effect-only costume bundles (extract-grf.mjs --effects), served at /effects/*
 extract-grf.mjs           # helper to extract a GRF into resources/
 ```
 
@@ -335,6 +366,23 @@ directly. Item ids are resolved via `System/iteminfo_new.lub` (found automatical
 next to the GRF; override with `--iteminfo <path>`), skill ids via `skillid.lub`,
 and status icons via the `stateicon/efstids.lub` + `stateicon/stateiconimginfo.lub`
 tables — all inside the GRF. Rerunning overwrites in place.
+
+To serve the effect-only costumes (`/effects/*`), run the effect extraction step:
+
+```bash
+node extract-grf.mjs --effects resources/effects --grf path/to/data.grf
+```
+
+This enumerates the costumes that have **no character sprite** (drawn by the
+client's `.str` world-effect system) from `System/iteminfo_new.lub`, maps each to
+its `.str` in the GRF, and writes a per-effect bundle (`effect.json` describing the
+keyframe animation + the `tex_N.png` textures it references) under
+`resources/effects/<key>/`, plus the catalogue `resources/effects/index.json`. It
+prints a **resolved / unresolved / excluded** report: the "invisible" gear-hiding
+costumes are excluded (no visual), and a handful of Korean-named or EXE/shared-bound
+effects (the level auras, magic circles, …) whose `.str` path isn't derivable from
+the resource name stay unresolved — those are filled in by hand via the
+`STR_OVERRIDE` table near the top of the effects section in `extract-grf.mjs`.
 
 Other modes:
 

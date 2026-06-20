@@ -14,6 +14,7 @@
 //   node extract-grf.mjs --extract <out-dir> --grf <file.grf> [--match <regex>]
 //   node extract-grf.mjs --dump   <file.grf>::<path>      # one file to stdout (fwd-slash path)
 //   node extract-grf.mjs --icons  <out-dir> --grf <file.grf> [--iteminfo <path>]
+//   node extract-grf.mjs --effects <out-dir> --grf <file.grf> [--iteminfo <path>]
 //
 // Examples:
 //   # List every entry:
@@ -31,6 +32,12 @@
 //   # (reads System/iteminfo_new.lub next to the GRF unless --iteminfo is given):
 //   node extract-grf.mjs --icons resources/icons --grf data.grf
 //
+//   # Extract the "effect-only" costumes (auras / falling petals / spotlights —
+//   # the costumes that have no character sprite, drawn by the client's ".str"
+//   # world-effect system) as per-effect bundles (effect.json + texture PNGs) plus
+//   # a catalogue, for the latamvisuais map simulator to fetch like /icons:
+//   node extract-grf.mjs --effects resources/effects --grf data.grf
+//
 // Credits: GRF reader, icon pipeline and the mini Lua 5.1 VM extracted from
 // adsonpleal/ragreplaystats (tools/build-db.mjs + tools/lua51.mjs).
 // The DES routine is ported from vthibault/grf-loader (MIT).
@@ -43,6 +50,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -63,6 +71,7 @@ function parseArgs(argv) {
     else if (a === "--extract") out.extract = argv[++i];
     else if (a === "--match") out.match = argv[++i];
     else if (a === "--icons") out.icons = argv[++i];
+    else if (a === "--effects") out.effects = argv[++i];
     else if (a === "--iteminfo") out.iteminfo = argv[++i];
     else if (a === "-h" || a === "--help") out.help = true;
   }
@@ -86,6 +95,10 @@ function usage() {
       "  and char-creation UI elements (keyed by basename) as transparent PNGs.",
       "  Reads System/iteminfo_new.lub next to the GRF unless --iteminfo points",
       "  at it explicitly.",
+      "",
+      "  --effects extracts the effect-only costumes (.str world effects: auras,",
+      "  falling petals, spotlights) as per-effect bundles (effect.json + tex PNGs)",
+      "  plus a catalogue (index.json). Also reads iteminfo_new.lub.",
     ].join("\n"),
   );
 }
@@ -93,7 +106,7 @@ function usage() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons)) {
+  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects)) {
     usage();
     process.exit(args.help ? 0 : 1);
   }
@@ -143,6 +156,15 @@ function main() {
       process.exit(1);
     }
     extractIcons(args.grf, args.icons, args);
+    process.exit(0);
+  }
+
+  if (args.effects) {
+    if (!args.grf) {
+      console.error("usage: --effects <out-dir> --grf <file.grf> [--iteminfo <path>]");
+      process.exit(1);
+    }
+    extractEffects(args.grf, args.effects, args);
     process.exit(0);
   }
 }
@@ -1093,6 +1115,60 @@ function tgaToPng(tgaBytes) {
   return encodePng(decoded.width, decoded.height, decoded.rgba);
 }
 
+// Bleed opaque colours outward into transparent pixels (alpha stays 0). The
+// magenta colorkey leaves transparent texels with magenta RGB; under bilinear
+// filtering / mipmaps those values bleed back in as pink fringes. Replacing each
+// transparent texel's RGB with its nearest opaque neighbour's (a multi-source
+// BFS) removes the halos. Used for the effect textures (the map sim filters them
+// bilinearly); the icon pipeline keeps its texels as-is.
+function bleedTransparent(width, height, rgba) {
+  const total = width * height;
+  const filled = new Uint8Array(total);
+  let queue = [];
+  for (let i = 0; i < total; i++) {
+    if (rgba[i * 4 + 3] !== 0) {
+      filled[i] = 1;
+      queue.push(i);
+    }
+  }
+  if (queue.length === 0 || queue.length === total) return; // all/none transparent
+  while (queue.length) {
+    const next = [];
+    for (const p of queue) {
+      const px = p % width;
+      const po = p * 4;
+      const cands = [];
+      if (px > 0) cands.push(p - 1);
+      if (px < width - 1) cands.push(p + 1);
+      if (p - width >= 0) cands.push(p - width);
+      if (p + width < total) cands.push(p + width);
+      for (const q of cands) {
+        if (filled[q]) continue;
+        filled[q] = 1;
+        const qo = q * 4;
+        rgba[qo] = rgba[po];
+        rgba[qo + 1] = rgba[po + 1];
+        rgba[qo + 2] = rgba[po + 2]; // copy RGB only; alpha stays 0
+        next.push(q);
+      }
+    }
+    queue = next;
+  }
+}
+
+// Convert a .str-referenced texture (BMP or TGA) to a transparent PNG for the map
+// effect renderer. TGA keeps its 32-bit alpha (glow textures); BMP is magenta
+// (#FF00FF) colorkeyed; both then get their transparent RGB bled to kill fringes.
+// Returns null for unsupported encodings (caller logs + skips). Mirrors the POC
+// latamvisuais/tools/bmp.mjs textureToPng so its output is byte-identical.
+function effectTextureToPng(bytes, name) {
+  const isTga = /\.tga$/i.test(name);
+  const decoded = isTga ? tgaToRgba(bytes) : bmpToRgba(bytes);
+  if (!decoded) return null;
+  bleedTransparent(decoded.width, decoded.height, decoded.rgba);
+  return encodePng(decoded.width, decoded.height, decoded.rgba);
+}
+
 // ---------------------------------------------------------------------------
 // Icon extraction — decodes each BMP to a transparent PNG keyed by numeric id:
 //   <out>/item/<id>.png        inventory icon    (item\<resname>.bmp)
@@ -1290,6 +1366,431 @@ function collectGrfFiles(grf, wants) {
     }
   }
   return map;
+}
+
+// ---------------------------------------------------------------------------
+// Effect-only costumes (.str world effects) — auras, falling petals, spotlights,
+// ghosts. These costumes carry NO character-sprite view (ClassNum == 0 and the
+// resource name isn't in the accessory/robe sprite tables), so the 2D paper-doll
+// renderer can't draw them; the client draws them with its ".str" effect system.
+// For the latamvisuais 3D map simulator we extract each one's .str into a small
+// bundle (effect.json describing the keyframe animation + the texture PNGs it
+// references) and a catalogue, served like /icons.
+//
+// This is the production generalization of latamvisuais/tools/build-effects.mjs
+// (the 5-effect POC); the enumeration mirrors that repo's build-db.mjs so the set
+// matches exactly the costumes build-db DROPS as effect-only.
+// ---------------------------------------------------------------------------
+
+// Read a Lua data table from the GRF (.lub preferred, .lua fallback). Mirrors
+// the helper the costume builder uses in latamvisuais/tools/build-db.mjs.
+function grfLub(grf, base) {
+  const entry = findBestEntry(grf, normalize(`${base}.lub`)) ?? findBestEntry(grf, normalize(`${base}.lua`));
+  if (!entry) {
+    console.error(`  ! missing in GRF: ${base}.lub`);
+    return null;
+  }
+  return extractFile(grf, entry);
+}
+
+// "Equipa em: ^777777Topo e Meio^000000" → ["top","mid"]. Newer LATAM items write
+// "Posição: Topo" instead; both labels are accepted. Color codes (^RRGGBB) are
+// stripped first. Ported verbatim from build-db.mjs so the slot set matches.
+function parseSlots(desc) {
+  if (!(desc instanceof LuaTable)) return [];
+  for (const line of desc.map.values()) {
+    if (typeof line !== "string") continue;
+    const s = decodeClientString(line).replace(/\^[0-9a-fA-F]{6}/g, "");
+    const m = s.match(/(?:Equipa em|Posi[çc][ãa]o)\s*:\s*(.+)/i);
+    if (!m) continue;
+    const t = m[1].split(/\s+\S+\s*:/)[0].toLowerCase();
+    const slots = [];
+    if (t.includes("topo")) slots.push("top");
+    if (t.includes("meio")) slots.push("mid");
+    if (t.includes("baixo") || /(^|\s)ixo\b/.test(t)) slots.push("low");
+    if (t.includes("capa")) slots.push("garment");
+    return slots;
+  }
+  return [];
+}
+
+// Normalize a resource name to its effect key / lookup form: forward slashes,
+// no leading underscore, lowercase. (Used both as the served effect key and as
+// the substring to find the .str folder.)
+function normRes(s) {
+  return typeof s === "string" ? s.replace(/\\/g, "/").replace(/^_/, "").toLowerCase() : "";
+}
+
+// Reverse lookup (sprite name → view id) over the client's accessory/robe name
+// tables — the same authority build-db.mjs uses to recover a costume's view when
+// ClassNum is 0. A costume that resolves to a view here is a renderable body
+// sprite (NOT an effect-only costume), so we use this only to EXCLUDE those.
+function buildViewResolver(grf) {
+  const tablesFrom = (...bases) => {
+    const g = new LuaTable();
+    for (const base of bases) {
+      const bytes = grfLub(grf, `data/luafiles514/lua files/datainfo/${base}`);
+      if (bytes) {
+        try {
+          runChunkInto(bytes, g);
+        } catch (err) {
+          console.error(`  ! ${base}: ${err.message}`);
+        }
+      }
+    }
+    return g;
+  };
+  const reverse = (...tables) => {
+    const m = new Map();
+    for (const t of tables) {
+      if (!(t instanceof LuaTable)) continue;
+      for (const [k, v] of t.map) {
+        const key = normRes(typeof v === "string" ? decodeClientString(v) : "");
+        if (typeof k !== "number" || k <= 0 || !key) continue;
+        const prev = m.get(key);
+        if (prev == null || k < prev) m.set(key, k); // lowest id wins (deterministic)
+      }
+    }
+    return m;
+  };
+  const accG = tablesFrom("accessoryid", "accname");
+  const robeG = tablesFrom("spriterobeid", "spriterobename");
+  const acc = reverse(accG.get("AccNameTable"));
+  const robe = reverse(robeG.get("RobeNameTable"), robeG.get("RobeNameTable_Eng"));
+  return (slots, resourceName) => {
+    const key = normRes(decodeClientString(resourceName));
+    if (!key) return undefined;
+    return (slots.includes("garment") ? robe : acc).get(key);
+  };
+}
+
+// Enumerate the effect-only costumes from System/iteminfo_new.lub: costume==true,
+// a parsed visual slot, and NO resolvable character view (the set build-db drops).
+// The "invisible" costumes (가린다/Invisível — res 인비지블*) hide gear and have no
+// visual to extract, so they're excluded up front.
+function buildEffectCostumes(grf, args) {
+  const lubPath = resolveItemInfoPath(args);
+  if (!lubPath) {
+    throw new Error("iteminfo_new.lub not found next to the GRF (System/) — pass --iteminfo <path>");
+  }
+  const tbl = runChunk(readFileSync(lubPath)).get("tbl");
+  if (!(tbl instanceof LuaTable)) throw new Error("iteminfo: no `tbl` global");
+  const resolveView = buildViewResolver(grf);
+
+  const effects = [];
+  const excluded = [];
+  for (const [id, entry] of tbl.map) {
+    if (typeof id !== "number" || !(entry instanceof LuaTable)) continue;
+    if (entry.get("costume") !== true) continue;
+    const name = decodeClientString(entry.get("identifiedDisplayName"));
+    if (!name) continue;
+    const slots = parseSlots(entry.get("identifiedDescriptionName"));
+    if (!slots.length) continue;
+
+    // Renderable? (iteminfo carries the view, or its resource name resolves to one.)
+    const cn = entry.get("ClassNum");
+    if (typeof cn === "number" && cn > 0) continue;
+    if (resolveView(slots, entry.get("identifiedResourceName")) != null) continue;
+
+    const res = decodeClientString(entry.get("identifiedResourceName")) || "";
+    // "Invisible" costumes hide gear — no .str to extract.
+    if (/^인비지블/.test(res) || /invis[íi]vel/i.test(name)) {
+      excluded.push({ id, name, res });
+      continue;
+    }
+    effects.push({ id, name, slots, res });
+  }
+  effects.sort((a, b) => a.id - b.id);
+  excluded.sort((a, b) => a.id - b.id);
+  return { effects, excluded };
+}
+
+// Index every .str under data/texture/effect/ (normalized, forward-slash paths).
+function indexStrFiles(grf) {
+  const out = [];
+  for (const f of grf.files) {
+    if (!(f.flags & 0x01)) continue;
+    const n = normalize(f.filename);
+    if (n.startsWith("data/texture/effect/") && n.endsWith(".str")) out.push(n);
+  }
+  return out;
+}
+
+// Manual .str overrides for resource names the heuristic can't pick on its own:
+// folders with several real .str where the right one isn't the name-matching one
+// (verified visually against the live client). Korean-named and EXE/shared-bound
+// effects (the level auras, magic circles, …) whose .str path isn't derivable
+// from the resource name go here too once mapped — until then they report as
+// unresolved (expected manual follow-up, per the project brief).
+const STR_OVERRIDE = {
+  // efst_c_sakura_fubuki holds cherryblossoms.str AND sakura_fubuki.str; the
+  // costume uses the cherry-blossom petals.
+  c_sakura_fubuki: "data/texture/effect/efst_c_sakura_fubuki/cherryblossoms.str",
+  // c_swirling_flame holds vortexf.str AND vortexf2.str; the primary is vortexf.
+  c_swirling_flame: "data/texture/effect/c_swirling_flame/vortexf.str",
+  // Magic circles: the effect folder collapses the resource name's punctuation
+  // ("magic_circle" → efst_magiccircle). The rainbow folder holds mc.str AND
+  // mcr.str — mcr ("magic circle rainbow") is the rainbow variant.
+  magic_circle: "data/texture/effect/efst_magiccircle/mc.str",
+  c_magic_circle_rainbow: "data/texture/effect/efst_magiccirclerainbow/mcr.str",
+  // Korean-named costumes whose effect folder is romanized (the brief's
+  // fluttering/feather/angel_wing hint). Keyed by the normalized resource name;
+  // their served key is derived from the .str folder (see effectKey).
+  "c흩날리는천사의날개": "data/texture/effect/efst_angel_fluttering/angel_fluttering.str",
+  "c흩날리는깃털": "data/texture/effect/efst_feather_fluttering/feath.str",
+  "눈의선물": "data/texture/effect/efst_gift_of_snow/gift_of_snow.str",
+};
+
+// The served effect key: the resource name normalized to a URL/path-safe slug.
+// Most resource names are already ASCII; the Korean-named ones aren't, so we fall
+// back to the .str folder name (minus the efst_ prefix), e.g.
+// efst_angel_fluttering → "angel_fluttering", then the .str basename.
+function effectKey(res, strPath) {
+  const k = normRes(res);
+  if (/^[a-z0-9_]+$/.test(k)) return k;
+  const segs = strPath.split("/");
+  const folder = (segs[segs.length - 2] || "").replace(/^efst_/, "");
+  if (/^[a-z0-9_]+$/.test(folder)) return folder;
+  return strBase(strPath);
+}
+
+const strBase = (p) => p.slice(p.lastIndexOf("/") + 1).replace(/\.str$/, "");
+const isMinStr = (p) => strBase(p).startsWith("min_"); // low-spec "minimized" variant
+
+// Map a resource name → a .str path in the GRF. Returns { str } on success, or
+// { ambiguous } / null so the caller can report it. The link is the resource
+// name: find the .str folder named efst_<res> or <res> (or a basename <res>.str),
+// preferring the basename that matches the resource, then the sole real (non-min)
+// .str, else flag the folder as ambiguous for the override table. Costume resource
+// names often carry a leading "C_" that the effect folder omits (C_InkPainting_Day
+// → efst_inkpainting_day), so the de-prefixed form is tried too.
+function resolveStr(strIndex, res) {
+  const r = normRes(res);
+  if (!r) return null;
+  if (STR_OVERRIDE[r]) {
+    const ov = normalize(STR_OVERRIDE[r]);
+    const hit = strIndex.find((p) => p.endsWith(ov));
+    return hit ? { str: hit } : null;
+  }
+  const variants = r.startsWith("c_") ? [r, r.slice(2)] : [r];
+  for (const v of variants) {
+    const folderMatch = strIndex.filter((p) => {
+      const segs = p.split("/");
+      return segs.includes("efst_" + v) || segs.includes(v);
+    });
+    const pool = (folderMatch.length ? folderMatch : strIndex.filter((p) => strBase(p) === v)).filter(
+      (p) => !isMinStr(p),
+    );
+    if (!pool.length) continue;
+    const byName = pool.find((p) => strBase(p) === v);
+    if (byName) return { str: byName };
+    if (pool.length === 1) return { str: pool[0] };
+    return { ambiguous: pool };
+  }
+  return null;
+}
+
+// Resolve a texture referenced by a .str: its own folder first (bespoke
+// textures), then the shared effect texture pool, then the global texture root.
+function findEffectTexture(grf, strDir, texName) {
+  const n = normRes(texName);
+  return (
+    findBestEntry(grf, normalize(`${strDir}/${n}`)) ||
+    findBestEntry(grf, normalize(`data/texture/effect/${n}`)) ||
+    findBestEntry(grf, normalize(`data/texture/${n}`))
+  );
+}
+
+// Parse a binary ".str" (STRM) world-effect. Little-endian. Ported from
+// latamvisuais/tools/str.mjs (itself from roBrowser's Loaders/Str.js). Texture
+// names are EUC-KR char[128]; keyframes are 124 bytes. Returns the parsed layers
+// plus bytesRead/total so the caller can assert a clean round-trip.
+function parseStr(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const u8 = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const EUCKR = new TextDecoder("euc-kr");
+  let off = 0;
+  const u32 = () => { const v = view.getUint32(off, true); off += 4; return v; };
+  const i32 = () => { const v = view.getInt32(off, true); off += 4; return v; };
+  const f32 = () => { const v = view.getFloat32(off, true); off += 4; return v; };
+  const floats = (n) => { const a = new Array(n); for (let i = 0; i < n; i++) a[i] = f32(); return a; };
+  const str = (n) => {
+    let end = off;
+    const lim = off + n;
+    while (end < lim && u8[end] !== 0) end++;
+    const s = EUCKR.decode(u8.subarray(off, end));
+    off += n;
+    return s;
+  };
+
+  const magic = String.fromCharCode(u8[0], u8[1], u8[2], u8[3]);
+  off = 4;
+  if (magic !== "STRM") throw new Error(`bad STR magic: ${JSON.stringify(magic)}`);
+  const version = u32();
+  const fps = u32();
+  const maxKey = u32();
+  const layerNum = u32();
+  off += 16; // reserved
+
+  const layers = [];
+  for (let l = 0; l < layerNum; l++) {
+    const texNum = u32();
+    const textures = [];
+    for (let t = 0; t < texNum; t++) textures.push(str(128));
+    const animNum = u32();
+    const anims = [];
+    for (let a = 0; a < animNum; a++) {
+      anims.push({
+        frame: i32(),
+        type: u32(),
+        pos: floats(2),
+        uv: floats(8),
+        xy: floats(8),
+        aniframe: f32(),
+        anitype: u32(),
+        delay: f32(),
+        angle: f32(),
+        color: floats(4),
+        srcalpha: u32(),
+        destalpha: u32(),
+        mtpreset: u32(),
+      });
+    }
+    layers.push({ textures, anims });
+  }
+  return { version, fps, maxKey, layers, bytesRead: off, total: u8.length };
+}
+
+// Extract one effect into <outDir>: parse the .str, emit each referenced texture
+// as tex_N.png (deduped by name, shared textures emitted once), and write
+// effect.json with the slimmed keyframes the runtime needs. Mirrors the POC's
+// buildEffect so the bundle is byte-identical. Returns counts for the report.
+function buildEffect(grf, strPath, key, outDir) {
+  const entry = findBestEntry(grf, strPath);
+  if (!entry) throw new Error(`.str not found: ${strPath}`);
+  const str = parseStr(extractFile(grf, entry));
+  const strDir = dirname(strPath); // normalized already
+
+  // One shared PNG per distinct texture name. texFile maps in-.str name →
+  // emitted filename (or null when missing/undecodable). The running map size is
+  // the next tex index — kept faithful to the POC, including counting nulls.
+  const texFile = new Map();
+  let texMissing = 0;
+  const ensureTexture = (name) => {
+    const k = normRes(name);
+    if (texFile.has(k)) return texFile.get(k);
+    const tex = findEffectTexture(grf, strDir, name);
+    if (!tex) {
+      texMissing++;
+      console.error(`  ! texture missing: ${name}`);
+      texFile.set(k, null);
+      return null;
+    }
+    const png = effectTextureToPng(extractFile(grf, tex), k);
+    if (!png) {
+      console.error(`  ! texture decode failed: ${name}`);
+      texFile.set(k, null);
+      return null;
+    }
+    const file = `tex_${texFile.size}.png`;
+    writeFileSync(join(outDir, file), png);
+    texFile.set(k, file);
+    return file;
+  };
+
+  const layers = str.layers.map((ly) => ({
+    textures: ly.textures.map((t) => ensureTexture(t)),
+    anims: ly.anims.map((a) => ({
+      frame: a.frame,
+      type: a.type,
+      pos: a.pos,
+      xy: a.xy,
+      aniframe: a.aniframe,
+      angle: a.angle,
+      color: a.color,
+      src: a.srcalpha,
+      dst: a.destalpha,
+    })),
+  }));
+
+  writeFileSync(join(outDir, "effect.json"), JSON.stringify({ key, fps: str.fps, maxKey: str.maxKey, layers }));
+  return { layers: layers.length, textures: texFile.size, texMissing, bytesRead: str.bytesRead, total: str.total };
+}
+
+function extractEffects(grfPath, outBase, args) {
+  const grf = openGrf(grfPath);
+  try {
+    const root = resolve(outBase);
+    mkdirSync(root, { recursive: true });
+
+    console.error("Enumerating effect-only costumes from iteminfo…");
+    const { effects, excluded } = buildEffectCostumes(grf, args);
+    const strIndex = indexStrFiles(grf);
+    console.error(`  ${effects.length} effect-only costumes, ${excluded.length} excluded (invisible), ${strIndex.length} .str files indexed`);
+
+    const resolved = [];
+    const unresolved = [];
+    for (const eff of effects) {
+      const r = resolveStr(strIndex, eff.res);
+      if (!r || !r.str) {
+        unresolved.push({ ...eff, ambiguous: r?.ambiguous });
+        continue;
+      }
+      const key = effectKey(eff.res, r.str);
+      if (!/^[a-z0-9_]+$/.test(key)) {
+        // The key is the /effects/{key}/ URL segment; the gateway only serves
+        // [a-z0-9_] keys. A non-ASCII .str folder would yield an unservable
+        // bundle — flag it for a romanized override instead of writing it.
+        unresolved.push({ ...eff, error: `unservable key ${JSON.stringify(key)}` });
+        console.error(`  ! ${eff.id} ${JSON.stringify(eff.res)}: non-ASCII key ${JSON.stringify(key)} — add a romanized .str folder to STR_OVERRIDE`);
+        continue;
+      }
+      const outDir = join(root, key);
+      rmSync(outDir, { recursive: true, force: true });
+      mkdirSync(outDir, { recursive: true });
+      try {
+        const info = buildEffect(grf, r.str, key, outDir);
+        const roundTrip = info.bytesRead === info.total ? "" : ` (! str bytesRead ${info.bytesRead}/${info.total})`;
+        console.error(
+          `  ✓ ${key} (item ${eff.id}) → ${info.layers} layers, ${info.textures} textures` +
+            (info.texMissing ? ` (${info.texMissing} missing)` : "") + roundTrip,
+        );
+        resolved.push({ ...eff, key, str: r.str });
+      } catch (err) {
+        rmSync(outDir, { recursive: true, force: true });
+        unresolved.push({ ...eff, error: err.message });
+        console.error(`  ! ${key} (item ${eff.id}): ${err.message}`);
+      }
+    }
+
+    // Catalogue: view-less costume entries (id/name/slots + the `effect` key that
+    // links to the bundle above). The map simulator's loadDb merges these in.
+    const items = resolved
+      .map((e) => ({ id: e.id, name: e.name, slots: e.slots, effect: e.key }))
+      .sort((a, b) => a.id - b.id);
+    writeFileSync(join(root, "index.json"), JSON.stringify({ items }));
+
+    // Report: resolved / unresolved / excluded (the unresolved set is expected
+    // manual follow-up — Korean-named and EXE/shared-bound effects).
+    console.error(`\nEffects → ${root}`);
+    console.error(`  resolved:   ${resolved.length}`);
+    console.error(`  unresolved: ${unresolved.length}`);
+    console.error(`  excluded:   ${excluded.length}`);
+    console.error(`  catalogue:  index.json (${items.length} items)`);
+    if (unresolved.length) {
+      console.error(`\n  Unresolved (need a manual STR_OVERRIDE entry):`);
+      for (const u of unresolved) {
+        const hint = u.ambiguous ? ` — ambiguous: [${u.ambiguous.join(", ")}]` : u.error ? ` — ${u.error}` : "";
+        console.error(`    ${u.id}\t${JSON.stringify(u.res)}\t${u.name}${hint}`);
+      }
+    }
+    if (excluded.length) {
+      console.error(`\n  Excluded (invisible costumes — no visual):`);
+      for (const x of excluded) console.error(`    ${x.id}\t${JSON.stringify(x.res)}\t${x.name}`);
+    }
+  } finally {
+    closeGrf(grf);
+  }
 }
 
 main();

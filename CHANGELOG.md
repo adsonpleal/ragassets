@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-06-19
+
+### Added
+- **Effect-only costumes are now extracted and served at `/effects/*`.** Some
+  costumes have no character sprite — auras, falling petals, spotlights, ghosts,
+  weather — because the client draws them with its `.str` world-effect system, not
+  as a body sprite, so the renderer can't produce them. `extract-grf.mjs --effects`
+  enumerates these costumes from `iteminfo_new.lub` (exactly the ones with no
+  resolvable character view), maps each to its `.str` in the GRF, and writes a
+  per-effect bundle — `effect.json` (the parsed keyframe animation) plus the
+  `tex_N.png` layer textures (TGA alpha kept, BMP magenta-keyed) — under
+  `resources/effects/<key>/`, with a catalogue at `resources/effects/index.json`.
+  The gateway serves them at `/effects/index.json`, `/effects/{key}/effect.json`
+  and `/effects/{key}/tex_N.png` with the same immutable cache/`ETag`/CORS headers
+  as `/icons`, for the latamvisuais map simulator to render client-side. Of the 56
+  effect-only costumes in the current client, 23 resolve automatically (4 invisible
+  gear-hiding costumes are excluded; the rest are Korean-named or EXE/shared-bound
+  and filled in via the `STR_OVERRIDE` table). New `EFFECTS_DIR` env var
+  (default `/effects`).
+
 ## 2026-06-16
 
 ### Fixed

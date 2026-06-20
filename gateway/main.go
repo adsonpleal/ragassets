@@ -8,7 +8,9 @@
 // Concurrent identical requests are coalesced by a single-flight group so a burst
 // of the same query renders only once. /gif renders the same way and converts the
 // PNG/APNG to a GIF in-process (see gif.go); /icons serves static images that
-// extract-grf.mjs pulled out of the client GRF.
+// extract-grf.mjs pulled out of the client GRF, and /effects serves the
+// "effect-only" costume bundles (.str world effects) it extracts for the map
+// simulator.
 package main
 
 import (
@@ -40,6 +42,7 @@ import (
 type config struct {
 	resourceDir string // extracted GRF assets (contains data/)
 	iconsDir    string
+	effectsDir  string
 	port        string
 }
 
@@ -47,6 +50,7 @@ func loadConfig() config {
 	return config{
 		resourceDir: env("RESOURCE_DIR", "/resources"),
 		iconsDir:    env("ICONS_DIR", "/icons"),
+		effectsDir:  env("EFFECTS_DIR", "/effects"),
 		port:        env("GATEWAY_PORT", "8080"),
 	}
 }
@@ -86,10 +90,17 @@ func main() {
 		log.Printf("icons: serving %s at /icons/{type}/{id}.png", cfg.iconsDir)
 	}
 
+	if fi, err := os.Stat(cfg.effectsDir); err != nil || !fi.IsDir() {
+		log.Printf("effects: %s not found — /effects/* will return 404 (run extract-grf.mjs --effects)", cfg.effectsDir)
+	} else {
+		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png} and /effects/index.json", cfg.effectsDir)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/image", s.handleImage)
 	mux.HandleFunc("/gif", s.handleGif)
 	mux.HandleFunc("/icons/", s.handleIcon)
+	mux.HandleFunc("/effects/", s.handleEffect)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		io.WriteString(w, "ok")
@@ -117,7 +128,9 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"Try: /image?job=1002            (still image)\n"+
 		"     /image?job=1002&action=0   (animation, APNG)\n"+
 		"     /gif?job=1002&action=0     (same, as an animated GIF)\n"+
-		"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n\n"+
+		"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n"+
+		"     /effects/index.json        (effect-only costume catalogue)\n"+
+		"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n\n"+
 		"See the README for every supported parameter.\n")
 }
 
@@ -235,6 +248,13 @@ func setAssetHeaders(w http.ResponseWriter, etag string) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 }
 
+// fileETag derives a strong validator for a static file from its mtime+size. The
+// /icons and /effects handlers re-extract files in place, so this changes exactly
+// when the bytes do (renders use their query hash instead).
+func fileETag(fi os.FileInfo) string {
+	return fmt.Sprintf("%x-%x", fi.ModTime().UnixNano(), fi.Size())
+}
+
 // notModified answers a conditional request whose validator already matches: it
 // sends the cache/CORS headers (so intermediaries keep caching) and a bare 304.
 func notModified(w http.ResponseWriter, etag string) {
@@ -300,10 +320,60 @@ func (s *server) handleIcon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Icons are re-extracted in place, so derive the ETag from mtime+size
-	// (renders use their query hash instead).
-	etag := fmt.Sprintf("%x-%x", fi.ModTime().UnixNano(), fi.Size())
-	s.serveReader(w, r, f, fi.ModTime(), etag, "image/png")
+	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), "image/png")
+}
+
+// ---------------------------------------------------------------------------
+// /effects handler — the "effect-only" costumes (auras, falling petals,
+// spotlights) the sprite renderer can't draw, served as the bundles
+// extract-grf.mjs --effects produces for the latamvisuais map simulator:
+//
+//   /effects/index.json          the costume catalogue ({items:[{id,name,slots,effect}]})
+//   /effects/{key}/effect.json   the parsed .str keyframe animation
+//   /effects/{key}/tex_N.png     that effect's layer textures
+//
+// `key` is a costume resource-name slug ([a-z0-9_]); the strict key + filename
+// patterns (no dots, no slashes) make path traversal structurally impossible.
+// ---------------------------------------------------------------------------
+
+var effectKeyPattern = regexp.MustCompile(`^[a-z0-9_]+$`)
+var effectFilePattern = regexp.MustCompile(`^(effect\.json|tex_[0-9]+\.png)$`)
+
+func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rest := strings.TrimPrefix(r.URL.Path, "/effects/")
+	rel := rest // the catalogue, served as-is
+	if rest != "index.json" {
+		parts := strings.Split(rest, "/")
+		if len(parts) != 2 || !effectKeyPattern.MatchString(parts[0]) || !effectFilePattern.MatchString(parts[1]) {
+			http.NotFound(w, r)
+			return
+		}
+		rel = filepath.Join(parts[0], parts[1])
+	}
+	contentType := "image/png"
+	if strings.HasSuffix(rel, ".json") {
+		contentType = "application/json"
+	}
+
+	f, err := os.Open(filepath.Join(s.cfg.effectsDir, rel))
+	if err != nil {
+		http.NotFound(w, r) // unknown effect/file, or effects not extracted yet
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+
+	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), contentType)
 }
 
 // ---------------------------------------------------------------------------
