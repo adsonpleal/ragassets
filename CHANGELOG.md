@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-06-25
+
+### Changed
+- **Refreshed all client assets and resolver tables for the 2026-06-25 game
+  update.** Re-ran `extract-grf.mjs` (`--extract`/`--icons`/`--effects`) against the
+  rebuilt client GRF and regenerated the embedded id→sprite-name tables
+  (`resolve/data/tables.json`) and layer-priority table (`resolve/data/layer_priority.json`)
+  from the updated `luafiles514` via `gen-resolver`. The resolver tables gain **101
+  new entries with none removed** — new headgears (e.g. `_pulse_of_yggdrasil`,
+  `_c_giant_panda`), garments (e.g. `c_accordion_bag`) and EP18 NPC sprites now
+  resolve and render — and two accessories (`1602`, `2251`) get re-tuned draw
+  priorities. The extracted assets grew by ~860 sprite files and ~494
+  item/collection icons each; effect-only costumes are unchanged (23 resolved).
+
 ## 2026-06-19
 
 ### Added
