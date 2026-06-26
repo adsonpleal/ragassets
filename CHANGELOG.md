@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-06-26
+
+### Added
+- **`mobs.json` — a `jobID → { en, pt, es }` map of localized monster names, plus the
+  `tools/mobnames/` pipeline that maintains it.** Monster names live only in the
+  client's base64 i18n CSV (`data/i18n/sc/<hash>.csv`), keyed by a positional `strId`
+  with no job id attached; the one static game file that links an identifier to a
+  `strId` is the navigation DB `navi_mob_br.lub` (each spawn row carries an
+  `AEGIS` + `"\x1c"+base64(strId)+"\x1c"` token), joined to job ids via
+  `npcidentity.lub`. The pipeline resolves rows by descending certainty — **navi token
+  (exact) → ordered-fill between anchors (high) → grouped/shadow variant matching →
+  agents** (aegis semantics + ascending-order rails, with the Divine Pride API as a
+  verification oracle) — and never lets any tier contradict a navi anchor. The current
+  `mobs.json` covers **2,941 job ids / 2,768 of 2,834 name rows (97.7%)**, each tagged
+  with `source` + `confidence`, ground truth 9/9 (incl. `20620 → Pimentinha`). The
+  build is incremental — `mobs.json` is the source of truth, so a client update only
+  re-resolves new/changed rows (`node tools/mobnames/resolve.mjs`). New
+  `/update-mob-names` skill runs the full loop (resolve → optional DP warm → agents →
+  merge → audit). The Divine Pride key lives in the git-ignored `.env`; pipeline caches
+  are git-ignored. See `tools/mobnames/README.md`.
+
 ## 2026-06-25
 
 ### Changed

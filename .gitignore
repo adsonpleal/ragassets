@@ -1,6 +1,9 @@
 # Extracted GRF assets — large, regenerated from the client via extract-grf.mjs
 /resources/
 
+# Local analysis scratch (GRF dumps, decoded tables, replay harvest) — large, regenerated
+/_scratch/
+
 # Packaged resources for transfer
 *.tar
 *.tar.gz
@@ -22,3 +25,8 @@ node_modules/
 # OS junk
 Thumbs.db
 .DS_Store
+
+# mob-name pipeline caches/working files (regenerable)
+/tools/mobnames/dp_cache.json
+/tools/mobnames/unresolved.json
+/tools/mobnames/agent-tasks/
