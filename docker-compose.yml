@@ -12,12 +12,14 @@ services:
       ICONS_DIR: "/icons"
       EFFECTS_DIR: "/effects"
       MAPS_DIR: "/maps"
+      BGM_DIR: "/bgm"
       GATEWAY_PORT: "8080"
     volumes:
       - ./resources:/resources:ro          # extracted GRF assets (data/sprite, palette, imf, ...)
       - ./resources/icons:/icons:ro        # static icons from extract-grf.mjs --icons (optional)
       - ./resources/effects:/effects:ro    # effect-only costume bundles from extract-grf.mjs --effects (optional)
       - ./resources/maps:/maps:ro          # world-map bundles from extract-grf.mjs --maps (optional)
+      - ./resources/bgm:/bgm:ro            # per-map background music from extract-grf.mjs --bgm (optional)
     ports:
       - "${GATEWAY_PORT:-8080}:8080"        # the only public-facing port
     restart: unless-stopped

@@ -44,6 +44,7 @@ type config struct {
 	iconsDir    string
 	effectsDir  string
 	mapsDir     string
+	bgmDir      string
 	port        string
 }
 
@@ -53,6 +54,7 @@ func loadConfig() config {
 		iconsDir:    env("ICONS_DIR", "/icons"),
 		effectsDir:  env("EFFECTS_DIR", "/effects"),
 		mapsDir:     env("MAPS_DIR", "/maps"),
+		bgmDir:      env("BGM_DIR", "/bgm"),
 		port:        env("GATEWAY_PORT", "8080"),
 	}
 }
@@ -104,12 +106,19 @@ func main() {
 		log.Printf("maps: serving %s at /maps/{map}/{manifest.json,<map>.gat|gnd|rsw}, shared /maps/_{t,m,w,u}/<hash>.* and /maps/index.json", cfg.mapsDir)
 	}
 
+	if fi, err := os.Stat(cfg.bgmDir); err != nil || !fi.IsDir() {
+		log.Printf("bgm: %s not found — /bgm/* will return 404 (run extract-grf.mjs --bgm)", cfg.bgmDir)
+	} else {
+		log.Printf("bgm: serving %s at /bgm/{track}.mp3 and /bgm/index.json", cfg.bgmDir)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/image", s.handleImage)
 	mux.HandleFunc("/gif", s.handleGif)
 	mux.HandleFunc("/icons/", s.handleIcon)
 	mux.HandleFunc("/effects/", s.handleEffect)
 	mux.HandleFunc("/maps/", s.handleMap)
+	mux.HandleFunc("/bgm/", s.handleBgm)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		io.WriteString(w, "ok")
@@ -141,7 +150,9 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"     /effects/index.json        (effect-only costume catalogue)\n"+
 		"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n"+
 		"     /maps/index.json           (world-map catalogue for the map simulator)\n"+
-		"     /maps/prontera/manifest.json  (one map's geometry + shared asset manifest)\n\n"+
+		"     /maps/prontera/manifest.json  (one map's geometry + shared asset manifest)\n"+
+		"     /bgm/index.json            (per-map background-music catalogue)\n"+
+		"     /bgm/210.mp3               (one background-music track)\n\n"+
 		"See the README for every supported parameter.\n")
 }
 
@@ -482,6 +493,50 @@ func mapContentType(rel string) string {
 	default: // .gat/.gnd/.rsw geometry, .rsm models — opaque binaries
 		return "application/octet-stream"
 	}
+}
+
+// ---------------------------------------------------------------------------
+// /bgm handler — per-map background music produced by extract-grf.mjs --bgm.
+//
+//	/bgm/index.json   { maps: { "<map>": "<track>.mp3", … } } — map → its track
+//	/bgm/{track}.mp3  one background-music track (tracks are shared across maps)
+//
+// Tracks are numerically named in the client, so the basename whitelist below
+// makes path traversal structurally impossible.
+// ---------------------------------------------------------------------------
+
+var bgmTrackPattern = regexp.MustCompile(`^[0-9a-z_-]+\.mp3$`)
+
+func (s *server) handleBgm(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rest := strings.TrimPrefix(r.URL.Path, "/bgm/")
+	if rest != "index.json" && !bgmTrackPattern.MatchString(rest) {
+		http.NotFound(w, r)
+		return
+	}
+
+	f, err := os.Open(filepath.Join(s.cfg.bgmDir, rest))
+	if err != nil {
+		http.NotFound(w, r) // unknown track, or bgm not extracted yet
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+
+	ct := "audio/mpeg"
+	if rest == "index.json" {
+		ct = "application/json"
+	}
+	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), ct)
 }
 
 // ---------------------------------------------------------------------------

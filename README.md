@@ -329,6 +329,31 @@ store. Map names are lowercase slugs (`[a-z0-9_@-]`); blob hashes are 16 hex cha
 Responses carry the same immutable cache headers, `ETag`/`304` and wildcard CORS as
 `/icons` and `/effects`.
 
+### `GET /bgm/...` — per-map background music
+
+Each world map's background-music track, for a client to play alongside the map
+simulator. `extract-grf.mjs --bgm` reads the client's `data/mp3nametable.txt`
+(which maps `<map>.rsw` → a track in the `bgm\` folder) and copies the referenced
+`.mp3` files out of the client's loose `BGM/` folder (they live next to the GRF,
+not inside it — see [GRF extraction](#resources--grf-extraction-required)). Many
+maps share one track, so tracks are **de-duplicated** by their (numeric) filename
+and each is stored and served once (~325 MB / ~183 tracks for the current client,
+covering ~1080 maps). These endpoints return `404` until you run the `--bgm` step.
+
+| Path | What you get |
+|---|---|
+| `GET /bgm/index.json` | Catalogue: `{"maps":{"<map>":"<track>.mp3",…}}` — every mapped map name → its track filename. |
+| `GET /bgm/{track}.mp3` | One background-music track (`audio/mpeg`). |
+
+```
+/bgm/index.json
+/bgm/210.mp3
+```
+
+Track names are numeric slugs (`[0-9a-z_-].mp3`) — the strict filename pattern
+makes path traversal structurally impossible. Responses carry the same immutable
+cache headers, `ETag`/`304` and wildcard CORS as `/maps`.
+
 ### `GET /healthz`
 
 Liveness check — returns `200 ok`.
@@ -361,6 +386,7 @@ resources/                # YOUR extracted GRF assets (git-ignored, not distribu
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*
 resources/effects/        # effect-only costume bundles (extract-grf.mjs --effects), served at /effects/*
 resources/maps/           # world-map bundles (extract-grf.mjs --maps), served at /maps/*
+resources/bgm/            # per-map background music (extract-grf.mjs --bgm), served at /bgm/*
 extract-grf.mjs           # helper to extract a GRF into resources/
 ```
 
@@ -441,6 +467,20 @@ are skipped (reported at the end — in the current client 17 of 939 `.rsw` entr
 are ground-mesh-less server/template maps, leaving 922 extracted). A full run with no `--map` rebuilds the whole
 tree from scratch; `--map <name>` refreshes just that map and merges it into the
 existing `index.json`.
+
+To serve the per-map background music (`/bgm/*`), run the BGM extraction step:
+
+```bash
+node extract-grf.mjs --bgm resources/bgm --grf path/to/data.grf
+# the .mp3 tracks live in the client's BGM/ folder next to the GRF; override with:
+node extract-grf.mjs --bgm resources/bgm --grf path/to/data.grf --bgmsrc path/to/BGM
+```
+
+This reads `data/mp3nametable.txt` from the GRF (the client's `<map>.rsw → bgm\<file>.mp3`
+table) and copies each referenced track out of the client's loose `BGM/` folder —
+the `.mp3` files are **not** inside the GRF — into `resources/bgm/`, de-duplicated by
+filename (many maps share one track). It writes `resources/bgm/index.json` mapping
+each map name to its track. A full run rebuilds the directory from scratch.
 
 Other modes:
 

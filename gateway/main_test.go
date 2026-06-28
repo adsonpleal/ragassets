@@ -260,3 +260,62 @@ func TestResolveMapPath(t *testing.T) {
 		}
 	}
 }
+
+func bgmServer(t *testing.T) *server {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("index.json", `{"maps":{"prontera":"210.mp3"}}`)
+	write("210.mp3", "ID3fake-mp3-bytes")
+	return &server{cfg: config{bgmDir: dir, port: "0"}, flight: newFlightGroup()}
+}
+
+func TestBgmEndpoint(t *testing.T) {
+	s := bgmServer(t)
+	cases := []struct {
+		path string
+		code int
+		ct   string
+	}{
+		{"/bgm/index.json", http.StatusOK, "application/json"},
+		{"/bgm/210.mp3", http.StatusOK, "audio/mpeg"},
+		{"/bgm/999.mp3", http.StatusNotFound, ""},   // valid pattern, no such track
+		{"/bgm/secret.txt", http.StatusNotFound, ""}, // disallowed extension
+		{"/bgm/sub/210.mp3", http.StatusNotFound, ""}, // nested path
+		{"/bgm/", http.StatusNotFound, ""},            // empty
+	}
+	for _, c := range cases {
+		rec := get(t, s, s.handleBgm, c.path)
+		if rec.Code != c.code {
+			t.Errorf("%s: status = %d, want %d", c.path, rec.Code, c.code)
+		}
+		if c.code == http.StatusOK {
+			if ct := rec.Header().Get("Content-Type"); ct != c.ct {
+				t.Errorf("%s: content-type = %q, want %q", c.path, ct, c.ct)
+			}
+			if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+				t.Errorf("%s: missing CORS header", c.path)
+			}
+		}
+	}
+}
+
+// TestBgmTraversal confirms the strict track-name pattern rejects path traversal
+// even when the raw request path contains "..".
+func TestBgmTraversal(t *testing.T) {
+	s := bgmServer(t)
+	for _, p := range []string{
+		"/bgm/../index.json",
+		"/bgm/..%2f..%2fmain.go",
+		"/bgm/%2e%2e/210.mp3",
+	} {
+		rec := get(t, s, s.handleBgm, p)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", p, rec.Code)
+		}
+	}
+}

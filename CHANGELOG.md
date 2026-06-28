@@ -6,6 +6,15 @@ continuously (no version tags), so entries are grouped by date.
 ## 2026-06-28
 
 ### Added
+- **Every map's background music is now extracted and served at `/bgm/*`.** A new
+  `extract-grf.mjs --bgm` mode reads `data/mp3nametable.txt` from the GRF (the
+  client's `<map>.rsw → bgm\<file>.mp3` table) and copies the referenced `.mp3`
+  tracks out of the client's loose `BGM/` folder — the audio lives next to the GRF,
+  not inside it — into `resources/bgm/`, **de-duplicated by filename** since many
+  maps share one track. It emits `resources/bgm/index.json` mapping each map name to
+  its track. The gateway serves `/bgm/index.json` (the catalogue) and
+  `/bgm/{track}.mp3` (`audio/mpeg`) with the same immutable cache/`ETag`/CORS headers
+  as `/maps`. The current client yields **~183 tracks (~325 MB)** covering ~1080 maps.
 - **Every world map is now extracted and served at `/maps/*`.** A new
   `extract-grf.mjs --maps` mode enumerates all `data/<name>.rsw` maps in the client
   GRF and, per map, emits the raw `.gat`/`.gnd`/`.rsw` geometry (parsed client-side)

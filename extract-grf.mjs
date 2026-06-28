@@ -54,10 +54,12 @@
 
 import {
   closeSync,
+  copyFileSync,
   existsSync,
   fstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
   rmSync,
@@ -85,6 +87,8 @@ function parseArgs(argv) {
     else if (a === "--effects") out.effects = argv[++i];
     else if (a === "--maps") out.maps = argv[++i];
     else if (a === "--map") out.map = argv[++i];
+    else if (a === "--bgm") out.bgm = argv[++i];
+    else if (a === "--bgmsrc") out.bgmsrc = argv[++i];
     else if (a === "--iteminfo") out.iteminfo = argv[++i];
     else if (a === "-h" || a === "--help") out.help = true;
   }
@@ -116,6 +120,11 @@ function usage() {
       "  --maps extracts every world map (or one, with --map <name>) for the map",
       "  simulator: per-map <name>/{<name>.gat,.gnd,.rsw,manifest.json} plus shared,",
       "  content-addressed model/texture/water/UI stores (_m/_t/_w/_u) and index.json.",
+      "",
+      "  --bgm extracts every map's background music: reads data/mp3nametable.txt",
+      "  from the GRF and copies the referenced .mp3 files from the client BGM folder",
+      "  (next to the GRF, or --bgmsrc <dir>) into <out>/, with index.json mapping",
+      "  each map name → its mp3 basename.",
     ].join("\n"),
   );
 }
@@ -123,7 +132,7 @@ function usage() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects && !args.maps)) {
+  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects && !args.maps && !args.bgm)) {
     usage();
     process.exit(args.help ? 0 : 1);
   }
@@ -191,6 +200,15 @@ function main() {
       process.exit(1);
     }
     extractMaps(args.grf, args.maps, args);
+    process.exit(0);
+  }
+
+  if (args.bgm) {
+    if (!args.grf) {
+      console.error("usage: --bgm <out-dir> --grf <file.grf> [--bgmsrc <BGM-dir>]");
+      process.exit(1);
+    }
+    extractBgm(args.grf, args.bgm, args);
     process.exit(0);
   }
 }
@@ -2367,6 +2385,90 @@ function extractMaps(grfPath, outBase, args) {
         `  skipped:   ${skipped}\n` +
         `  index.json: ${allMaps.length} maps`,
     );
+  } finally {
+    closeGrf(grf);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BGM extraction — per-map background music.
+//
+// The client maps each world map to a BGM track in data/mp3nametable.txt (lines
+// of the form "<map>.rsw#bgm\\<file>.mp3#"); the .mp3 files themselves are loose
+// on disk in the client's BGM/ folder, not inside the GRF. We parse the table,
+// copy every *referenced* track once (tracks are uniquely numbered, so the
+// basename de-duplicates naturally), and emit:
+//
+//   <out>/<file>.mp3     each referenced track (copied verbatim)
+//   <out>/index.json     { maps: { "<map>": "<file>.mp3", … } }
+//
+// The gateway serves <out>/ at /bgm/ (/bgm/index.json + /bgm/<file>.mp3).
+// ---------------------------------------------------------------------------
+
+// Parse data/mp3nametable.txt → Map(mapName → mp3 basename). Comment lines start
+// with "//"; data lines are "<map>.rsw#bgm\<file>.mp3#" (the path separator and
+// trailing junk after the closing "#" vary, so we match leniently). The table is
+// EUC-KR in its comments but pure ASCII in the data fields.
+function parseMp3NameTable(bytes) {
+  const text = Buffer.from(bytes).toString("latin1");
+  const re = /^([A-Za-z0-9_@-]+)\.rsw#\s*bgm[\\/]+([^#]+?\.mp3)\s*#/i;
+  const map = new Map();
+  for (let line of text.split(/\r?\n/)) {
+    line = line.trim();
+    if (!line || line.startsWith("//")) continue;
+    const m = re.exec(line);
+    if (!m) continue;
+    const name = m[1].toLowerCase();
+    // The mp3 field may carry a sub-path; keep only the basename.
+    const file = m[2].replace(/^.*[\\/]/, "").toLowerCase();
+    map.set(name, file);
+  }
+  return map;
+}
+
+function extractBgm(grfPath, outBase, args) {
+  const grf = openGrf(grfPath);
+  try {
+    const root = resolve(outBase);
+
+    const entry = findBestEntry(grf, normalize("data/mp3nametable.txt"));
+    if (!entry) throw new Error("data/mp3nametable.txt not found in GRF");
+    const mapToFile = parseMp3NameTable(extractFile(grf, entry));
+    console.error(`mp3nametable.txt: ${mapToFile.size} map→bgm mappings`);
+
+    // BGM tracks live next to the GRF (client BGM/ folder), not in the GRF.
+    const srcDir = args.bgmsrc ? resolve(args.bgmsrc) : join(dirname(resolve(grfPath)), "BGM");
+    if (!existsSync(srcDir)) throw new Error(`BGM source dir not found: ${srcDir} (pass --bgmsrc <dir>)`);
+    // Case-insensitive index of the on-disk filenames (the table is lowercase).
+    const onDisk = new Map();
+    for (const f of readdirSync(srcDir)) onDisk.set(f.toLowerCase(), f);
+
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+
+    const maps = {};
+    const copied = new Set();
+    const missing = new Set();
+    for (const [name, file] of mapToFile) {
+      const actual = onDisk.get(file);
+      if (!actual) { missing.add(file); continue; }
+      if (!copied.has(file)) {
+        copyFileSync(join(srcDir, actual), join(root, file));
+        copied.add(file);
+      }
+      maps[name] = file;
+    }
+
+    const sorted = Object.fromEntries(Object.keys(maps).sort().map((k) => [k, maps[k]]));
+    writeFileSync(join(root, "index.json"), JSON.stringify({ maps: sorted }));
+
+    console.error(
+      `\nBGM → ${root}\n` +
+        `  maps mapped: ${Object.keys(maps).length}\n` +
+        `  tracks copied: ${copied.size} (${[...missing].length} referenced track(s) missing on disk)\n` +
+        `  index.json: ${Object.keys(sorted).length} maps`,
+    );
+    if (missing.size) console.warn(`  ! missing tracks: ${[...missing].sort().join(", ")}`);
   } finally {
     closeGrf(grf);
   }
