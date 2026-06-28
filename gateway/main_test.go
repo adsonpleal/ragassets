@@ -216,3 +216,47 @@ func TestEffectTraversal(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveMapPath exercises the /maps path whitelist directly: the accepted
+// shapes (catalogue, shared blob, per-map geometry/manifest) and the rejections
+// that keep traversal and cross-store mismatches structurally impossible.
+func TestResolveMapPath(t *testing.T) {
+	ok := []struct{ in, want string }{
+		{"index.json", "index.json"},
+		{"prontera/manifest.json", "prontera/manifest.json"},
+		{"prontera/prontera.gat", "prontera/prontera.gat"},
+		{"prontera/prontera.gnd", "prontera/prontera.gnd"},
+		{"prontera/prontera.rsw", "prontera/prontera.rsw"},
+		{"1@cata/1@cata.gat", "1@cata/1@cata.gat"}, // instance map slug (@)
+		{"_t/0123456789abcdef.png", "_t/0123456789abcdef.png"},
+		{"_m/0123456789abcdef.rsm", "_m/0123456789abcdef.rsm"},
+		{"_w/0123456789abcdef.jpg", "_w/0123456789abcdef.jpg"},
+		{"_u/0123456789abcdef.png", "_u/0123456789abcdef.png"},
+	}
+	for _, c := range ok {
+		got, valid := resolveMapPath(c.in)
+		if !valid || got != c.want {
+			t.Errorf("resolveMapPath(%q) = (%q, %v), want (%q, true)", c.in, got, valid, c.want)
+		}
+	}
+
+	bad := []string{
+		"prontera/secret.txt",            // disallowed filename
+		"prontera/iz_int.gat",            // geometry name must match the map dir
+		"prontera",                       // missing file segment
+		"prontera/sub/manifest.json",     // too many segments
+		"prontera/../_t/x.png",           // traversal
+		"Prontera/manifest.json",         // uppercase slug
+		"_t/0123456789abcdef.rsm",        // right store, wrong extension
+		"_m/0123456789abcdef.png",        // wrong extension for store
+		"_x/0123456789abcdef.png",        // unknown store
+		"_t/notahexhash.png",             // bad hash
+		"_t/0123456789abcdef0.png",       // 17-char hash
+		"index.json/../../etc/passwd",    // traversal off the catalogue
+	}
+	for _, in := range bad {
+		if got, valid := resolveMapPath(in); valid {
+			t.Errorf("resolveMapPath(%q) = (%q, true), want invalid", in, got)
+		}
+	}
+}

@@ -15,6 +15,7 @@
 //   node extract-grf.mjs --dump   <file.grf>::<path>      # one file to stdout (fwd-slash path)
 //   node extract-grf.mjs --icons  <out-dir> --grf <file.grf> [--iteminfo <path>]
 //   node extract-grf.mjs --effects <out-dir> --grf <file.grf> [--iteminfo <path>]
+//   node extract-grf.mjs --maps <out-dir> --grf <file.grf> [--map <name>]
 //
 // Examples:
 //   # List every entry:
@@ -38,6 +39,15 @@
 //   # a catalogue, for the latamvisuais map simulator to fetch like /icons:
 //   node extract-grf.mjs --effects resources/effects --grf data.grf
 //
+//   # Extract every world map (data/<name>.gat/.gnd/.rsw + the .rsm models and
+//   # BMP/TGA textures they reference, converted to PNG, plus animated water and
+//   # the shared cursor/grid UI) for the latamvisuais 3D map simulator. Models,
+//   # textures, water and UI are de-duplicated into content-addressed shared
+//   # stores (_t/_m/_w/_u); each map dir holds only its raw .gat/.gnd/.rsw and a
+//   # manifest.json referencing the shared blobs. --map limits it to one map:
+//   node extract-grf.mjs --maps resources/maps --grf data.grf
+//   node extract-grf.mjs --maps resources/maps --grf data.grf --map prontera
+//
 // Credits: GRF reader, icon pipeline and the mini Lua 5.1 VM extracted from
 // adsonpleal/ragreplaystats (tools/build-db.mjs + tools/lua51.mjs).
 // The DES routine is ported from vthibault/grf-loader (MIT).
@@ -56,6 +66,7 @@ import {
 } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
+import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -72,6 +83,8 @@ function parseArgs(argv) {
     else if (a === "--match") out.match = argv[++i];
     else if (a === "--icons") out.icons = argv[++i];
     else if (a === "--effects") out.effects = argv[++i];
+    else if (a === "--maps") out.maps = argv[++i];
+    else if (a === "--map") out.map = argv[++i];
     else if (a === "--iteminfo") out.iteminfo = argv[++i];
     else if (a === "-h" || a === "--help") out.help = true;
   }
@@ -99,6 +112,10 @@ function usage() {
       "  --effects extracts the effect-only costumes (.str world effects: auras,",
       "  falling petals, spotlights) as per-effect bundles (effect.json + tex PNGs)",
       "  plus a catalogue (index.json). Also reads iteminfo_new.lub.",
+      "",
+      "  --maps extracts every world map (or one, with --map <name>) for the map",
+      "  simulator: per-map <name>/{<name>.gat,.gnd,.rsw,manifest.json} plus shared,",
+      "  content-addressed model/texture/water/UI stores (_m/_t/_w/_u) and index.json.",
     ].join("\n"),
   );
 }
@@ -106,7 +123,7 @@ function usage() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects)) {
+  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects && !args.maps)) {
     usage();
     process.exit(args.help ? 0 : 1);
   }
@@ -165,6 +182,15 @@ function main() {
       process.exit(1);
     }
     extractEffects(args.grf, args.effects, args);
+    process.exit(0);
+  }
+
+  if (args.maps) {
+    if (!args.grf) {
+      console.error("usage: --maps <out-dir> --grf <file.grf> [--map <name>]");
+      process.exit(1);
+    }
+    extractMaps(args.grf, args.maps, args);
     process.exit(0);
   }
 }
@@ -1788,6 +1814,559 @@ function extractEffects(grfPath, outBase, args) {
       console.error(`\n  Excluded (invisible costumes — no visual):`);
       for (const x of excluded) console.error(`    ${x.id}\t${JSON.stringify(x.res)}\t${x.name}`);
     }
+  } finally {
+    closeGrf(grf);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Map extraction — world maps (.gat/.gnd/.rsw + referenced .rsm models and
+// BMP/TGA textures) for the latamvisuais 3D map simulator (src/sim).
+//
+// Each map's geometry binaries are emitted raw (parsed in the browser); the
+// models, textures, water frames and shared cursor/grid UI are de-duplicated
+// across all 900+ maps into content-addressed stores so identical blobs are
+// stored (and served) exactly once:
+//
+//   <out>/<map>/<map>.gat|gnd|rsw   raw geometry (browser-parsed)
+//   <out>/<map>/manifest.json       resolves resource names → shared blob paths
+//   <out>/_m/<hash>.rsm             a referenced model (raw)
+//   <out>/_t/<hash>.png             a referenced texture (BMP/TGA → transparent PNG)
+//   <out>/_w/<hash>.jpg             one animated-water frame (raw JPG)
+//   <out>/_u/<hash>.png             a shared UI image (grid selector / cursor frame)
+//   <out>/index.json                { maps: [...] } — every extracted map name
+//
+// Manifest blob paths are written relative to the map dir as "../_t/<hash>.png"
+// etc.; the browser fetches them as `baseUrl + path`, and the URL parser folds
+// the ".." so they resolve against the store, not the map dir. This mirrors the
+// proof-of-concept latamvisuais/tools/build-map.mjs (same manifest shape) but
+// shares blobs instead of copying them per map.
+// ---------------------------------------------------------------------------
+
+const MAP_EUCKR = new TextDecoder("euc-kr");
+
+// Little-endian binary cursor over a Uint8Array (ported from roformat.mjs).
+class MapReader {
+  constructor(bytes) {
+    this.b = bytes;
+    this.dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    this.p = 0;
+  }
+  // Fixed-length, NUL-terminated EUC-KR string field.
+  str(n) {
+    let end = this.p;
+    const lim = this.p + n;
+    while (end < lim && this.b[end] !== 0) end++;
+    const s = MAP_EUCKR.decode(this.b.subarray(this.p, end));
+    this.p += n;
+    return s;
+  }
+  lstr() { return this.str(this.u32()); } // u32 length then that many bytes (RSW/RSM 2.x)
+  u8() { return this.b[this.p++]; }
+  i8() { const v = this.dv.getInt8(this.p); this.p += 1; return v; }
+  u32() { const v = this.dv.getUint32(this.p, true); this.p += 4; return v; }
+  i32() { const v = this.dv.getInt32(this.p, true); this.p += 4; return v; }
+  f32() { const v = this.dv.getFloat32(this.p, true); this.p += 4; return v; }
+  seek(n) { this.p += n; }
+}
+
+// Normalize an embedded resource name (EUC-KR, backslash-separated) to the
+// lowercase forward-slash key both the manifest and the browser parsers use.
+function normName(name) {
+  return name.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+}
+
+// RSW → referenced model filenames + water type. Field layout ported from
+// roBrowserLegacy (handles RSW 1.x–2.x). We read only the object list.
+function parseRsw(bytes) {
+  const fp = new MapReader(bytes);
+  if (fp.str(4) !== "GRSW") throw new Error("RSW: bad header");
+  const version = fp.i8() + fp.i8() / 10;
+
+  if (version >= 2.5) fp.i32(); // build number
+  if (version >= 2.2) fp.u8(); // unknown byte
+
+  fp.str(40); // ini
+  fp.str(40); // gnd
+  fp.str(40); // gat
+  if (version >= 1.4) fp.str(40); // src
+
+  let waterType = 0;
+  if (version < 2.6) {
+    if (version >= 1.3) fp.f32(); // water level
+    if (version >= 1.8) { waterType = fp.i32(); fp.f32(); fp.f32(); fp.f32(); } // type, waveH, waveSpeed, wavePitch
+    if (version >= 1.9) fp.i32(); // animSpeed
+  }
+  if (version >= 1.5) {
+    fp.i32(); fp.i32(); // longitude, latitude
+    fp.f32(); fp.f32(); fp.f32(); // diffuse
+    fp.f32(); fp.f32(); fp.f32(); // ambient
+    if (version >= 1.7) fp.f32(); // opacity
+  }
+  if (version >= 1.6) { fp.i32(); fp.i32(); fp.i32(); fp.i32(); } // ground bounds
+  if (version >= 2.7) { const c = fp.i32(); fp.seek(4 * c); }
+
+  const count = fp.i32();
+  const models = [];
+  for (let i = 0; i < count; i++) {
+    const type = fp.i32();
+    if (type === 1) {
+      if (version >= 1.3) { fp.str(40); fp.i32(); fp.f32(); fp.i32(); } // name, animType, animSpeed, blockType
+      if (version >= 2.6) fp.u8();
+      if (version >= 2.7) fp.i32();
+      const filename = fp.str(80);
+      fp.str(80); // node name
+      fp.f32(); fp.f32(); fp.f32(); // position
+      fp.f32(); fp.f32(); fp.f32(); // rotation
+      fp.f32(); fp.f32(); fp.f32(); // scale
+      models.push(filename);
+    } else if (type === 2) {
+      fp.str(80); fp.f32(); fp.f32(); fp.f32(); fp.i32(); fp.i32(); fp.i32(); fp.f32();
+    } else if (type === 3) {
+      fp.str(80); fp.str(80); fp.f32(); fp.f32(); fp.f32(); fp.f32(); fp.i32(); fp.i32(); fp.f32();
+      if (version >= 2.0) fp.f32();
+    } else if (type === 4) {
+      fp.str(80); fp.f32(); fp.f32(); fp.f32(); fp.i32(); fp.f32(); fp.f32(); fp.f32(); fp.f32(); fp.f32();
+    } else {
+      break; // unknown — stop (quadtree/footer follows the object list anyway)
+    }
+  }
+  return { models: [...new Set(models)], waterType };
+}
+
+// GND → ground texture filenames (relative to data/texture/).
+function parseGndTextures(bytes) {
+  const fp = new MapReader(bytes);
+  if (fp.str(4) !== "GRGN") throw new Error("GND: bad header");
+  fp.i8(); fp.i8(); // version
+  fp.u32(); fp.u32(); // width, height
+  fp.f32(); // zoom
+  const count = fp.u32();
+  const length = fp.u32();
+  const textures = [];
+  for (let i = 0; i < count; i++) textures.push(fp.str(length));
+  return [...new Set(textures)];
+}
+
+// RSM → texture filenames (relative to data/texture/). For <2.2 every name is in
+// the top-level list (40-char strings); 2.2/2.3 length-prefix them and (2.3)
+// carry them per node, so we walk the node tree collecting string entries.
+function parseRsmTextures(bytes) {
+  const fp = new MapReader(bytes);
+  const header = fp.str(4);
+  if (header !== "GRSM" && header !== "GRSX") throw new Error("RSM: bad header");
+  const version = fp.i8() + fp.i8() / 10;
+  fp.i32(); // animLen
+  fp.i32(); // shadeType
+  if (version >= 1.4) fp.u8(); // alpha
+
+  const textures = [];
+  if (version >= 2.3) {
+    fp.f32(); // frame rate
+    const c = fp.u32();
+    for (let i = 0; i < c; i++) textures.push(fp.lstr());
+  } else if (version >= 2.2) {
+    fp.f32();
+    const ac = fp.u32();
+    for (let i = 0; i < ac; i++) textures.push(fp.lstr());
+    const c = fp.u32();
+    for (let i = 0; i < c; i++) textures.push(fp.lstr());
+  } else {
+    fp.seek(16); // reserved
+    const c = fp.u32();
+    for (let i = 0; i < c; i++) textures.push(fp.str(40));
+    fp.str(40); // main node name (not a texture)
+    return [...new Set(textures)]; // <2.2: node textures are indices, nothing new
+  }
+
+  // 2.2/2.3: descend nodes to gather any per-node string textures.
+  const nodeCount = fp.u32();
+  for (let n = 0; n < nodeCount; n++) {
+    fp.lstr(); // name
+    fp.lstr(); // parent name
+    const tc = fp.u32();
+    for (let i = 0; i < tc; i++) {
+      if (version >= 2.3) textures.push(fp.lstr());
+      else fp.i32(); // texture index
+    }
+    fp.seek(9 * 4 + 3 * 4); // mat3 + offset
+    if (version < 2.2) fp.seek(10 * 4); // pos/rotangle/rotaxis/scale (absent for >=2.2)
+    const vc = fp.u32(); fp.seek(vc * 12);
+    const tvc = fp.u32(); fp.seek(tvc * (version >= 1.2 ? 12 : 8));
+    const fc = fp.u32();
+    for (let i = 0; i < fc; i++) {
+      if (version >= 2.2) fp.seek(fp.i32()); // length-prefixed face record
+      else fp.seek(version >= 1.2 ? 24 : 20);
+    }
+    if (version >= 1.6) { const sc = fp.u32(); fp.seek(sc * 20); } // scale keyframes
+    const rc = fp.u32(); fp.seek(rc * 20); // rot keyframes
+    if (version >= 2.2) { const pc = fp.u32(); fp.seek(pc * 20); } // pos keyframes
+    if (version >= 2.3) {
+      const g = fp.u32();
+      for (let i = 0; i < g; i++) {
+        fp.i32(); // texture id
+        const anims = fp.u32();
+        for (let a = 0; a < anims; a++) {
+          fp.i32(); // type
+          const frames = fp.u32();
+          fp.seek(frames * 8); // frame i32 + offset f32
+        }
+      }
+    }
+  }
+  return [...new Set(textures)];
+}
+
+// Decode SPR frame `index` (default 0) → { width, height, rgba }; palette index
+// 0 = transparent. Just enough to pull the cursor frames (ported from spr.mjs).
+function decodeSprFrame(bytes, index = 0) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let p = 0;
+  const u8 = () => bytes[p++];
+  const u16 = () => { const v = dv.getUint16(p, true); p += 2; return v; };
+
+  if (bytes[0] !== 0x53 || bytes[1] !== 0x50) throw new Error("SPR: bad header"); // "SP"
+  p = 2;
+  const minor = u8();
+  const major = u8();
+  const version = major + minor / 10;
+
+  const indexedCount = u16();
+  if (version > 1.1) u16(); // rgba frame count (unused — palette frames only)
+  if (index >= indexedCount) throw new Error("SPR: frame index out of range (palette frames only)");
+
+  const palStart = bytes.length - 1024; // palette is the last 1024 bytes
+
+  let frame = null;
+  for (let i = 0; i <= index; i++) {
+    const width = u16();
+    const height = u16();
+    const size = width * height;
+    const data = new Uint8Array(size);
+    if (version < 2.1) {
+      for (let k = 0; k < size; k++) data[k] = bytes[p++];
+    } else {
+      const end = u16() + p; // RLE: a run of zeros is 0x00 then a count
+      let idx = 0;
+      while (p < end) {
+        const c = bytes[p++];
+        data[idx++] = c;
+        if (!c) {
+          const count = bytes[p++];
+          if (!count) data[idx++] = 0;
+          else for (let j = 1; j < count; j++) data[idx++] = c;
+        }
+      }
+    }
+    if (i === index) frame = { width, height, data };
+  }
+
+  const { width, height, data } = frame;
+  const rgba = new Uint8Array(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    const pi = data[i] * 4;
+    rgba[i * 4] = bytes[palStart + pi];
+    rgba[i * 4 + 1] = bytes[palStart + pi + 1];
+    rgba[i * 4 + 2] = bytes[palStart + pi + 2];
+    rgba[i * 4 + 3] = data[i] === 0 ? 0 : 255; // index 0 = transparent
+  }
+  return { width, height, rgba };
+}
+
+// ACT → per-action playback sequence: out[action] is the layer-0 SPR frame index
+// of each of that action's animations, in order (ported from act.mjs).
+function actActionSequences(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let p = 0;
+  const u8 = () => bytes[p++];
+  const u16 = () => { const v = dv.getUint16(p, true); p += 2; return v; };
+  const u32 = () => { const v = dv.getUint32(p, true); p += 4; return v; };
+  const i32 = () => { const v = dv.getInt32(p, true); p += 4; return v; };
+  const f32 = () => { const v = dv.getFloat32(p, true); p += 4; return v; };
+  const seek = (n) => { p += n; };
+
+  if (bytes[0] !== 0x41 || bytes[1] !== 0x43) throw new Error("ACT: bad header");
+  p = 2;
+  const minor = u8();
+  const major = u8();
+  const version = major + minor / 10;
+
+  const actionCount = u16();
+  seek(10);
+  const out = [];
+
+  for (let a = 0; a < actionCount; a++) {
+    const animCount = u32();
+    const seq = [];
+    for (let an = 0; an < animCount; an++) {
+      seek(32);
+      const layerCount = u32();
+      let first = -1;
+      for (let l = 0; l < layerCount; l++) {
+        seek(8);
+        const index = i32();
+        i32();
+        if (version >= 2.0) {
+          seek(4); f32();
+          if (version > 2.3) f32();
+          i32(); i32();
+          if (version >= 2.5) { i32(); i32(); }
+        }
+        if (l === 0) first = index;
+      }
+      if (version >= 2.0) i32();
+      if (version >= 2.3) { const c = i32(); for (let i = 0; i < c; i++) seek(12); }
+      seq.push(first);
+    }
+    out.push(seq);
+  }
+  return out;
+}
+
+// Content-addressed blob store: writes each distinct byte payload once under
+// <outBase>/<subdir>/<hash>.<ext> and returns its store-relative path. Identical
+// blobs (the same texture/model/water frame referenced by many maps) collapse to
+// one file. The returned path is later prefixed with "../" in the manifest.
+function makeBlobStore(outBase) {
+  const seen = new Set();
+  return function put(subdir, ext, bytes) {
+    const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+    const rel = `${subdir}/${hash}.${ext}`;
+    if (!seen.has(rel)) {
+      const dir = join(outBase, subdir);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `${hash}.${ext}`), bytes);
+      seen.add(rel);
+    }
+    return rel;
+  };
+}
+
+// findBestEntry scans all ~260k GRF entries per call, which is far too slow for
+// the ~100 lookups each of 900+ maps needs. Build the resolution once: a
+// normalized-name → best-entry map (largest uncompressed copy wins, matching
+// findBestEntry's tie-break) so per-map lookups are O(1). Map resources are
+// always full `data/...` paths, so exact-name keying reproduces findBestEntry's
+// result for them (its endsWith leniency only matters for partial paths we never
+// pass here).
+function buildEntryIndex(grf) {
+  const idx = new Map();
+  for (const f of grf.files) {
+    if (!(f.flags & 0x01)) continue;
+    const name = normalize(f.filename);
+    const prev = idx.get(name);
+    if (!prev || f.uncompSize > prev.uncompSize) idx.set(name, f);
+  }
+  return idx;
+}
+
+// Every map name in the GRF (the basename of each data/<name>.rsw), lowercased.
+function listMapNames(grf) {
+  const names = new Set();
+  for (const f of grf.files) {
+    if (!(f.flags & 0x01)) continue;
+    const m = /^data\/([a-z0-9_@-]+)\.rsw$/.exec(normalize(f.filename));
+    if (m) names.add(m[1]);
+  }
+  return [...names].sort();
+}
+
+// The mouse cursor + hovered-cell selector are identical for every map, so we
+// extract them once into the shared _u store and reuse the manifest fragment.
+function extractMapUi(grf, index, store) {
+  const ui = {};
+  const gridEntry = index.get("data/texture/grid.tga");
+  if (gridEntry) {
+    const png = effectTextureToPng(extractFile(grf, gridEntry), "grid.tga");
+    if (png) ui.grid = "../" + store("_u", "png", png);
+  }
+
+  const cursorSpr = index.get("data/sprite/cursors.spr");
+  const cursorAct = index.get("data/sprite/cursors.act");
+  if (cursorSpr && cursorAct) {
+    const spr = extractFile(grf, cursorSpr);
+    const DEFAULT_ACTION = 0; // animated default arrow
+    const ROTATE_ACTION = 4; // two-curvy-arrows rotate cursor
+    const CURSOR_FPS = 12;
+    let seqs = [];
+    try {
+      seqs = actActionSequences(extractFile(grf, cursorAct));
+    } catch (err) {
+      console.warn(`  ! cursors.act parse failed: ${err.message}`);
+    }
+    // Emit the distinct frames of an action's sequence + a seq[] indexing them.
+    const buildCursor = (actionSeq) => {
+      const order = [];
+      const seen = new Map();
+      for (const idx of actionSeq) {
+        if (idx < 0) continue;
+        if (!seen.has(idx)) { seen.set(idx, order.length); order.push(idx); }
+      }
+      if (!order.length) return null;
+      const frames = [];
+      let w = 0, h = 0;
+      order.forEach((idx, i) => {
+        const fr = decodeSprFrame(spr, idx);
+        if (i === 0) { w = fr.width; h = fr.height; }
+        frames.push("../" + store("_u", "png", encodePng(fr.width, fr.height, Buffer.from(fr.rgba))));
+      });
+      const seq = actionSeq.filter((i) => i >= 0).map((i) => seen.get(i));
+      return { frames, seq, w, h };
+    };
+    try {
+      const def = buildCursor(seqs[DEFAULT_ACTION] ?? [0]);
+      if (def) ui.cursor = { frames: def.frames, seq: def.seq, hotspot: [1, 1], fps: CURSOR_FPS, fallback: "default" }; // arrow tip ≈ top-left
+      const rot = buildCursor(seqs[ROTATE_ACTION] ?? [10]);
+      if (rot) ui.cursorRotate = { frames: rot.frames, seq: rot.seq, hotspot: [Math.round(rot.w / 2), Math.round(rot.h / 2)], fps: CURSOR_FPS, fallback: "grabbing" }; // pivots about centre
+    } catch (err) {
+      console.warn(`  ! cursor extraction failed: ${err.message}`);
+    }
+  }
+  return ui;
+}
+
+// Extract one map into <outBase>/<map>/ (raw geometry + manifest) plus its
+// model/texture/water blobs into the shared store. Returns a stats object, or
+// { skipped } when a required geometry file is missing.
+function extractOneMap(grf, index, map, outBase, store, ui) {
+  const rawFiles = {};
+  for (const ext of ["gat", "gnd", "rsw"]) {
+    const entry = index.get(`data/${map}.${ext}`);
+    if (!entry) return { skipped: `no .${ext}` };
+    rawFiles[ext] = extractFile(grf, entry);
+  }
+
+  const mapDir = join(outBase, map);
+  mkdirSync(mapDir, { recursive: true });
+  for (const ext of ["gat", "gnd", "rsw"]) writeFileSync(join(mapDir, `${map}.${ext}`), rawFiles[ext]);
+
+  const { models: modelNames, waterType } = parseRsw(rawFiles.rsw);
+  const modelMap = {}; // normName -> ../_m/<hash>.rsm
+  const textureNames = new Set();
+  for (const name of parseGndTextures(rawFiles.gnd)) textureNames.add(normName(name));
+
+  let modelMissing = 0;
+  for (const name of modelNames) {
+    const key = normName(name);
+    if (modelMap[key]) continue;
+    const entry = index.get(`data/model/${key}`);
+    if (!entry) { modelMissing++; continue; }
+    const bytes = extractFile(grf, entry);
+    modelMap[key] = "../" + store("_m", "rsm", bytes);
+    try {
+      for (const tex of parseRsmTextures(bytes)) textureNames.add(normName(tex));
+    } catch (err) {
+      console.warn(`  ! ${map}: RSM texture parse failed for ${key}: ${err.message}`);
+    }
+  }
+
+  const textureMap = {}; // normName -> ../_t/<hash>.png
+  let texMissing = 0;
+  let texFailed = 0;
+  for (const key of textureNames) {
+    if (!key) continue;
+    const entry = index.get(`data/texture/${key}`);
+    if (!entry) { texMissing++; continue; }
+    const png = effectTextureToPng(extractFile(grf, entry), key);
+    if (!png) { texFailed++; continue; }
+    textureMap[key] = "../" + store("_t", "png", png);
+  }
+
+  // Animated water: the 32 JPG frames for this map's water type, served as-is.
+  const waterFrames = [];
+  for (let n = 0; n < 32; n++) {
+    const nn = String(n).padStart(2, "0");
+    const entry = index.get(`data/texture/워터/water${waterType}${nn}.jpg`);
+    if (!entry) continue;
+    waterFrames.push("../" + store("_w", "jpg", extractFile(grf, entry)));
+  }
+
+  const manifest = {
+    map,
+    files: { gat: `${map}.gat`, gnd: `${map}.gnd`, rsw: `${map}.rsw` },
+    models: modelMap,
+    textures: textureMap,
+    water: { type: waterType, frames: waterFrames },
+    ui,
+  };
+  writeFileSync(join(mapDir, "manifest.json"), JSON.stringify(manifest));
+
+  return {
+    models: Object.keys(modelMap).length,
+    modelTotal: modelNames.length,
+    modelMissing,
+    textures: Object.keys(textureMap).length,
+    textureTotal: textureNames.size,
+    texMissing,
+    texFailed,
+    waterType,
+    waterFrames: waterFrames.length,
+  };
+}
+
+function extractMaps(grfPath, outBase, args) {
+  const grf = openGrf(grfPath);
+  try {
+    const root = resolve(outBase);
+    const single = args.map ? args.map.toLowerCase() : null;
+
+    // A full run rebuilds the whole tree (and its shared stores) deterministically;
+    // a single --map run leaves the existing tree in place and just refreshes that
+    // map plus any new shared blobs.
+    if (!single) rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+
+    const store = makeBlobStore(root);
+
+    console.error("Indexing GRF entries…");
+    const index = buildEntryIndex(grf);
+
+    console.error("Extracting shared cursor/grid UI…");
+    const ui = extractMapUi(grf, index, store);
+
+    const names = single ? [single] : listMapNames(grf);
+    console.error(`Extracting ${names.length} map${names.length === 1 ? "" : "s"} → ${root}`);
+
+    const extracted = [];
+    let skipped = 0;
+    for (const map of names) {
+      try {
+        const r = extractOneMap(grf, index, map, root, store, ui);
+        if (r.skipped) { skipped++; console.warn(`  - skip ${map} (${r.skipped})`); continue; }
+        extracted.push(map);
+        if (single || extracted.length % 25 === 0) {
+          console.error(
+            `  ✓ ${map}: ${r.models}/${r.modelTotal} models, ${r.textures}/${r.textureTotal} textures, ` +
+              `water ${r.waterType} (${r.waterFrames}/32)` +
+              (extracted.length % 25 === 0 && !single ? `  [${extracted.length}/${names.length}]` : ""),
+          );
+        }
+      } catch (err) {
+        skipped++;
+        console.warn(`  ! ${map}: ${err.message}`);
+      }
+    }
+
+    // index.json lists every map. For a single --map run, merge into the existing
+    // index rather than clobbering the full catalogue.
+    let allMaps = extracted;
+    if (single) {
+      try {
+        const prev = JSON.parse(readFileSync(join(root, "index.json"), "utf8"));
+        allMaps = [...new Set([...(prev.maps || []), ...extracted])];
+      } catch {
+        // no prior index — start fresh
+      }
+    }
+    allMaps.sort();
+    writeFileSync(join(root, "index.json"), JSON.stringify({ maps: allMaps }));
+
+    console.error(
+      `\nMaps → ${root}\n` +
+        `  extracted: ${extracted.length}\n` +
+        `  skipped:   ${skipped}\n` +
+        `  index.json: ${allMaps.length} maps`,
+    );
   } finally {
     closeGrf(grf);
   }

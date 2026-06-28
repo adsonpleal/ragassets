@@ -43,6 +43,7 @@ type config struct {
 	resourceDir string // extracted GRF assets (contains data/)
 	iconsDir    string
 	effectsDir  string
+	mapsDir     string
 	port        string
 }
 
@@ -51,6 +52,7 @@ func loadConfig() config {
 		resourceDir: env("RESOURCE_DIR", "/resources"),
 		iconsDir:    env("ICONS_DIR", "/icons"),
 		effectsDir:  env("EFFECTS_DIR", "/effects"),
+		mapsDir:     env("MAPS_DIR", "/maps"),
 		port:        env("GATEWAY_PORT", "8080"),
 	}
 }
@@ -96,11 +98,18 @@ func main() {
 		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png} and /effects/index.json", cfg.effectsDir)
 	}
 
+	if fi, err := os.Stat(cfg.mapsDir); err != nil || !fi.IsDir() {
+		log.Printf("maps: %s not found — /maps/* will return 404 (run extract-grf.mjs --maps)", cfg.mapsDir)
+	} else {
+		log.Printf("maps: serving %s at /maps/{map}/{manifest.json,<map>.gat|gnd|rsw}, shared /maps/_{t,m,w,u}/<hash>.* and /maps/index.json", cfg.mapsDir)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/image", s.handleImage)
 	mux.HandleFunc("/gif", s.handleGif)
 	mux.HandleFunc("/icons/", s.handleIcon)
 	mux.HandleFunc("/effects/", s.handleEffect)
+	mux.HandleFunc("/maps/", s.handleMap)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		io.WriteString(w, "ok")
@@ -130,7 +139,9 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"     /gif?job=1002&action=0     (same, as an animated GIF)\n"+
 		"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n"+
 		"     /effects/index.json        (effect-only costume catalogue)\n"+
-		"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n\n"+
+		"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n"+
+		"     /maps/index.json           (world-map catalogue for the map simulator)\n"+
+		"     /maps/prontera/manifest.json  (one map's geometry + shared asset manifest)\n\n"+
 		"See the README for every supported parameter.\n")
 }
 
@@ -374,6 +385,103 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), contentType)
+}
+
+// ---------------------------------------------------------------------------
+// /maps handler — world-map bundles for the latamvisuais 3D map simulator,
+// produced by extract-grf.mjs --maps. Each map dir holds its raw geometry plus a
+// manifest.json that resolves resource names to shared, content-addressed blobs:
+//
+//   /maps/index.json             { maps: [...] } — every extracted map name
+//   /maps/{map}/manifest.json    resolves model/texture/water/UI names → blob paths
+//   /maps/{map}/{map}.gat|gnd|rsw  raw geometry (browser-parsed)
+//   /maps/_t/{hash}.png          a shared texture        (referenced as ../_t/...)
+//   /maps/_m/{hash}.rsm          a shared model
+//   /maps/_w/{hash}.jpg          a shared water frame
+//   /maps/_u/{hash}.png          a shared UI image (grid / cursor frame)
+//
+// The strict per-segment patterns (lowercase map slug; 16-hex blob hashes; a
+// fixed geometry/file whitelist) make path traversal structurally impossible.
+// ---------------------------------------------------------------------------
+
+var mapNamePattern = regexp.MustCompile(`^[a-z0-9_@-]+$`)
+var mapBlobPattern = regexp.MustCompile(`^[0-9a-f]{16}\.(png|rsm|jpg)$`)
+
+// blobDirExt is the extension each shared store is allowed to serve, so e.g.
+// /maps/_t/<hash>.rsm (wrong store) is a 404 rather than a content-type mismatch.
+var blobDirExt = map[string]string{"_t": "png", "_m": "rsm", "_w": "jpg", "_u": "png"}
+
+func (s *server) handleMap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rest := strings.TrimPrefix(r.URL.Path, "/maps/")
+	rel, ok := resolveMapPath(rest)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	f, err := os.Open(filepath.Join(s.cfg.mapsDir, rel))
+	if err != nil {
+		http.NotFound(w, r) // unknown map/blob, or maps not extracted yet
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+
+	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), mapContentType(rel))
+}
+
+// resolveMapPath validates the path under /maps/ and returns the (slash-cleaned)
+// file path relative to the maps dir. It accepts exactly: index.json, a shared
+// blob (_t/_m/_w/_u + 16-hex hash with the store's extension), and a per-map
+// manifest.json or <map>.gat|gnd|rsw. Anything else is rejected.
+func resolveMapPath(rest string) (string, bool) {
+	if rest == "index.json" {
+		return "index.json", true
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 {
+		return "", false
+	}
+	dir, file := parts[0], parts[1]
+
+	if ext, ok := blobDirExt[dir]; ok { // shared content-addressed blob
+		if !mapBlobPattern.MatchString(file) || !strings.HasSuffix(file, "."+ext) {
+			return "", false
+		}
+		return dir + "/" + file, true
+	}
+
+	if !mapNamePattern.MatchString(dir) { // per-map directory
+		return "", false
+	}
+	if file == "manifest.json" ||
+		file == dir+".gat" || file == dir+".gnd" || file == dir+".rsw" {
+		return dir + "/" + file, true
+	}
+	return "", false
+}
+
+func mapContentType(rel string) string {
+	switch {
+	case strings.HasSuffix(rel, ".json"):
+		return "application/json"
+	case strings.HasSuffix(rel, ".png"):
+		return "image/png"
+	case strings.HasSuffix(rel, ".jpg"):
+		return "image/jpeg"
+	default: // .gat/.gnd/.rsw geometry, .rsm models — opaque binaries
+		return "application/octet-stream"
+	}
 }
 
 // ---------------------------------------------------------------------------

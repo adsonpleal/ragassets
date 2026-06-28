@@ -292,6 +292,43 @@ Responses carry the same immutable cache headers, `ETag`/`304` and wildcard CORS
 extraction step prints a resolved/unresolved/excluded report and a manual override
 table covers the rest (see below).
 
+### `GET /maps/...` — world maps
+
+The full 3D world maps (ground mesh, models, textures, animated water) for the
+[latamvisuais](https://github.com/adsonpleal/latamvisuais) map simulator to render
+client-side. `extract-grf.mjs --maps` pulls every map's `.gat`/`.gnd`/`.rsw`
+geometry plus the `.rsm` models and BMP/TGA textures they reference (see
+[GRF extraction](#resources--grf-extraction-required)). The geometry binaries are
+served raw (parsed in the browser); models, textures, water frames and the shared
+cursor/grid UI are **de-duplicated** across all maps (922 in the current client)
+into content-addressed stores, so each blob is stored and served exactly once —
+keeping the whole set to ~5.8 GB instead of the ~10–15 GB a per-map copy would
+cost. These endpoints return `404` until you run the `--maps` step.
+
+| Path | What you get |
+|---|---|
+| `GET /maps/index.json` | Catalogue: `{"maps":[…]}` — every extracted map name. |
+| `GET /maps/{map}/manifest.json` | The map's asset manifest: `files` (geometry), `models`, `textures`, `water`, `ui` — resource names mapped to shared blob paths (`../_t/<hash>.png`, …). |
+| `GET /maps/{map}/{map}.gat\|gnd\|rsw` | Raw geometry binaries (altitude, ground mesh, world objects). |
+| `GET /maps/_t/{hash}.png` | A shared texture (TGA alpha kept; BMP magenta-keyed → alpha, fringe-bled). |
+| `GET /maps/_m/{hash}.rsm` | A shared model (raw `.rsm`). |
+| `GET /maps/_w/{hash}.jpg` | A shared animated-water frame. |
+| `GET /maps/_u/{hash}.png` | A shared UI image (hover-cell grid selector / cursor frame). |
+
+```
+/maps/index.json
+/maps/prontera/manifest.json
+/maps/prontera/prontera.gnd
+/maps/_t/a6abef1ba59fbf23.png
+```
+
+The manifest references blobs with a leading `../` so the browser fetches them as
+`baseUrl + path` and the URL parser folds the `..` to resolve against the shared
+store. Map names are lowercase slugs (`[a-z0-9_@-]`); blob hashes are 16 hex chars
+— the strict per-segment patterns make path traversal structurally impossible.
+Responses carry the same immutable cache headers, `ETag`/`304` and wildcard CORS as
+`/icons` and `/effects`.
+
 ### `GET /healthz`
 
 Liveness check — returns `200 ok`.
@@ -323,6 +360,7 @@ gateway/cmd/gen-resolver/ # offline tool: bakes id→sprite-name tables from the
 resources/                # YOUR extracted GRF assets (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*
 resources/effects/        # effect-only costume bundles (extract-grf.mjs --effects), served at /effects/*
+resources/maps/           # world-map bundles (extract-grf.mjs --maps), served at /maps/*
 extract-grf.mjs           # helper to extract a GRF into resources/
 ```
 
@@ -383,6 +421,26 @@ costumes are excluded (no visual), and a handful of Korean-named or EXE/shared-b
 effects (the level auras, magic circles, …) whose `.str` path isn't derivable from
 the resource name stay unresolved — those are filled in by hand via the
 `STR_OVERRIDE` table near the top of the effects section in `extract-grf.mjs`.
+
+To serve the world maps (`/maps/*`), run the map extraction step:
+
+```bash
+node extract-grf.mjs --maps resources/maps --grf path/to/data.grf
+# or just one map:
+node extract-grf.mjs --maps resources/maps --grf path/to/data.grf --map prontera
+```
+
+This enumerates every `data/<name>.rsw` in the GRF and, for each map, writes the
+raw `.gat`/`.gnd`/`.rsw` geometry and a `manifest.json` under
+`resources/maps/<name>/`, while the `.rsm` models, BMP/TGA textures (converted to
+transparent PNG), animated-water JPGs and the shared cursor/grid UI are
+de-duplicated by content hash into the shared stores `resources/maps/{_m,_t,_w,_u}/`
+— so identical assets shared between maps are written once. A catalogue
+`resources/maps/index.json` lists every map. Maps missing a required geometry file
+are skipped (reported at the end — in the current client 17 of 939 `.rsw` entries
+are ground-mesh-less server/template maps, leaving 922 extracted). A full run with no `--map` rebuilds the whole
+tree from scratch; `--map <name>` refreshes just that map and merges it into the
+existing `index.json`.
 
 Other modes:
 

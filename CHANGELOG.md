@@ -3,6 +3,28 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-06-28
+
+### Added
+- **Every world map is now extracted and served at `/maps/*`.** A new
+  `extract-grf.mjs --maps` mode enumerates all `data/<name>.rsw` maps in the client
+  GRF and, per map, emits the raw `.gat`/`.gnd`/`.rsw` geometry (parsed client-side)
+  plus a `manifest.json`; the `.rsm` models, BMP/TGA textures (converted to
+  transparent PNG with the same magenta-key + fringe-bleed as `/effects`),
+  animated-water JPGs and the shared cursor/grid UI are **de-duplicated by content
+  hash** into shared stores (`_m`/`_t`/`_w`/`_u`), so assets reused across maps are
+  written and served exactly once. The gateway serves `/maps/index.json` (the
+  catalogue), `/maps/{map}/manifest.json`, `/maps/{map}/{map}.gat|gnd|rsw` and the
+  shared `/maps/_{t,m,w,u}/<hash>.*` blobs with the same immutable cache/`ETag`/CORS
+  headers as `/icons` and `/effects` — replacing the per-app map bundle the
+  [latamvisuais](https://github.com/adsonpleal/latamvisuais) simulator previously
+  shipped, which now fetches maps remotely. A GRF-entry index makes the ~100 resource
+  lookups per map O(1), keeping a full run to minutes. The current client yields
+  **922 maps** (17 of the 939 `.rsw` entries are ground-mesh-less server/template
+  maps and are skipped); the content-addressed stores hold 9.8k textures, 7.3k models
+  and 313 water frames in **5.8 GB total** — vs. ~10–15 GB had each map's assets been
+  copied per directory (water alone: 313 shared frames instead of ~30k duplicates).
+
 ## 2026-06-25
 
 ### Changed
