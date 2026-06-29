@@ -308,7 +308,7 @@ cost. These endpoints return `404` until you run the `--maps` step.
 | Path | What you get |
 |---|---|
 | `GET /maps/index.json` | Catalogue: `{"maps":[…]}` — every extracted map name. |
-| `GET /maps/{map}/manifest.json` | The map's asset manifest: `files` (geometry), `models`, `textures`, `water`, `ui` — resource names mapped to shared blob paths (`../_t/<hash>.png`, …). |
+| `GET /maps/{map}/manifest.json` | The map's asset manifest: `files` (geometry), `models`, `textures`, `water`, `ui` — resource names mapped to shared blob paths (`../_t/<hash>.png`, …) — plus `fog` (`{near,far,color:[r,g,b],factor}`, present only for maps listed in `data/fogparametertable.txt`). |
 | `GET /maps/{map}/{map}.gat\|gnd\|rsw` | Raw geometry binaries (altitude, ground mesh, world objects). |
 | `GET /maps/_t/{hash}.png` | A shared texture (TGA alpha kept; BMP magenta-keyed → alpha, fringe-bled). |
 | `GET /maps/_m/{hash}.rsm` | A shared model (raw `.rsm`). |

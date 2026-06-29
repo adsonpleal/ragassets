@@ -6,6 +6,16 @@ continuously (no version tags), so entries are grouped by date.
 ## 2026-06-28
 
 ### Added
+- **Per-map fog is now folded into each map's `manifest.json`.** During `--maps`
+  extraction we parse `data/fogparametertable.txt` and add a `fog` block —
+  `{"near","far","color":[r,g,b],"factor"}` — to every map that has a fog row
+  (omitted otherwise), the same way the shared `ui` block is added. Fog isn't in
+  the `.rsw`; it lives only in this table. `near`/`far`/`factor` are the table's raw
+  floats (the client multiplies `near`/`far` by 240 itself); the colour is the
+  packed `0xAARRGGBB` value with the alpha byte dropped and each RGB byte ÷ 255.
+  The official table puts each record's five `#`-terminated fields on separate
+  lines, so the parser tokenizes on `#` across newlines. The current client yields
+  **fog for ~288 maps**.
 - **Every map's background music is now extracted and served at `/bgm/*`.** A new
   `extract-grf.mjs --bgm` mode reads `data/mp3nametable.txt` from the GRF (the
   client's `<map>.rsw → bgm\<file>.mp3` table) and copies the referenced `.mp3`

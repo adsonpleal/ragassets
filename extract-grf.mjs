@@ -67,6 +67,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve, join, dirname } from "node:path";
+import { pathToFileURL } from "node:url";
 import { deflateSync, inflateSync } from "node:zlib";
 import { createHash } from "node:crypto";
 
@@ -2246,7 +2247,7 @@ function extractMapUi(grf, index, store) {
 // Extract one map into <outBase>/<map>/ (raw geometry + manifest) plus its
 // model/texture/water blobs into the shared store. Returns a stats object, or
 // { skipped } when a required geometry file is missing.
-function extractOneMap(grf, index, map, outBase, store, ui) {
+function extractOneMap(grf, index, map, outBase, store, ui, fogTable) {
   const rawFiles = {};
   for (const ext of ["gat", "gnd", "rsw"]) {
     const entry = index.get(`data/${map}.${ext}`);
@@ -2307,6 +2308,10 @@ function extractOneMap(grf, index, map, outBase, store, ui) {
     water: { type: waterType, frames: waterFrames },
     ui,
   };
+  // Per-map fog (from data/fogparametertable.txt) — only present for maps with a
+  // fog row; omitted otherwise. The .rsw carries no fog data of its own.
+  const fog = fogTable && fogTable.get(map);
+  if (fog) manifest.fog = fog;
   writeFileSync(join(mapDir, "manifest.json"), JSON.stringify(manifest));
 
   return {
@@ -2319,7 +2324,55 @@ function extractOneMap(grf, index, map, outBase, store, ui) {
     texFailed,
     waterType,
     waterFrames: waterFrames.length,
+    fog: !!fog,
   };
+}
+
+// Parse a fog colour token → [r, g, b] in 0..1, or null if unparseable. The
+// official table stores it as a packed "0xAARRGGBB" D3DCOLOR (leading alpha byte
+// then big-endian RGB); we drop the alpha and keep the low three bytes (R = high
+// byte) ÷ 255. A bare 6-digit "RRGGBB" (no 0x) is accepted too.
+function parseFogColor(tok) {
+  let h = tok.trim().replace(/^0x/i, "");
+  if (!/^[0-9a-f]+$/i.test(h)) return null;
+  if (h.length === 8) h = h.slice(2); // drop the leading alpha byte of AARRGGBB
+  if (h.length !== 6) return null;
+  const v = parseInt(h, 16);
+  return [((v >> 16) & 0xff) / 255, ((v >> 8) & 0xff) / 255, (v & 0xff) / 255];
+}
+
+// Parse data/fogparametertable.txt → Map(mapName → fog block). Each record is the
+// five "#"-terminated fields  <mapname># <near># <far># <colorHex># <factor>#  —
+// the official client puts each field on its own line, so we tokenize on "#"
+// across newlines (which also handles a single-line-per-map layout). Comments
+// start with "//". The map key may carry a .rsw/.gat/.gnd suffix — stripped and
+// lowercased to match the manifest key. near/far/factor are raw floats (the
+// client multiplies near/far by 240 itself); colorHex → three 0..1 RGB floats.
+// The table is ASCII in its data fields (EUC-KR only in comments), so latin1
+// decoding is safe for the rows.
+export function parseFogTable(bytes) {
+  const tokens = Buffer.from(bytes)
+    .toString("latin1")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\/\/.*$/, "")) // strip whole-line and trailing comments
+    .join("\n")
+    .split("#")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+
+  const fog = new Map();
+  // Records are exactly five fields; grouping positionally stays aligned even if
+  // an individual record is malformed (we just skip that group).
+  for (let i = 0; i + 4 < tokens.length; i += 5) {
+    const name = tokens[i].replace(/\.(rsw|gat|gnd)$/i, "").toLowerCase();
+    const near = parseFloat(tokens[i + 1]);
+    const far = parseFloat(tokens[i + 2]);
+    const color = parseFogColor(tokens[i + 3]);
+    const factor = parseFloat(tokens[i + 4]);
+    if (!name || !color || !Number.isFinite(near) || !Number.isFinite(far) || !Number.isFinite(factor)) continue;
+    fog.set(name, { near, far, color, factor });
+  }
+  return fog;
 }
 
 function extractMaps(grfPath, outBase, args) {
@@ -2342,16 +2395,24 @@ function extractMaps(grfPath, outBase, args) {
     console.error("Extracting shared cursor/grid UI…");
     const ui = extractMapUi(grf, index, store);
 
+    // Per-map fog table (folded into each manifest like the ui block).
+    const fogEntry = index.get("data/fogparametertable.txt");
+    const fogTable = fogEntry ? parseFogTable(extractFile(grf, fogEntry)) : new Map();
+    if (fogEntry) console.error(`fogparametertable.txt: ${fogTable.size} map fog entries`);
+    else console.warn("  ! data/fogparametertable.txt not found in GRF — manifests will omit fog");
+
     const names = single ? [single] : listMapNames(grf);
     console.error(`Extracting ${names.length} map${names.length === 1 ? "" : "s"} → ${root}`);
 
     const extracted = [];
     let skipped = 0;
+    let foggy = 0;
     for (const map of names) {
       try {
-        const r = extractOneMap(grf, index, map, root, store, ui);
+        const r = extractOneMap(grf, index, map, root, store, ui, fogTable);
         if (r.skipped) { skipped++; console.warn(`  - skip ${map} (${r.skipped})`); continue; }
         extracted.push(map);
+        if (r.fog) foggy++;
         if (single || extracted.length % 25 === 0) {
           console.error(
             `  ✓ ${map}: ${r.models}/${r.modelTotal} models, ${r.textures}/${r.textureTotal} textures, ` +
@@ -2383,6 +2444,7 @@ function extractMaps(grfPath, outBase, args) {
       `\nMaps → ${root}\n` +
         `  extracted: ${extracted.length}\n` +
         `  skipped:   ${skipped}\n` +
+        `  with fog:  ${foggy}\n` +
         `  index.json: ${allMaps.length} maps`,
     );
   } finally {
@@ -2474,4 +2536,5 @@ function extractBgm(grfPath, outBase, args) {
   }
 }
 
-main();
+// Run the CLI only when executed directly (not when imported by a test).
+if (import.meta.url === pathToFileURL(process.argv[1]).href) main();
