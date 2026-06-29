@@ -1859,6 +1859,31 @@ function extractEffects(grfPath, outBase, args) {
       }
     }
 
+    // Sprite-based map effects (EF_TORCH/EF_SMOKE/EF_BANJJAKII): each id's asset is
+    // a played .spr/.act, not a .str, so render one bundle per SPRITE_EFFECT_TABLE
+    // key into sprites/<key>/ — the map manifests' effects[].sprite refs resolve
+    // here. Deduped by key (only a few bundles), independent of which maps extract.
+    const spritesRoot = join(root, "sprites");
+    let spritesBuilt = 0;
+    const spriteFailed = [];
+    const seenSpriteKeys = new Set();
+    for (const def of Object.values(SPRITE_EFFECT_TABLE)) {
+      if (seenSpriteKeys.has(def.key)) continue;
+      seenSpriteKeys.add(def.key);
+      const outDir = join(spritesRoot, def.key);
+      rmSync(outDir, { recursive: true, force: true });
+      mkdirSync(outDir, { recursive: true });
+      try {
+        const info = buildSpriteEffect(grf, def.sprite, def.key, outDir);
+        console.error(`  ✓ sprites/${def.key} (map effect) → ${info.frames} frames`);
+        spritesBuilt++;
+      } catch (err) {
+        rmSync(outDir, { recursive: true, force: true });
+        spriteFailed.push(def.key);
+        console.error(`  ! sprites/${def.key} (map effect): ${err.message}`);
+      }
+    }
+
     // Report: resolved / unresolved / excluded (the unresolved set is expected
     // manual follow-up — Korean-named and EXE/shared-bound effects).
     console.error(`\nEffects → ${root}`);
@@ -1866,6 +1891,7 @@ function extractEffects(grfPath, outBase, args) {
     console.error(`  unresolved: ${unresolved.length}`);
     console.error(`  excluded:   ${excluded.length}`);
     console.error(`  map effects: ${mapBuilt} built` + (mapMissing.length ? `, ${mapMissing.length} not in GRF` : "") + (mapFailed.length ? `, ${mapFailed.length} failed` : ""));
+    console.error(`  sprite effects: ${spritesBuilt} built` + (spriteFailed.length ? `, ${spriteFailed.length} failed: [${spriteFailed.join(", ")}]` : "") + ` → sprites/`);
     console.error(`  catalogue:  index.json (${items.length} items)`);
     if (unresolved.length) {
       console.error(`\n  Unresolved (need a manual STR_OVERRIDE entry):`);
@@ -2204,6 +2230,28 @@ export function effectStrRefs(id) {
 }
 
 // ---------------------------------------------------------------------------
+// RSW in-world effects (sprite) — a second family of .rsw type-4 ids whose asset
+// is a *played sprite* (.spr/.act), not a .str: roBrowser's EffectTable types
+// '3D' (a billboarded sprite played frame-by-frame) and 'SPR'. Ported from
+// src/DB/Effects/EffectTable.js. Each entry's `sprite` is the GRF sprite path
+// (the 이팩트 = "effect" sprite folder, an EUC-KR name), and `key` is the URL-safe
+// slug the bundle is served under (/effects/sprites/<key>/) and the value the map
+// manifest carries in effects[].sprite. The --effects step renders every entry's
+// frames once (see buildSpriteEffect) so any map's sprite refs resolve.
+const SPRITE_EFFECT_TABLE = {
+  44: { key: "smoke", sprite: "data/sprite/이팩트/굴뚝연기" }, //   EF_SMOKE — chimney smoke (3D)
+  47: { key: "torch_01", sprite: "data/sprite/이팩트/torch_01" }, // EF_TORCH — looping flame (3D)
+  165: { key: "banjjakii", sprite: "data/sprite/이팩트/크리스마스" }, // EF_BANJJAKII — Comodo fireworks ball (SPR)
+};
+
+// .rsw type-4 ids the client renders procedurally from no shippable asset, but
+// that still need a placement baked (just id + pos) so the client can spawn them
+// in-world. 45 EF_FIREFLY (type FUNC) — faint drifting motes the client generates
+// itself. Distinct from the EXE-bound hardcoded ids (torch_red/pillar/…), which
+// have neither a data asset nor a roBrowser implementation, so stay unbaked.
+const FUNC_EFFECT_IDS = new Set([45]);
+
+// ---------------------------------------------------------------------------
 // Map extraction — world maps (.gat/.gnd/.rsw + referenced .rsm models and
 // BMP/TGA textures) for the latamvisuais 3D map simulator (src/sim).
 //
@@ -2514,6 +2562,173 @@ function actActionSequences(bytes) {
     out.push(seq);
   }
   return out;
+}
+
+// Decode every frame of a .spr into { width, height, rgba } in roBrowser frame
+// order — the palette-indexed frames first (palette index 0 = transparent), then
+// the RGBA (truecolor) frames. RGBA frames are stored ABGR and are swizzled to
+// RGBA here. Used to render the sprite-based map effects (EF_TORCH/EF_SMOKE/
+// EF_BANJJAKII), whose frames are all truecolor; decodeSprFrame above pulls a
+// single palette frame (the cursor) and can't read these.
+export function decodeSprFrames(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let p = 0;
+  const u8 = () => bytes[p++];
+  const u16 = () => { const v = dv.getUint16(p, true); p += 2; return v; };
+  if (bytes[0] !== 0x53 || bytes[1] !== 0x50) throw new Error("SPR: bad header"); // "SP"
+  p = 2;
+  const minor = u8();
+  const major = u8();
+  const version = major + minor / 10;
+  const palCount = u16();
+  const rgbaCount = version > 1.1 ? u16() : 0;
+
+  const palStart = bytes.length - 1024; // palette is the trailing 1024 bytes
+  const frames = [];
+
+  // Palette-indexed frames (same decode as decodeSprFrame, every frame).
+  for (let f = 0; f < palCount; f++) {
+    const width = u16();
+    const height = u16();
+    const size = width * height;
+    const data = new Uint8Array(size);
+    if (version < 2.1) {
+      for (let k = 0; k < size; k++) data[k] = bytes[p++];
+    } else {
+      const end = u16() + p; // RLE: a run of zeros is 0x00 then a count
+      let idx = 0;
+      while (p < end) {
+        const c = bytes[p++];
+        data[idx++] = c;
+        if (!c) {
+          const count = bytes[p++];
+          if (!count) data[idx++] = 0;
+          else for (let j = 1; j < count; j++) data[idx++] = c;
+        }
+      }
+    }
+    const rgba = new Uint8Array(size * 4);
+    for (let i = 0; i < size; i++) {
+      const pi = data[i] * 4;
+      rgba[i * 4] = bytes[palStart + pi];
+      rgba[i * 4 + 1] = bytes[palStart + pi + 1];
+      rgba[i * 4 + 2] = bytes[palStart + pi + 2];
+      rgba[i * 4 + 3] = data[i] === 0 ? 0 : 255;
+    }
+    frames.push({ width, height, rgba });
+  }
+
+  // RGBA (truecolor) frames — raw width*height*4 bytes, stored ABGR.
+  for (let f = 0; f < rgbaCount; f++) {
+    const width = u16();
+    const height = u16();
+    const size = width * height;
+    const rgba = new Uint8Array(size * 4);
+    for (let i = 0; i < size; i++) {
+      const a = bytes[p], b = bytes[p + 1], g = bytes[p + 2], r = bytes[p + 3];
+      p += 4;
+      rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = a;
+    }
+    frames.push({ width, height, rgba });
+  }
+  return frames;
+}
+
+// Parse a .act's playback into per-action layer-0 frame-index sequences plus each
+// action's frame delay in ms (the stored float ×25). This is byte-accurate for
+// the 2.x acts the effect sprites use: the version>=2.0 layer carries a 4-byte
+// packed colour (not 4 floats) then scaleX/(scaleY)/rotation/spriteType, and the
+// version>=2.3 attach points are 16 bytes each. (actActionSequences above only
+// balances pre-2.0 layouts — fine for the cursor, wrong here.) After the actions
+// come the sound-event table (>=2.1) and then the per-action delays (>=2.2).
+export function parseActFrames(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let p = 0;
+  const u8 = () => bytes[p++];
+  const u16 = () => { const v = dv.getUint16(p, true); p += 2; return v; };
+  const i32 = () => { const v = dv.getInt32(p, true); p += 4; return v; };
+  const f32 = () => { const v = dv.getFloat32(p, true); p += 4; return v; };
+  const seek = (n) => { p += n; };
+
+  if (bytes[0] !== 0x41 || bytes[1] !== 0x43) throw new Error("ACT: bad header"); // "AC"
+  p = 2;
+  const minor = u8();
+  const major = u8();
+  const version = major + minor / 10;
+
+  const actionCount = u16();
+  seek(10);
+  const actions = [];
+  for (let a = 0; a < actionCount; a++) {
+    const motionCount = i32();
+    const seq = [];
+    for (let m = 0; m < motionCount; m++) {
+      seek(32); // range1[4] + range2[4]
+      const layerCount = i32();
+      let first = -1;
+      for (let l = 0; l < layerCount; l++) {
+        seek(8); // x, y
+        const index = i32();
+        i32(); // mirror
+        if (version >= 2.0) {
+          seek(4); // packed RGBA colour (4 bytes)
+          f32(); // scaleX
+          if (version > 2.3) f32(); // scaleY (else == scaleX)
+          i32(); // rotation angle
+          i32(); // sprite type
+          if (version >= 2.5) { i32(); i32(); } // width, height
+        }
+        if (l === 0) first = index;
+      }
+      if (version >= 2.0) i32(); // sound event id
+      if (version >= 2.3) { const c = i32(); seek(c * 16); } // attach points
+      seq.push(first);
+    }
+    actions.push(seq);
+  }
+  if (version >= 2.1) { const events = i32(); seek(events * 40); } // sound names
+  const delays = [];
+  if (version >= 2.2) for (let a = 0; a < actionCount; a++) delays.push(f32() * 25);
+  return { actions, delays };
+}
+
+// Render a sprite-based map effect into a served bundle: <outDir>/<i>.png per .spr
+// frame plus sprite.json { frames, delays }. Frames are emitted in .spr index
+// order (which equals the .act action order for these effects); each frame's
+// delay is the delay of the .act action that plays it (ms), defaulting to 100
+// when the .act is absent or carries no/zero delay.
+function buildSpriteEffect(grf, spritePath, key, outDir) {
+  const sprEntry = findBestEntry(grf, normalize(spritePath + ".spr"));
+  if (!sprEntry) throw new Error("no .spr in GRF");
+  const frames = decodeSprFrames(extractFile(grf, sprEntry));
+  if (!frames.length) throw new Error("no frames");
+
+  // Per-frame delay from the .act: an action's delay applies to every frame its
+  // layer-0 sequence shows (first writer wins for a frame shown by several).
+  const delayByFrame = new Array(frames.length).fill(0);
+  const actEntry = findBestEntry(grf, normalize(spritePath + ".act"));
+  if (actEntry) {
+    try {
+      const { actions, delays } = parseActFrames(extractFile(grf, actEntry));
+      actions.forEach((seq, ai) => {
+        const d = delays[ai];
+        for (const idx of seq) if (idx >= 0 && idx < frames.length && !delayByFrame[idx]) delayByFrame[idx] = d;
+      });
+    } catch (err) {
+      console.warn(`  ! sprites/${key}: .act parse failed: ${err.message}`);
+    }
+  }
+  const norm = (d) => (d && d > 0 ? Math.round(d) : 100);
+  const fallback = norm(delayByFrame.find((d) => d > 0));
+
+  const fileNames = [];
+  frames.forEach((f, i) => {
+    writeFileSync(join(outDir, `${i}.png`), encodePng(f.width, f.height, Buffer.from(f.rgba)));
+    fileNames.push(`${i}.png`);
+  });
+  const delays = frames.map((_, i) => (delayByFrame[i] > 0 ? norm(delayByFrame[i]) : fallback));
+  writeFileSync(join(outDir, "sprite.json"), JSON.stringify({ frames: fileNames, delays }));
+  return { frames: frames.length };
 }
 
 // Content-addressed blob store: writes each distinct byte payload once under
@@ -2851,15 +3066,17 @@ function extractOneMap(grf, index, map, outBase, store, ui, fogTable) {
   const fog = fogTable && fogTable.get(map);
   if (fog) manifest.fog = fog;
 
-  // In-world effects: one entry per placed type-4 object. Two renderable kinds:
+  // In-world effects: one entry per placed type-4 object. Four renderable kinds:
   //  - STR effects (`str` = the id's deduped set of /effects/<key>/ bundles built
   //    by --effects); positions are NOT deduped — the client proximity-culls.
+  //  - Sprite effects (`sprite` = a /effects/sprites/<key>/ bundle, also built by
+  //    --effects): EF_TORCH/EF_SMOKE/EF_BANJJAKII, played from .spr frames.
+  //  - Procedural FUNC effects (EF_FIREFLY): just id + pos + param, no asset.
   //  - Parametric emitters (EF_EMITTER/ANIMATED_EMITTER/MAGIC_FLOOR): not .str —
   //    each placement is matched by horizontal (X/Z) position to its EffectTool
   //    lub entry, whose particle spec is baked inline as `emitter` (texture
-  //    rewritten into the shared _t store). Effects that are neither (e.g. id 45
-  //    EF_FIREFLY, a FUNC, or the hardcoded classic light/torch/pillar effects)
-  //    are skipped — the client draws those procedurally with no data we can ship.
+  //    rewritten into the shared _t store). Any other id (the hardcoded classic
+  //    light/pillar effects) is skipped — the client has no data we can ship.
   const hasEmitters = rswEffects.some((e) => EMITTER_EFFECT_IDS.has(e.id));
   const emitterEntries = hasEmitters ? readMapEmitters(grf, index, map) : [];
   const emitterTexCache = new Map(); // normalized texture name -> ../_t/<hash>.png | null
@@ -2901,6 +3118,19 @@ function extractOneMap(grf, index, map, outBase, store, ui, fogTable) {
     const refs = effectStrRefs(e.id);
     if (refs.length) {
       mapEffects.push({ id: e.id, pos: e.pos, str: refs.map((r) => r.key), delay: e.delay, param: e.param });
+      continue;
+    }
+    // Sprite effects (EF_TORCH/EF_SMOKE/EF_BANJJAKII): `sprite` = the bundle key
+    // served under /effects/sprites/<key>/ (built once by --effects).
+    const sprite = SPRITE_EFFECT_TABLE[e.id];
+    if (sprite) {
+      mapEffects.push({ id: e.id, pos: e.pos, sprite: sprite.key, delay: e.delay, param: e.param });
+      continue;
+    }
+    // Procedural FUNC effects (EF_FIREFLY): no asset — the client renders them
+    // from the id + position alone.
+    if (FUNC_EFFECT_IDS.has(e.id)) {
+      mapEffects.push({ id: e.id, pos: e.pos, delay: e.delay, param: e.param });
       continue;
     }
     if (EMITTER_EFFECT_IDS.has(e.id)) {

@@ -97,7 +97,7 @@ func main() {
 	if fi, err := os.Stat(cfg.effectsDir); err != nil || !fi.IsDir() {
 		log.Printf("effects: %s not found — /effects/* will return 404 (run extract-grf.mjs --effects)", cfg.effectsDir)
 	} else {
-		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png} and /effects/index.json", cfg.effectsDir)
+		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png}, /effects/sprites/{key}/{sprite.json,N.png} and /effects/index.json", cfg.effectsDir)
 	}
 
 	if fi, err := os.Stat(cfg.mapsDir); err != nil || !fi.IsDir() {
@@ -149,6 +149,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n"+
 		"     /effects/index.json        (effect-only costume catalogue)\n"+
 		"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n"+
+		"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's frames + delays)\n"+
 		"     /maps/index.json           (world-map catalogue for the map simulator)\n"+
 		"     /maps/prontera/manifest.json  (one map's geometry + shared asset manifest)\n"+
 		"     /bgm/index.json            (per-map background-music catalogue)\n"+
@@ -350,16 +351,20 @@ func (s *server) handleIcon(w http.ResponseWriter, r *http.Request) {
 // spotlights) the sprite renderer can't draw, served as the bundles
 // extract-grf.mjs --effects produces for the latamvisuais map simulator:
 //
-//   /effects/index.json          the costume catalogue ({items:[{id,name,slots,effect}]})
-//   /effects/{key}/effect.json   the parsed .str keyframe animation
-//   /effects/{key}/tex_N.png     that effect's layer textures
+//   /effects/index.json              the costume catalogue ({items:[{id,name,slots,effect}]})
+//   /effects/{key}/effect.json       the parsed .str keyframe animation
+//   /effects/{key}/tex_N.png         that effect's layer textures
+//   /effects/sprites/{key}/sprite.json   a sprite map-effect's frame/delay play list
+//   /effects/sprites/{key}/N.png         that sprite effect's rendered frames
 //
-// `key` is a costume resource-name slug ([a-z0-9_]); the strict key + filename
-// patterns (no dots, no slashes) make path traversal structurally impossible.
+// `key` is a slug ([a-z0-9_]); the strict key + filename patterns (no dots, no
+// slashes) make path traversal structurally impossible. ("sprites" is a reserved
+// subtree, never a costume key, so the prefix check below can't shadow one.)
 // ---------------------------------------------------------------------------
 
 var effectKeyPattern = regexp.MustCompile(`^[a-z0-9_]+$`)
 var effectFilePattern = regexp.MustCompile(`^(effect\.json|tex_[0-9]+\.png)$`)
+var spriteFilePattern = regexp.MustCompile(`^(sprite\.json|[0-9]+\.png)$`)
 
 func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -369,7 +374,17 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 
 	rest := strings.TrimPrefix(r.URL.Path, "/effects/")
 	rel := rest // the catalogue, served as-is
-	if rest != "index.json" {
+	switch {
+	case rest == "index.json":
+		// served as-is
+	case strings.HasPrefix(rest, "sprites/"):
+		parts := strings.Split(rest, "/") // sprites/{key}/{file}
+		if len(parts) != 3 || !effectKeyPattern.MatchString(parts[1]) || !spriteFilePattern.MatchString(parts[2]) {
+			http.NotFound(w, r)
+			return
+		}
+		rel = filepath.Join("sprites", parts[1], parts[2])
+	default:
 		parts := strings.Split(rest, "/")
 		if len(parts) != 2 || !effectKeyPattern.MatchString(parts[0]) || !effectFilePattern.MatchString(parts[1]) {
 			http.NotFound(w, r)

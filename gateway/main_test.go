@@ -165,6 +165,11 @@ func effectsServer(t *testing.T) *server {
 	write("index.json", `{"items":[{"id":410127,"name":"Holofote","slots":["mid"],"effect":"c_spot_light"}]}`)
 	write(filepath.Join("c_spot_light", "effect.json"), `{"key":"c_spot_light","fps":60,"maxKey":150,"layers":[]}`)
 	write(filepath.Join("c_spot_light", "tex_0.png"), "\x89PNG\r\n\x1a\n")
+	if err := os.MkdirAll(filepath.Join(dir, "sprites", "torch_01"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join("sprites", "torch_01", "sprite.json"), `{"frames":["0.png"],"delays":[100]}`)
+	write(filepath.Join("sprites", "torch_01", "0.png"), "\x89PNG\r\n\x1a\n")
 	return &server{cfg: config{effectsDir: dir, port: "0"}, flight: newFlightGroup()}
 }
 
@@ -183,6 +188,12 @@ func TestEffectEndpoint(t *testing.T) {
 		{"/effects/c_spot_light/secret.txt", http.StatusNotFound, ""},      // disallowed filename
 		{"/effects/c_spot_light", http.StatusNotFound, ""},                 // missing file segment
 		{"/effects/c_spot_light/sub/effect.json", http.StatusNotFound, ""}, // too many segments
+		{"/effects/sprites/torch_01/sprite.json", http.StatusOK, "application/json"},
+		{"/effects/sprites/torch_01/0.png", http.StatusOK, "image/png"},
+		{"/effects/sprites/torch_01/9.png", http.StatusNotFound, ""},        // valid pattern, no such frame
+		{"/effects/sprites/torch_01/effect.json", http.StatusNotFound, ""},  // wrong file for a sprite bundle
+		{"/effects/sprites/torch_01", http.StatusNotFound, ""},              // missing file segment
+		{"/effects/sprites/torch_01/sub/0.png", http.StatusNotFound, ""},    // too many segments
 	}
 	for _, c := range cases {
 		rec := get(t, s, s.handleEffect, c.path)

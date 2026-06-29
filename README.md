@@ -278,11 +278,15 @@ simulator to render client-side. These endpoints return `404` until you run the
 | `GET /effects/index.json` | Catalogue: `{"items":[{"id","name","slots","effect"}]}` — one entry per effect-only costume (`effect` is the bundle key; there is no character `view`). |
 | `GET /effects/{key}/effect.json` | The parsed `.str` animation: `{"key","fps","maxKey","layers":[{"textures":[…],"anims":[…]}]}`. |
 | `GET /effects/{key}/tex_N.png` | That effect's layer textures (TGA alpha kept; BMP magenta-keyed → alpha). |
+| `GET /effects/sprites/{key}/sprite.json` | A sprite-based map effect's play list: `{"frames":["0.png",…],"delays":[…]}` (frames in play order; per-frame delay in ms). |
+| `GET /effects/sprites/{key}/N.png` | That sprite effect's rendered frames. |
 
 ```
 /effects/index.json
 /effects/c_spot_light/effect.json
 /effects/c_spot_light/tex_0.png
+/effects/sprites/torch_01/sprite.json
+/effects/sprites/torch_01/0.png
 ```
 
 `key` is a costume resource-name slug (`[a-z0-9_]`); the few Korean-named effects
@@ -300,6 +304,13 @@ the STR-type subset of roBrowser's `EffectTable.js`, ported into `extract-grf.mj
 bundle is built for every servable STR effect in that table, so any map's effect
 references resolve.
 
+A handful of map effects are **played sprites** (`.spr`/`.act`) rather than `.str` —
+`EF_TORCH`, `EF_SMOKE` and `EF_BANJJAKII`. The `--effects` step renders each into a
+`/effects/sprites/{key}/` bundle: one `N.png` per truecolor `.spr` frame plus a
+`sprite.json` `{frames, delays}` play list (per-frame delay from the `.act`, default
+`100`ms). A map's `manifest.effects` references these by `key` in a `sprite` field
+(see [`/maps`](#get-maps--world-maps)).
+
 ### `GET /maps/...` — world maps
 
 The full 3D world maps (ground mesh, models, textures, animated water) for the
@@ -316,7 +327,7 @@ cost. These endpoints return `404` until you run the `--maps` step.
 | Path | What you get |
 |---|---|
 | `GET /maps/index.json` | Catalogue: `{"maps":[…]}` — every extracted map name. |
-| `GET /maps/{map}/manifest.json` | The map's asset manifest: `files` (geometry), `models`, `textures`, `water`, `ui` — resource names mapped to shared blob paths (`../_t/<hash>.png`, …) — plus `fog` (`{near,far,color:[r,g,b],factor}`, present only for maps listed in `data/fogparametertable.txt`) and `effects` (the `.rsw` in-world effects — `.str` bundles and parametric emitters; present only for maps that place any). |
+| `GET /maps/{map}/manifest.json` | The map's asset manifest: `files` (geometry), `models`, `textures`, `water`, `ui` — resource names mapped to shared blob paths (`../_t/<hash>.png`, …) — plus `fog` (`{near,far,color:[r,g,b],factor}`, present only for maps listed in `data/fogparametertable.txt`) and `effects` (the `.rsw` in-world effects — `.str` bundles, played sprites, procedural `FUNC` effects and parametric emitters; present only for maps that place any). |
 | `GET /maps/{map}/{map}.gat\|gnd\|rsw` | Raw geometry binaries (altitude, ground mesh, world objects). |
 | `GET /maps/_t/{hash}.png` | A shared texture (TGA alpha kept; BMP magenta-keyed → alpha, fringe-bled). |
 | `GET /maps/_m/{hash}.rsm` | A shared model (raw `.rsm`). |
@@ -339,11 +350,13 @@ Responses carry the same immutable cache headers, `ETag`/`304` and wildcard CORS
 
 When a map's `.rsw` places in-world effects, the manifest carries an `effects`
 array — one entry per placed instance (positions are **not** deduplicated; the client
-proximity-culls). There are two renderable kinds:
+proximity-culls). There are four renderable kinds:
 
 ```json
 "effects": [
   { "id": 109, "pos": [x, y, z], "str": ["bubble1","bubble2","bubble3","bubble4"], "delay": 0, "param": [0,0,0,0] },
+  { "id": 47,  "pos": [x, y, z], "sprite": "torch_01", "delay": 125, "param": [1,0,0,0] },
+  { "id": 45,  "pos": [x, y, z], "delay": 500, "param": [0.1,0.1,0,0] },
   { "id": 974, "pos": [x, y, z], "delay": 1, "param": [0,0,0,0],
     "emitter": { "dir1": [-3,-5,-3], "dir2": [5,0,5], "gravity": [0.7,-2,0.7], "color": [255,255,255,255],
                  "rate": [1,3], "size": [6,8], "life": [3,4], "texture": "../_t/<hash>.png",
@@ -357,6 +370,13 @@ proximity-culls). There are two renderable kinds:
   [`/effects/{key}/`](#get-effects--effect-only-costumes) bundle keys (resolved via the
   ported `EffectTable.js` STR subset) the client picks from at random per spawn.
   `iz_dun03`, for instance, places 312 of `id 109` (`EF_BUBBLE` → `bubble1`…`bubble4`).
+- **Sprite effects** carry `sprite` — the key of a
+  [`/effects/sprites/{key}/`](#get-effects--effect-only-costumes) bundle (a played
+  `.spr`/`.act`). `EF_TORCH` (`47` → `torch_01`), `EF_SMOKE` (`44` → `smoke`) and
+  `EF_BANJJAKII` (`165` → `banjjakii`). `iz_dun00`, for instance, places 53 of `id 47`.
+- **Procedural `FUNC` effects** carry no asset field — just `id`/`pos`/`delay`/`param`;
+  the client generates them itself. `45` `EF_FIREFLY` is the one baked (`iz_dun00` places
+  369 of them).
 - **Parametric emitters** — `EF_EMITTER` (`974`), `EF_ANIMATED_EMITTER` (`1073`) and
   `EF_MAGIC_FLOOR` (`1025`) are not `.str` files; their particle spec lives per-map in
   the client's `effecttool/<map>.lub` (a parsed Lua emitter table). Each placement is
@@ -364,9 +384,8 @@ proximity-culls). There are two renderable kinds:
   `emitter` (a `texture` field is rewritten into the shared `_t` store; magic-floor
   entries carry `Speed`/`Size`/`Angle`/`RiseAngle`/`Alpha`/`Height0…20` instead).
 
-Effects that are neither — non-STR types (FUNC/3D/weather, e.g. `45` `EF_FIREFLY`) and
-the classic hardcoded ambient effects (forest lights, torches, light pillars, …) the
-client draws procedurally with no shippable data — are skipped.
+Any other id — the classic hardcoded ambient effects (forest lights, light pillars, …)
+the client draws procedurally with no shippable data — is skipped.
 
 ### `GET /bgm/...` — per-map background music
 
@@ -492,7 +511,10 @@ in the ported `EffectTable.js` table (`EFFECT_STR_TABLE`), it resolves the `.str
 the GRF and writes a `resources/effects/<basename>/` bundle (same format), so the
 `.rsw` effects a map places — see [`/maps`](#get-maps--world-maps) `manifest.effects`,
 e.g. `iz_dun03`'s `bubble1`…`bubble4` — resolve. `%d`/`rand` names expand to one
-bundle each; FUNC/3D/weather and Korean-named effects are skipped.
+bundle each; Korean-named (unservable) STR effects are skipped. The run also renders
+the **sprite-based** map effects (`SPRITE_EFFECT_TABLE`: `EF_TORCH`/`EF_SMOKE`/
+`EF_BANJJAKII`) into `resources/effects/sprites/<key>/` — one `N.png` per `.spr` frame
+plus a `sprite.json` play list — so a map's `sprite` effect references resolve.
 
 To serve the world maps (`/maps/*`), run the map extraction step:
 

@@ -8,6 +8,8 @@ import {
   effectStrKey,
   effectStrPath,
   effectStrRefs,
+  decodeSprFrames,
+  parseActFrames,
 } from "./extract-grf.mjs";
 
 // The real data/fogparametertable.txt lays out each record across five
@@ -144,4 +146,68 @@ test("effectStrRefs resolves EF_BUBBLE (109) to bubble1..4 and skips non-STR ids
   assert.equal(refs[0].path, "data/texture/effect/bubble1.str");
   assert.deepEqual(effectStrRefs(45), []); // EF_FIREFLY is a FUNC — not in the table
   assert.deepEqual(effectStrRefs(204), []); // Korean-named potion — unservable key
+});
+
+// A minimal SPR (v2.1) carrying a single 1x2 truecolor (RGBA) frame. Each pixel
+// is stored as 4 bytes in ABGR order (the order the sprite map-effects use).
+function buildSprRgba(version, pixelsABGR, width, height) {
+  const head = Buffer.alloc(8);
+  head[0] = 0x53; head[1] = 0x50; // "SP"
+  head[2] = Math.round((version % 1) * 10); // minor
+  head[3] = Math.floor(version); // major
+  head.writeUInt16LE(0, 4); // 0 palette frames
+  head.writeUInt16LE(1, 6); // 1 rgba frame
+  const dim = Buffer.alloc(4);
+  dim.writeUInt16LE(width, 0);
+  dim.writeUInt16LE(height, 2);
+  return new Uint8Array(Buffer.concat([head, dim, Buffer.from(pixelsABGR)]));
+}
+
+test("decodeSprFrames reads truecolor frames and swizzles ABGR → RGBA", () => {
+  // two pixels: ABGR (0x80,0x10,0x20,0x30) and (0x00,0x01,0x02,0x03)
+  const spr = buildSprRgba(2.1, [0x80, 0x10, 0x20, 0x30, 0x00, 0x01, 0x02, 0x03], 1, 2);
+  const frames = decodeSprFrames(spr);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].width, 1);
+  assert.equal(frames[0].height, 2);
+  // R=byte3, G=byte2, B=byte1, A=byte0
+  assert.deepEqual([...frames[0].rgba], [0x30, 0x20, 0x10, 0x80, 0x03, 0x02, 0x01, 0x00]);
+});
+
+// Build a v2.3 ACT with one action whose motions reference the given layer-0
+// sprite indices, and a single per-action delay (stored as delay/25). Exercises
+// the corrected 2.x layer layout: 4-byte packed colour (not 4 floats) and the
+// 16-byte attach points, plus the trailing events + delays sections.
+function buildAct23(indices, delayMs) {
+  const parts = [];
+  const i32 = (v) => { const b = Buffer.alloc(4); b.writeInt32LE(v); return b; };
+  const f32 = (v) => { const b = Buffer.alloc(4); b.writeFloatLE(v); return b; };
+  const header = Buffer.alloc(16);
+  header[0] = 0x41; header[1] = 0x43; // "AC"
+  header[2] = 3; header[3] = 2; // version 2.3
+  header.writeUInt16LE(1, 4); // 1 action
+  parts.push(header);
+  parts.push(i32(indices.length)); // motion count
+  for (const idx of indices) {
+    parts.push(Buffer.alloc(32)); // range1[4] + range2[4]
+    parts.push(i32(1)); // one layer
+    parts.push(i32(0), i32(0)); // x, y
+    parts.push(i32(idx)); // sprite index
+    parts.push(i32(0)); // mirror
+    parts.push(Buffer.from([255, 255, 255, 255])); // packed colour (4 bytes)
+    parts.push(f32(1)); // scaleX (scaleY copied at 2.3)
+    parts.push(i32(0), i32(0)); // rotation, sprite type
+    parts.push(i32(-1)); // event id
+    parts.push(i32(0)); // 0 attach points
+  }
+  parts.push(i32(0)); // 0 sound events
+  parts.push(f32(delayMs / 25)); // single per-action delay
+  return new Uint8Array(Buffer.concat(parts));
+}
+
+test("parseActFrames reads the 2.x layer layout, events and per-action delays", () => {
+  const act = buildAct23([5, 6, 5], 100);
+  const { actions, delays } = parseActFrames(act);
+  assert.deepEqual(actions, [[5, 6, 5]]); // layer-0 index of each motion
+  assert.deepEqual(delays, [100]); // stored value (4.0) × 25
 });

@@ -6,6 +6,26 @@ continuously (no version tags), so entries are grouped by date.
 ## 2026-06-29
 
 ### Added
+- **Sprite-based map effects are now baked and served.** Three more `.rsw` "type 4"
+  effect ids whose asset is a *played sprite* (`.spr`/`.act`), not a `.str` —
+  `EF_TORCH` (`47`), `EF_SMOKE` (`44`) and `EF_BANJJAKII` (`165`) — are now baked
+  into `manifest.effects` as `{"id","pos","sprite":"<key>","delay","param"}`, and
+  the procedural `EF_FIREFLY` (`45`, type `FUNC`, no asset — the client draws it
+  itself) as `{"id","pos","delay","param"}`. The sprites live in the client's
+  `data/sprite/이팩트/` (이팩트 = "effect") folder (`torch_01` / `굴뚝연기` /
+  `크리스마스`), resolved via the `SPRITE_EFFECT_TABLE` port of roBrowser's
+  `EffectTable.js`. `--effects` renders each one once into `/effects/sprites/<key>/`
+  (keys `torch_01` / `smoke` / `banjjakii`): every `.spr` **truecolor (RGBA)** frame
+  (stored ABGR, swizzled to RGBA — the existing decoder is palette-only) to
+  `<i>.png`, plus a `sprite.json` `{"frames":[…],"delays":[…]}` play list whose
+  per-frame delay is the `.act` action delay in ms (the stored value ×25, default
+  `100`). Parsing the `.act` required correcting the 2.x layer layout (the colour is
+  a 4-**byte** packed value, not 4 floats, and attach points are 16 bytes each). The
+  gateway's `/effects` handler gained a `sprites/{key}/{sprite.json|N.png}` route.
+  Validated on `iz_dun00`: **422 effects** baked (369× `id 45`, no asset; 53× `id 47`,
+  `sprite:"torch_01"`), with `torch_01` (8 frames), `smoke` (1) and `banjjakii`
+  (5, delays `125`) all resolving. STR/emitter/fog baking is unchanged; the
+  EXE-bound hardcoded ambient ids remain skipped.
 - **Parametric map emitters are now baked into `manifest.effects`.** The modern
   ambient map effects `EF_EMITTER` (`974`), `EF_ANIMATED_EMITTER` (`1073`) and
   `EF_MAGIC_FLOOR` (`1025`) are **not** `.str` files (roBrowser's `EffectTable.js`
