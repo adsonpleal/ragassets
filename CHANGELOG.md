@@ -6,6 +6,21 @@ continuously (no version tags), so entries are grouped by date.
 ## 2026-06-28
 
 ### Added
+- **In-world map effects are now extracted into the pipeline.** A map's `.rsw`
+  places "type 4" effect objects (`{name, pos÷5, id, delay, param[4]}`); during
+  `--maps` extraction we parse them and add an `effects` array to `manifest.json` —
+  one entry per placed instance, `{"id","pos","str","delay","param"}` (positions are
+  **not** deduplicated; the client proximity-culls). Each `id` is resolved to its
+  `.str` asset(s) via `EFFECT_STR_TABLE`, the STR-type subset of roBrowser's
+  `EffectTable.js` ported into `extract-grf.mjs` (handling the `file:'bubble%d'`
+  `rand:[1,4]` → `bubble1`…`bubble4` pattern); `str` is the id's deduped set of
+  `/effects/<key>/` bundle keys the client picks from at random. Non-STR effect
+  types (FUNC/3D/CYLINDER/SPR/weather, e.g. `45` `EF_FIREFLY`) and Korean-named
+  (unservable) effects are skipped. The `--effects` step now also builds a
+  `/effects/<basename>/` bundle (same `effect.json` + `tex_N.png` format as the
+  costume effects) for every servable STR effect in the table, so any map's
+  references resolve. `iz_dun03`, for example, gains **312 `effects`** entries (all
+  `id 109` `EF_BUBBLE`), served by `/effects/bubble1`…`bubble4`.
 - **Per-map fog is now folded into each map's `manifest.json`.** During `--maps`
   extraction we parse `data/fogparametertable.txt` and add a `fog` block —
   `{"near","far","color":[r,g,b],"factor"}` — to every map that has a fog row

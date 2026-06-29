@@ -116,11 +116,14 @@ function usage() {
       "",
       "  --effects extracts the effect-only costumes (.str world effects: auras,",
       "  falling petals, spotlights) as per-effect bundles (effect.json + tex PNGs)",
-      "  plus a catalogue (index.json). Also reads iteminfo_new.lub.",
+      "  plus a catalogue (index.json). Also reads iteminfo_new.lub. It additionally",
+      "  builds a bundle for every in-world map effect (.rsw type-4 .str, e.g.",
+      "  bubble1..4) referenced by EFFECT_STR_TABLE (roBrowser's EffectTable.js).",
       "",
       "  --maps extracts every world map (or one, with --map <name>) for the map",
       "  simulator: per-map <name>/{<name>.gat,.gnd,.rsw,manifest.json} plus shared,",
       "  content-addressed model/texture/water/UI stores (_m/_t/_w/_u) and index.json.",
+      "  The manifest's `effects` array lists the map's in-world .str effects.",
       "",
       "  --bgm extracts every map's background music: reads data/mp3nametable.txt",
       "  from the GRF and copies the referenced .mp3 files from the client BGM folder",
@@ -1815,12 +1818,54 @@ function extractEffects(grfPath, outBase, args) {
       .sort((a, b) => a.id - b.id);
     writeFileSync(join(root, "index.json"), JSON.stringify({ items }));
 
+    // In-world map effects: build a /effects/<key>/ bundle for every servable STR
+    // effect in the ported EffectTable, so any map's manifest `effects[].str` keys
+    // (e.g. iz_dun03's bubble1..bubble4) resolve. The table is the bounded authority,
+    // so this is independent of which maps are extracted. Costume keys win on a
+    // collision (already produced above). Each key picks the first id-path that
+    // exists in the GRF (handles a basename shared across ids, e.g. safetywall).
+    const producedKeys = new Set(resolved.map((e) => e.key));
+    const keyPaths = new Map(); // key -> ordered unique candidate paths
+    for (const id of Object.keys(EFFECT_STR_TABLE)) {
+      for (const { key, path } of effectStrRefs(Number(id))) {
+        if (producedKeys.has(key)) continue;
+        if (!keyPaths.has(key)) keyPaths.set(key, []);
+        const arr = keyPaths.get(key);
+        if (!arr.includes(path)) arr.push(path);
+      }
+    }
+    let mapBuilt = 0;
+    const mapMissing = [];
+    const mapFailed = [];
+    for (const [key, paths] of keyPaths) {
+      const path = paths.find((p) => findBestEntry(grf, p));
+      if (!path) { mapMissing.push(key); continue; }
+      const outDir = join(root, key);
+      rmSync(outDir, { recursive: true, force: true });
+      mkdirSync(outDir, { recursive: true });
+      try {
+        const info = buildEffect(grf, path, key, outDir);
+        const roundTrip = info.bytesRead === info.total ? "" : ` (! str bytesRead ${info.bytesRead}/${info.total})`;
+        console.error(
+          `  ✓ ${key} (map effect) → ${info.layers} layers, ${info.textures} textures` +
+            (info.texMissing ? ` (${info.texMissing} missing)` : "") + roundTrip,
+        );
+        producedKeys.add(key);
+        mapBuilt++;
+      } catch (err) {
+        rmSync(outDir, { recursive: true, force: true });
+        mapFailed.push(key);
+        console.error(`  ! ${key} (map effect): ${err.message}`);
+      }
+    }
+
     // Report: resolved / unresolved / excluded (the unresolved set is expected
     // manual follow-up — Korean-named and EXE/shared-bound effects).
     console.error(`\nEffects → ${root}`);
     console.error(`  resolved:   ${resolved.length}`);
     console.error(`  unresolved: ${unresolved.length}`);
     console.error(`  excluded:   ${excluded.length}`);
+    console.error(`  map effects: ${mapBuilt} built` + (mapMissing.length ? `, ${mapMissing.length} not in GRF` : "") + (mapFailed.length ? `, ${mapFailed.length} failed` : ""));
     console.error(`  catalogue:  index.json (${items.length} items)`);
     if (unresolved.length) {
       console.error(`\n  Unresolved (need a manual STR_OVERRIDE entry):`);
@@ -1836,6 +1881,326 @@ function extractEffects(grfPath, outBase, args) {
   } finally {
     closeGrf(grf);
   }
+}
+
+// ---------------------------------------------------------------------------
+// RSW in-world effects (.str) — the .rsw "type 4" effect objects reference a
+// numeric effect id; this is the STR-type subset of roBrowser's
+// src/DB/Effects/EffectTable.js (id → { type:"STR", file, rand? }), ported here
+// so both the map manifest (`effects`) and the --effects extractor can resolve
+// an id to its .str asset(s). Only STR effects are ported — the FUNC / 3D /
+// CYLINDER / SPR / weather types roBrowser draws procedurally are out of scope
+// (e.g. id 45 = EF_FIREFLY is a FUNC and is absent here, so it is skipped).
+//
+// `file` may carry a "%d" placeholder expanded over `rand:[a,b]` (the client
+// picks one at random per spawn — e.g. 109 EF_BUBBLE "bubble%d" [1,4] →
+// bubble1..bubble4), a sub-path ("../npc/x", "RL_C_MAKER/cm"), or an EUC-KR
+// Korean name (decoded from the source's \xHH escapes).
+// ---------------------------------------------------------------------------
+
+const EFFECT_STR_TABLE = {
+  10: [{ file: "maemor" }],
+  13: [{ file: "effect/safetywall" }],
+  23: [{ file: "stonecurse" }],
+  25: [{ file: "firewall%d", rand: [1, 2] }],
+  28: [{ file: "freeze" }],
+  29: [{ file: "lightning" }, { file: "windhit%d", rand: [1, 3] }],
+  30: [{ file: "thunderstorm" }],
+  40: [{ file: "cross" }],
+  41: [{ file: "angelus" }],
+  49: [{ file: "firehit%d", rand: [1, 3] }],
+  52: [{ file: "windhit%d", rand: [1, 3] }],
+  64: [{ file: "arrowshot" }],
+  65: [{ file: "invenom" }],
+  66: [{ file: "cure" }],
+  67: [{ file: "provoke" }],
+  68: [{ file: "mvp" }],
+  69: [{ file: "skidtrap" }],
+  70: [{ file: "brandish" }],
+  75: [{ file: "gloria" }],
+  76: [{ file: "magnificat" }],
+  77: [{ file: "resurrection" }],
+  78: [{ file: "recovery" }],
+  83: [{ file: "sanctuary" }],
+  84: [{ file: "impositio" }],
+  85: [{ file: "lexaeterna" }],
+  86: [{ file: "aspersio" }],
+  87: [{ file: "lexdivina" }],
+  88: [{ file: "suffragium" }],
+  89: [{ file: "stormgust" }],
+  90: [{ file: "lord" }],
+  91: [{ file: "benedictio" }],
+  92: [{ file: "meteor%d", rand: [1, 4] }],
+  94: [{ file: "quagmire", rand: [1, 4] }],
+  95: [{ file: "quagmire" }],
+  96: [{ file: "firepillar" }],
+  97: [{ file: "firepillarbomb" }],
+  101: [{ file: "repairweapon" }],
+  102: [{ file: "crashearth" }],
+  103: [{ file: "weaponperfection" }],
+  104: [{ file: "maximizepower" }],
+  106: [{ file: "blastmine" }],
+  107: [{ file: "claymore" }],
+  108: [{ file: "freezing" }],
+  109: [{ file: "bubble%d", rand: [1, 4] }],
+  110: [{ file: "gaspush" }],
+  111: [{ file: "spring" }],
+  112: [{ file: "kyrie" }],
+  113: [{ file: "magnus" }],
+  124: [{ file: "venomdust", rand: [1, 3] }],
+  126: [{ file: "poisonreact_1st" }],
+  127: [{ file: "poisonreact" }],
+  129: [{ file: "venomsplasher" }],
+  130: [{ file: "twohand" }],
+  131: [{ file: "autocounter" }],
+  133: [{ file: "freeze" }],
+  134: [{ file: "freezed" }],
+  135: [{ file: "icecrash" }],
+  136: [{ file: "slowp" }],
+  139: [{ file: "sandman" }],
+  141: [{ file: "pneuma%d", rand: [1, 3] }],
+  143: [{ file: "sonicblow" }],
+  144: [{ file: "brandish2" }],
+  146: [{ file: "shockwavehit" }],
+  147: [{ file: "earthhit" }],
+  148: [{ file: "pierce" }],
+  149: [{ file: "bowling" }],
+  150: [{ file: "spearstab" }],
+  151: [{ file: "spearboomerang" }],
+  152: [{ file: "holyhit" }],
+  153: [{ file: "concentration" }],
+  154: [{ file: "bs_refinesuccess" }],
+  155: [{ file: "bs_refinefailed" }],
+  158: [{ file: "joblvup" }],
+  169: [{ file: "energycoat" }],
+  170: [{ file: "cartrevolution" }],
+  181: [{ file: "mentalbreak" }],
+  182: [{ file: "magical" }],
+  183: [{ file: "sui_explosion" }],
+  185: [{ file: "suicide" }],
+  186: [{ file: "yunta_1" }],
+  187: [{ file: "yunta_2" }],
+  188: [{ file: "yunta_3" }],
+  189: [{ file: "yunta_4" }],
+  190: [{ file: "yunta_5" }],
+  191: [{ file: "homing" }],
+  192: [{ file: "poison" }],
+  193: [{ file: "silence" }],
+  194: [{ file: "stun" }],
+  195: [{ file: "stonecurse" }],
+  197: [{ file: "sleep" }],
+  199: [{ file: "pong%d", rand: [1, 3] }],
+  204: [{ file: "빨간포션" }],
+  205: [{ file: "주홍포션" }],
+  206: [{ file: "노란포션" }],
+  207: [{ file: "하얀포션" }],
+  208: [{ file: "파란포션" }],
+  209: [{ file: "초록포션" }],
+  210: [{ file: "fruit" }],
+  211: [{ file: "fruit_" }],
+  213: [{ file: "deffender" }],
+  214: [{ file: "keeping" }],
+  218: [{ file: "집중" }],
+  219: [{ file: "각성" }],
+  220: [{ file: "버서크" }],
+  234: [{ file: "spell" }],
+  235: [{ file: "디스펠" }],
+  244: [{ file: "매직로드" }],
+  245: [{ file: "holy_cross" }],
+  246: [{ file: "shield_charge" }],
+  248: [{ file: "providence" }],
+  250: [{ file: "twohand" }],
+  251: [{ file: "devotion" }],
+  255: [{ file: "enc_fire" }],
+  256: [{ file: "enc_ice" }],
+  257: [{ file: "enc_wind" }],
+  258: [{ file: "enc_earth" }],
+  268: [{ file: "steal_coin" }],
+  269: [{ file: "strip_weapon" }],
+  270: [{ file: "strip_shield" }],
+  271: [{ file: "strip_armor" }],
+  272: [{ file: "strip_helm" }],
+  273: [{ file: "연환" }],
+  293: [{ file: "유저인터페이스/item/염산병.bmp", rand: [1, 3] }],
+  305: [{ file: "p_success" }],
+  306: [{ file: "p_failed" }],
+  311: [{ file: "loud" }],
+  315: [{ file: "safetywall" }],
+  337: [{ file: "joblvup" }],
+  369: [{ file: "twohand" }],
+  371: [{ file: "angel" }],
+  372: [{ file: "devil" }],
+  390: [{ file: "melt" }],
+  391: [{ file: "cart" }],
+  392: [{ file: "sword" }],
+  406: [{ file: "소울번" }],
+  407: [{ file: "사람효과" }],
+  440: [{ file: "asum" }],
+  452: [{ file: "스톱", rand: [1, 3] }],
+  491: [{ file: "찹쌀떡" }],
+  492: [{ file: "ramadan" }],
+  507: [{ file: "mapae" }],
+  508: [{ file: "itempokjuk" }],
+  565: [{ file: "moonlight_1" }],
+  566: [{ file: "moonlight_2" }],
+  567: [{ file: "moonlight_3" }],
+  568: [{ file: "h_levelup" }],
+  569: [{ file: "defense" }],
+  593: [{ file: "food_str" }],
+  594: [{ file: "food_int" }],
+  595: [{ file: "food_vit" }],
+  596: [{ file: "food_agi" }],
+  597: [{ file: "food_dex" }],
+  598: [{ file: "food_luk" }],
+  603: [{ file: "firehit%d", rand: [1, 3] }],
+  608: [{ file: "cook_suc" }],
+  609: [{ file: "cook_fail" }],
+  612: [{ file: "itempokjuk" }],
+  618: [{ file: "firehit", rand: [1, 3] }],
+  619: [{ file: "freeze", rand: [1, 3] }],
+  622: [{ file: "setsudan" }],
+  635: [{ file: "fire dragon" }],
+  636: [{ file: "icy" }],
+  646: [{ file: "트랙킹" }],
+  649: [{ file: "불스아이" }],
+  668: [{ file: "dragon_h" }],
+  669: [{ file: "wideb" }],
+  670: [{ file: "dfear" }],
+  677: [{ file: "cwound" }],
+  682: [{ file: "itempokjuk" }],
+  683: [{ file: "itempokjuk" }],
+  684: [{ file: "itempokjuk" }],
+  685: [{ file: "itempokjuk" }],
+  686: [{ file: "itempokjuk" }],
+  699: [{ file: "flower_leaf" }],
+  704: [{ file: "mobile_ef02" }],
+  705: [{ file: "mobile_ef01" }],
+  706: [{ file: "mobile_ef03" }],
+  708: [{ file: "storm_min" }],
+  709: [{ file: "pokjuk_jap" }],
+  717: [{ file: "angelus" }],
+  721: [{ file: "ado" }],
+  722: [{ file: "이그니션브레이크" }],
+  727: [{ file: "crimson_r" }],
+  728: [{ file: "hell_in" }],
+  731: [{ file: "dragon_h" }],
+  734: [{ file: "chainlight" }],
+  745: [{ file: "aimed" }],
+  746: [{ file: "arrowstorm" }],
+  747: [{ file: "laulamus" }],
+  748: [{ file: "lauagnus" }],
+  749: [{ file: "mil_shield" }],
+  750: [{ file: "concentration" }],
+  756: [{ file: "버서크" }],
+  795: [{ file: "powerswing" }],
+  813: [{ file: "enervation" }],
+  814: [{ file: "groomy" }],
+  815: [{ file: "ignorance" }],
+  816: [{ file: "laziness" }],
+  817: [{ file: "unlucky" }],
+  818: [{ file: "weakness" }],
+  920: [{ file: "firewall_per" }],
+  926: [{ file: "hunter_shockwave_blue" }],
+  959: [{ file: "poison_mist" }],
+  960: [{ file: "eraser_cutter" }],
+  964: [{ file: "lava_slide" }],
+  965: [{ file: "sonic_claw" }],
+  966: [{ file: "tinder" }],
+  967: [{ file: "mid_frenzy" }],
+  975: [{ file: "vash00" }],
+  987: [{ file: "rwc2011" }],
+  988: [{ file: "rwc2011_2" }],
+  1015: [{ file: "rune_success" }],
+  1016: [{ file: "rune_fail" }],
+  1017: [{ file: "changematerial_su" }],
+  1018: [{ file: "changematerial_fa" }],
+  1019: [{ file: "guardian" }],
+  1020: [{ file: "bubble%d_1", rand: [1, 4] }],
+  1021: [{ file: "dust" }],
+  1029: [{ file: "dancingblade" }],
+  1031: [{ file: "invincibleoff2" }],
+  1033: [{ file: "devil" }],
+  1040: [{ file: "gc_darkcrow" }],
+  1042: [{ file: "all_full_throttle" }],
+  1043: [{ file: "sr_flashcombo" }],
+  1044: [{ file: "rk_luxanima" }],
+  1046: [{ file: "so_elemental_shield" }],
+  1047: [{ file: "ab_offertorium" }],
+  1048: [{ file: "wl_telekinesis_intense" }],
+  1049: [{ file: "gn_illusiondoping" }],
+  1050: [{ file: "nc_magma_eruption" }],
+  1055: [{ file: "chill" }],
+  1057: [{ file: "ab_offertorium_ring" }],
+  1062: [{ file: "stormgust" }],
+  1094: [{ file: "ach_complete/ppring3" }],
+  1186: [{ file: "new_dropitem/dropitem_pink/dropitem_pink/dropitem_pink" }, { file: "new_dropitem/dropitem_pink/dropitem_pink_bottom/dropitem_pink_bottom" }],
+  1189: [{ file: "new_dropitem/dropitem_yellow/dropitem_yellow/dropitem_yellow" }, { file: "new_dropitem/dropitem_yellow/dropitem_yellow_bottom/dropitem_yellow_bottom" }],
+  1190: [{ file: "new_dropitem/dropitem_purple/dropitem_purple/dropitem_purple" }, { file: "new_dropitem/dropitem_purple/dropitem_purple_bottom/dropitem_purple_bottom" }],
+  1869: [{ file: "new_dropitem/dropitem_blue/dropitem_blue/dropitem_blue" }, { file: "new_dropitem/dropitem_blue/dropitem_blue_bottom/dropitem_blue_bottom" }],
+  1870: [{ file: "new_dropitem/dropitem_green/dropitem_green/dropitem_green" }, { file: "new_dropitem/dropitem_green/dropitem_green_bottom/dropitem_green_bottom" }],
+  1871: [{ file: "new_dropitem/dropitem_red/dropitem_red/dropitem_red" }, { file: "new_dropitem/dropitem_red/dropitem_red_bottom/dropitem_red_bottom" }],
+  1872: [{ file: "grade_enchant/new_success/new_success" }],
+  1873: [{ file: "grade_enchant/new_failed/new_failed" }],
+  1874: [{ file: "grade_enchant/new_intro/new_intro" }],
+  1875: [{ file: "ui_enchant/ui_intro_yellow/ui_intro_yellow" }],
+  1876: [{ file: "ui_enchant/ui_enchant_success/ui_enchant_success" }],
+  1877: [{ file: "ui_enchant/ui_fail/ui_enchant_fail" }],
+  1878: [{ file: "ui_enchant/ui_intro_blue/ui_intro_blue" }],
+  1879: [{ file: "ui_enchant/ui_levelup_success/ui_levelup_success" }],
+  1880: [{ file: "ui_enchant/ui_fail/ui_levelup_fail" }],
+  1881: [{ file: "ui_enchant/ui_intro_green/ui_intro_green" }],
+  1882: [{ file: "ui_enchant/ui_reset_success/ui_reset_success" }],
+  1883: [{ file: "ui_enchant/ui_fail/ui_reset_fail" }],};
+
+// Expand a STR def's `file` to concrete .str references. A "%d" placeholder over
+// rand:[a,b] yields one name per integer in the (inclusive) range; otherwise the
+// file is taken verbatim (a bare `rand` without "%d" is a render hint we ignore).
+export function expandStrFiles(def) {
+  if (def.rand && def.file.includes("%d")) {
+    const out = [];
+    for (let i = def.rand[0]; i <= def.rand[1]; i++) out.push(def.file.replace(/%d/g, String(i)));
+    return out;
+  }
+  return [def.file];
+}
+
+// The served effect key: the .str basename as a URL-safe [a-z0-9_] segment (the
+// /effects/<key>/ path the gateway serves). Returns null for non-ASCII names
+// (the Korean-named effects) — those can't be served, so they're skipped in v1.
+export function effectStrKey(file) {
+  const base = normRes(file).split("/").pop();
+  return /^[a-z0-9_]+$/.test(base) ? base : null;
+}
+
+// Resolve a .str `file` token to its normalized GRF path under data/texture/effect/,
+// folding any leading "../" (e.g. "../npc/x" → data/texture/npc/x.str).
+export function effectStrPath(file) {
+  const parts = [];
+  for (const seg of normalize(`data/texture/effect/${file}.str`).split("/")) {
+    if (seg === "..") parts.pop();
+    else if (seg) parts.push(seg);
+  }
+  return parts.join("/");
+}
+
+// All servable .str references for an effect id: { key, path } per expanded name,
+// deduped by key (order preserved). Returns [] for ids that aren't STR effects
+// (FUNC/3D/weather/unknown) or whose names are all unservable. Shared by the map
+// manifest (`str` = the keys) and the --effects extractor (builds each path once).
+export function effectStrRefs(id) {
+  const defs = EFFECT_STR_TABLE[id];
+  if (!defs) return [];
+  const seen = new Set();
+  const refs = [];
+  for (const def of defs) {
+    for (const file of expandStrFiles(def)) {
+      const key = effectStrKey(file);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      refs.push({ key, path: effectStrPath(file) });
+    }
+  }
+  return refs;
 }
 
 // ---------------------------------------------------------------------------
@@ -1897,7 +2262,7 @@ function normName(name) {
 
 // RSW → referenced model filenames + water type. Field layout ported from
 // roBrowserLegacy (handles RSW 1.x–2.x). We read only the object list.
-function parseRsw(bytes) {
+export function parseRsw(bytes) {
   const fp = new MapReader(bytes);
   if (fp.str(4) !== "GRSW") throw new Error("RSW: bad header");
   const version = fp.i8() + fp.i8() / 10;
@@ -1927,6 +2292,7 @@ function parseRsw(bytes) {
 
   const count = fp.i32();
   const models = [];
+  const effects = [];
   for (let i = 0; i < count; i++) {
     const type = fp.i32();
     if (type === 1) {
@@ -1945,12 +2311,20 @@ function parseRsw(bytes) {
       fp.str(80); fp.str(80); fp.f32(); fp.f32(); fp.f32(); fp.f32(); fp.i32(); fp.i32(); fp.f32();
       if (version >= 2.0) fp.f32();
     } else if (type === 4) {
-      fp.str(80); fp.f32(); fp.f32(); fp.f32(); fp.i32(); fp.f32(); fp.f32(); fp.f32(); fp.f32(); fp.f32();
+      // In-world effect: name(80), pos[3]÷5, id(long), delay(float), param[4]. The
+      // id maps to a .str world effect via EFFECT_STR_TABLE (EF_BUBBLE = 109 etc.).
+      // Positions match the roBrowser ÷5 world scale (same as model/light/sound).
+      fp.str(80); // name (unused)
+      const pos = [fp.f32() / 5, fp.f32() / 5, fp.f32() / 5];
+      const id = fp.i32();
+      const delay = fp.f32(); // raw .rsw delay (roBrowser scales it ×10 at render time)
+      const param = [fp.f32(), fp.f32(), fp.f32(), fp.f32()];
+      effects.push({ id, pos, delay, param });
     } else {
       break; // unknown — stop (quadtree/footer follows the object list anyway)
     }
   }
-  return { models: [...new Set(models)], waterType };
+  return { models: [...new Set(models)], waterType, effects };
 }
 
 // GND → ground texture filenames (relative to data/texture/).
@@ -2259,7 +2633,7 @@ function extractOneMap(grf, index, map, outBase, store, ui, fogTable) {
   mkdirSync(mapDir, { recursive: true });
   for (const ext of ["gat", "gnd", "rsw"]) writeFileSync(join(mapDir, `${map}.${ext}`), rawFiles[ext]);
 
-  const { models: modelNames, waterType } = parseRsw(rawFiles.rsw);
+  const { models: modelNames, waterType, effects: rswEffects } = parseRsw(rawFiles.rsw);
   const modelMap = {}; // normName -> ../_m/<hash>.rsm
   const textureNames = new Set();
   for (const name of parseGndTextures(rawFiles.gnd)) textureNames.add(normName(name));
@@ -2312,6 +2686,19 @@ function extractOneMap(grf, index, map, outBase, store, ui, fogTable) {
   // fog row; omitted otherwise. The .rsw carries no fog data of its own.
   const fog = fogTable && fogTable.get(map);
   if (fog) manifest.fog = fog;
+
+  // In-world .str effects: one entry per placed type-4 object whose id resolves to
+  // a STR effect (positions are NOT deduped — the client proximity-culls). `str` is
+  // the id's deduped set of /effects/<key>/ bundles (built by --effects). Effects
+  // whose id isn't a (servable) STR — e.g. id 45 EF_FIREFLY, a FUNC — are skipped.
+  const mapEffects = [];
+  for (const e of rswEffects) {
+    const refs = effectStrRefs(e.id);
+    if (!refs.length) continue;
+    mapEffects.push({ id: e.id, pos: e.pos, str: refs.map((r) => r.key), delay: e.delay, param: e.param });
+  }
+  if (mapEffects.length) manifest.effects = mapEffects;
+
   writeFileSync(join(mapDir, "manifest.json"), JSON.stringify(manifest));
 
   return {
@@ -2325,6 +2712,7 @@ function extractOneMap(grf, index, map, outBase, store, ui, fogTable) {
     waterType,
     waterFrames: waterFrames.length,
     fog: !!fog,
+    effects: mapEffects.length,
   };
 }
 
@@ -2407,16 +2795,19 @@ function extractMaps(grfPath, outBase, args) {
     const extracted = [];
     let skipped = 0;
     let foggy = 0;
+    let effecty = 0;
     for (const map of names) {
       try {
         const r = extractOneMap(grf, index, map, root, store, ui, fogTable);
         if (r.skipped) { skipped++; console.warn(`  - skip ${map} (${r.skipped})`); continue; }
         extracted.push(map);
         if (r.fog) foggy++;
+        if (r.effects) effecty++;
         if (single || extracted.length % 25 === 0) {
           console.error(
             `  ✓ ${map}: ${r.models}/${r.modelTotal} models, ${r.textures}/${r.textureTotal} textures, ` +
               `water ${r.waterType} (${r.waterFrames}/32)` +
+              (r.effects ? `, ${r.effects} effects` : "") +
               (extracted.length % 25 === 0 && !single ? `  [${extracted.length}/${names.length}]` : ""),
           );
         }
@@ -2445,6 +2836,7 @@ function extractMaps(grfPath, outBase, args) {
         `  extracted: ${extracted.length}\n` +
         `  skipped:   ${skipped}\n` +
         `  with fog:  ${foggy}\n` +
+        `  with effects: ${effecty}\n` +
         `  index.json: ${allMaps.length} maps`,
     );
   } finally {

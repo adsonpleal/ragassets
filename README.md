@@ -292,6 +292,14 @@ Responses carry the same immutable cache headers, `ETag`/`304` and wildcard CORS
 extraction step prints a resolved/unresolved/excluded report and a manual override
 table covers the rest (see below).
 
+The same `--effects` step also builds bundles for the **in-world map effects** — the
+`.str` effects a map's `.rsw` places (underwater bubbles, etc.; see
+[`/maps`](#get-maps--world-maps) `manifest.effects`). These share the `/effects/{key}/`
+format above, keyed by the `.str` basename (e.g. `bubble1`). The id→`.str` mapping is
+the STR-type subset of roBrowser's `EffectTable.js`, ported into `extract-grf.mjs`; a
+bundle is built for every servable STR effect in that table, so any map's effect
+references resolve.
+
 ### `GET /maps/...` — world maps
 
 The full 3D world maps (ground mesh, models, textures, animated water) for the
@@ -308,7 +316,7 @@ cost. These endpoints return `404` until you run the `--maps` step.
 | Path | What you get |
 |---|---|
 | `GET /maps/index.json` | Catalogue: `{"maps":[…]}` — every extracted map name. |
-| `GET /maps/{map}/manifest.json` | The map's asset manifest: `files` (geometry), `models`, `textures`, `water`, `ui` — resource names mapped to shared blob paths (`../_t/<hash>.png`, …) — plus `fog` (`{near,far,color:[r,g,b],factor}`, present only for maps listed in `data/fogparametertable.txt`). |
+| `GET /maps/{map}/manifest.json` | The map's asset manifest: `files` (geometry), `models`, `textures`, `water`, `ui` — resource names mapped to shared blob paths (`../_t/<hash>.png`, …) — plus `fog` (`{near,far,color:[r,g,b],factor}`, present only for maps listed in `data/fogparametertable.txt`) and `effects` (the `.rsw` in-world `.str` effects; present only for maps that place any). |
 | `GET /maps/{map}/{map}.gat\|gnd\|rsw` | Raw geometry binaries (altitude, ground mesh, world objects). |
 | `GET /maps/_t/{hash}.png` | A shared texture (TGA alpha kept; BMP magenta-keyed → alpha, fringe-bled). |
 | `GET /maps/_m/{hash}.rsm` | A shared model (raw `.rsm`). |
@@ -328,6 +336,21 @@ store. Map names are lowercase slugs (`[a-z0-9_@-]`); blob hashes are 16 hex cha
 — the strict per-segment patterns make path traversal structurally impossible.
 Responses carry the same immutable cache headers, `ETag`/`304` and wildcard CORS as
 `/icons` and `/effects`.
+
+When a map's `.rsw` places in-world `.str` effects, the manifest carries an `effects`
+array — one entry per placed instance (positions are **not** deduplicated; the client
+proximity-culls):
+
+```json
+"effects": [ { "id": 109, "pos": [x, y, z], "str": ["bubble1","bubble2","bubble3","bubble4"], "delay": 0, "param": [0,0,0,0] } ]
+```
+
+`id` is the `.rsw` effect id (resolved via the ported `EffectTable.js` STR subset),
+`pos` is the ÷5 world position, and `str` is the id's deduped set of
+[`/effects/{key}/`](#get-effects--effect-only-costumes) bundle keys the client picks
+from at random per spawn. Effects whose id isn't a servable STR effect (FUNC/3D/weather
+types, e.g. `45` `EF_FIREFLY`) are skipped. `iz_dun03`, for instance, places 312 of
+`id 109` (`EF_BUBBLE` → `bubble1`…`bubble4`).
 
 ### `GET /bgm/...` — per-map background music
 
@@ -447,6 +470,13 @@ costumes are excluded (no visual), and a handful of Korean-named or EXE/shared-b
 effects (the level auras, magic circles, …) whose `.str` path isn't derivable from
 the resource name stay unresolved — those are filled in by hand via the
 `STR_OVERRIDE` table near the top of the effects section in `extract-grf.mjs`.
+
+The same run then builds the **in-world map effects**: for every servable STR entry
+in the ported `EffectTable.js` table (`EFFECT_STR_TABLE`), it resolves the `.str` in
+the GRF and writes a `resources/effects/<basename>/` bundle (same format), so the
+`.rsw` effects a map places — see [`/maps`](#get-maps--world-maps) `manifest.effects`,
+e.g. `iz_dun03`'s `bubble1`…`bubble4` — resolve. `%d`/`rand` names expand to one
+bundle each; FUNC/3D/weather and Korean-named effects are skipped.
 
 To serve the world maps (`/maps/*`), run the map extraction step:
 
