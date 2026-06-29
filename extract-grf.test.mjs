@@ -10,6 +10,7 @@ import {
   effectStrRefs,
   decodeSprFrames,
   parseActFrames,
+  compositeActFrame,
 } from "./extract-grf.mjs";
 
 // The real data/fogparametertable.txt lays out each record across five
@@ -208,6 +209,39 @@ function buildAct23(indices, delayMs) {
 test("parseActFrames reads the 2.x layer layout, events and per-action delays", () => {
   const act = buildAct23([5, 6, 5], 100);
   const { actions, delays } = parseActFrames(act);
-  assert.deepEqual(actions, [[5, 6, 5]]); // layer-0 index of each motion
+  // One action of three single-layer frames; each layer carries full placement.
+  assert.equal(actions.length, 1);
+  assert.deepEqual(
+    actions[0].map((frame) => frame.map((l) => l.index)),
+    [[5], [6], [5]],
+  );
+  assert.deepEqual(actions[0][0][0], {
+    x: 0, y: 0, index: 5, sprType: 0, mirror: 0,
+    color: [255, 255, 255, 255], scaleX: 1, scaleY: 1, rotation: 0,
+  });
   assert.deepEqual(delays, [100]); // stored value (4.0) × 25
+});
+
+// compositeActFrame bakes a frame's layer stack into one image and reports the
+// centre of that image relative to the act origin. Two 2x2 RGBA layers offset on
+// the y axis (centres at y=-10 and y=10) span y∈[-11,11] → a 4x22 image centred
+// at (0, 0); the upper layer sits in the top rows, the lower in the bottom.
+test("compositeActFrame composites layers and reports the image centre offset", () => {
+  const solid = (r, g, b) => ({
+    width: 2, height: 2, type: 1,
+    rgba: new Uint8Array([r, g, b, 255, r, g, b, 255, r, g, b, 255, r, g, b, 255]),
+  });
+  const framesByType = [[], [solid(10, 20, 30), solid(40, 50, 60)]];
+  const layer = (index, y) => ({
+    x: 0, y, index, sprType: 1, mirror: 0,
+    color: [255, 255, 255, 255], scaleX: 1, scaleY: 1, rotation: 0,
+  });
+  const out = compositeActFrame(framesByType, [layer(0, -10), layer(1, 10)]);
+  assert.equal(out.width, 2);
+  assert.equal(out.height, 22);
+  assert.deepEqual(out.offset, [0, 0]);
+  // Top row is the y=-10 layer (10,20,30); bottom row is the y=10 layer (40,50,60).
+  assert.deepEqual([...out.rgba.slice(0, 4)], [10, 20, 30, 255]);
+  const last = (out.width * out.height - 1) * 4;
+  assert.deepEqual([...out.rgba.slice(last, last + 4)], [40, 50, 60, 255]);
 });

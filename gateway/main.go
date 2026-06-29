@@ -149,7 +149,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n"+
 		"     /effects/index.json        (effect-only costume catalogue)\n"+
 		"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n"+
-		"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's frames + delays)\n"+
+		"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's per-frame img/delay/offset)\n"+
 		"     /maps/index.json           (world-map catalogue for the map simulator)\n"+
 		"     /maps/prontera/manifest.json  (one map's geometry + shared asset manifest)\n"+
 		"     /bgm/index.json            (per-map background-music catalogue)\n"+
@@ -354,8 +354,8 @@ func (s *server) handleIcon(w http.ResponseWriter, r *http.Request) {
 //   /effects/index.json              the costume catalogue ({items:[{id,name,slots,effect}]})
 //   /effects/{key}/effect.json       the parsed .str keyframe animation
 //   /effects/{key}/tex_N.png         that effect's layer textures
-//   /effects/sprites/{key}/sprite.json   a sprite map-effect's frame/delay play list
-//   /effects/sprites/{key}/N.png         that sprite effect's rendered frames
+//   /effects/sprites/{key}/sprite.json   a sprite map-effect's per-frame play list ({frames:[{img,delay,offset}]})
+//   /effects/sprites/{key}/N.png         that sprite effect's composited frames
 //
 // `key` is a slug ([a-z0-9_]); the strict key + filename patterns (no dots, no
 // slashes) make path traversal structurally impossible. ("sprites" is a reserved

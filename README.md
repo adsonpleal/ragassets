@@ -278,8 +278,8 @@ simulator to render client-side. These endpoints return `404` until you run the
 | `GET /effects/index.json` | Catalogue: `{"items":[{"id","name","slots","effect"}]}` — one entry per effect-only costume (`effect` is the bundle key; there is no character `view`). |
 | `GET /effects/{key}/effect.json` | The parsed `.str` animation: `{"key","fps","maxKey","layers":[{"textures":[…],"anims":[…]}]}`. |
 | `GET /effects/{key}/tex_N.png` | That effect's layer textures (TGA alpha kept; BMP magenta-keyed → alpha). |
-| `GET /effects/sprites/{key}/sprite.json` | A sprite-based map effect's play list: `{"frames":["0.png",…],"delays":[…]}` (frames in play order; per-frame delay in ms). |
-| `GET /effects/sprites/{key}/N.png` | That sprite effect's rendered frames. |
+| `GET /effects/sprites/{key}/sprite.json` | A sprite-based map effect's play list: `{"frames":[{"img":"0.png","delay":96,"offset":[x,y]},…]}` — frames in play order, per-frame `delay` in ms, and `offset` (RO px, +x right / +y down) the composited image centre relative to the effect's placement origin. |
+| `GET /effects/sprites/{key}/N.png` | That sprite effect's composited frames (each `.act` frame's layers baked into one image). |
 
 ```
 /effects/index.json
@@ -306,10 +306,15 @@ references resolve.
 
 A handful of map effects are **played sprites** (`.spr`/`.act`) rather than `.str` —
 `EF_TORCH`, `EF_SMOKE` and `EF_BANJJAKII`. The `--effects` step renders each into a
-`/effects/sprites/{key}/` bundle: one `N.png` per truecolor `.spr` frame plus a
-`sprite.json` `{frames, delays}` play list (per-frame delay from the `.act`, default
-`100`ms). A map's `manifest.effects` references these by `key` in a `sprite` field
-(see [`/maps`](#get-maps--world-maps)).
+`/effects/sprites/{key}/` bundle: one composited `N.png` per frame of the effect's
+first `.act` action — every layer's scale, rotation, mirror and colour baked in, so
+the served image already looks like the in-game frame — plus a `sprite.json`
+`{frames:[{img, delay, offset}]}` play list. `delay` is the action's real frame
+interval from the `.act` (default `100`ms); `offset` is the composited image's centre
+relative to the effect's placement origin (RO px, +x right / +y down — the client
+negates `y` for its Y-up world), so frames whose size shifts across the animation
+still sit on the effect's origin. A map's `manifest.effects` references these by `key`
+in a `sprite` field (see [`/maps`](#get-maps--world-maps)).
 
 ### `GET /maps/...` — world maps
 
@@ -513,8 +518,9 @@ the GRF and writes a `resources/effects/<basename>/` bundle (same format), so th
 e.g. `iz_dun03`'s `bubble1`…`bubble4` — resolve. `%d`/`rand` names expand to one
 bundle each; Korean-named (unservable) STR effects are skipped. The run also renders
 the **sprite-based** map effects (`SPRITE_EFFECT_TABLE`: `EF_TORCH`/`EF_SMOKE`/
-`EF_BANJJAKII`) into `resources/effects/sprites/<key>/` — one `N.png` per `.spr` frame
-plus a `sprite.json` play list — so a map's `sprite` effect references resolve.
+`EF_BANJJAKII`) into `resources/effects/sprites/<key>/` — one composited `N.png` per
+`.act` frame plus a `sprite.json` `{frames:[{img, delay, offset}]}` play list — so a
+map's `sprite` effect references resolve.
 
 To serve the world maps (`/maps/*`), run the map extraction step:
 

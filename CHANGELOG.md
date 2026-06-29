@@ -15,17 +15,24 @@ continuously (no version tags), so entries are grouped by date.
   `data/sprite/이팩트/` (이팩트 = "effect") folder (`torch_01` / `굴뚝연기` /
   `크리스마스`), resolved via the `SPRITE_EFFECT_TABLE` port of roBrowser's
   `EffectTable.js`. `--effects` renders each one once into `/effects/sprites/<key>/`
-  (keys `torch_01` / `smoke` / `banjjakii`): every `.spr` **truecolor (RGBA)** frame
-  (stored ABGR, swizzled to RGBA — the existing decoder is palette-only) to
-  `<i>.png`, plus a `sprite.json` `{"frames":[…],"delays":[…]}` play list whose
-  per-frame delay is the `.act` action delay in ms (the stored value ×25, default
-  `100`). Parsing the `.act` required correcting the 2.x layer layout (the colour is
-  a 4-**byte** packed value, not 4 floats, and attach points are 16 bytes each). The
-  gateway's `/effects` handler gained a `sprites/{key}/{sprite.json|N.png}` route.
-  Validated on `iz_dun00`: **422 effects** baked (369× `id 45`, no asset; 53× `id 47`,
-  `sprite:"torch_01"`), with `torch_01` (8 frames), `smoke` (1) and `banjjakii`
-  (5, delays `125`) all resolving. STR/emitter/fog baking is unchanged; the
-  EXE-bound hardcoded ambient ids remain skipped.
+  (keys `torch_01` / `smoke` / `banjjakii`): one **composited** `<i>.png` per frame
+  of the effect's first `.act` action — every layer's scale, rotation, mirror and
+  colour baked into a single image at its natural bounding size (a faithful JS port
+  of the native renderer's per-layer affine placement + alpha/tint rasteriser), with
+  `.spr` **truecolor (RGBA)** frames decoded (stored ABGR, swizzled to RGBA — the
+  existing decoder is palette-only). The `sprite.json` is a
+  `{"frames":[{"img","delay","offset":[x,y]}]}` play list: `delay` is the action's
+  real frame interval in ms (the `.act` value ×25, default `100`), and `offset` is the
+  composited image's centre relative to the effect's placement origin (RO px, +x right
+  / +y down; the client negates `y`), so frames whose size shifts across the animation
+  (e.g. the torch flame's growing glow) still sit on the origin. Parsing the `.act`
+  required correcting the 2.x layer layout (the colour is a 4-**byte** packed value,
+  not 4 floats, and attach points are 16 bytes each) and reading each layer's full
+  placement. The gateway's `/effects` handler gained a
+  `sprites/{key}/{sprite.json|N.png}` route. Validated on `data.grf`: `torch_01`
+  (7 frames, offset `[-11,-56]`), `smoke` (1) and `banjjakii` (24 frames, real delay
+  `125`) all resolving. STR/emitter/fog baking is unchanged; the EXE-bound hardcoded
+  ambient ids remain skipped.
 - **Parametric map emitters are now baked into `manifest.effects`.** The modern
   ambient map effects `EF_EMITTER` (`974`), `EF_ANIMATED_EMITTER` (`1073`) and
   `EF_MAGIC_FLOOR` (`1025`) are **not** `.str` files (roBrowser's `EffectTable.js`

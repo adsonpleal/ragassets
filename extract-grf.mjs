@@ -2564,12 +2564,15 @@ function actActionSequences(bytes) {
   return out;
 }
 
-// Decode every frame of a .spr into { width, height, rgba } in roBrowser frame
-// order — the palette-indexed frames first (palette index 0 = transparent), then
-// the RGBA (truecolor) frames. RGBA frames are stored ABGR and are swizzled to
-// RGBA here. Used to render the sprite-based map effects (EF_TORCH/EF_SMOKE/
-// EF_BANJJAKII), whose frames are all truecolor; decodeSprFrame above pulls a
-// single palette frame (the cursor) and can't read these.
+// Decode every frame of a .spr into { width, height, rgba, type } in roBrowser
+// frame order — the palette-indexed frames (type 0, palette index 0 =
+// transparent) first, then the RGBA (truecolor) frames (type 1). RGBA frames are
+// stored ABGR and are swizzled to RGBA here. `type` matches a .act layer's sprite
+// type and lets a layer's index resolve into the right list (the two families are
+// indexed independently, exactly like the renderer's spr.images[sprType][index]).
+// Used to render the sprite-based map effects (EF_TORCH/EF_SMOKE/EF_BANJJAKII);
+// decodeSprFrame above pulls a single palette frame (the cursor) and can't read
+// these.
 export function decodeSprFrames(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let p = 0;
@@ -2615,7 +2618,7 @@ export function decodeSprFrames(bytes) {
       rgba[i * 4 + 2] = bytes[palStart + pi + 2];
       rgba[i * 4 + 3] = data[i] === 0 ? 0 : 255;
     }
-    frames.push({ width, height, rgba });
+    frames.push({ width, height, rgba, type: 0 });
   }
 
   // RGBA (truecolor) frames — raw width*height*4 bytes, stored ABGR.
@@ -2629,18 +2632,22 @@ export function decodeSprFrames(bytes) {
       p += 4;
       rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = a;
     }
-    frames.push({ width, height, rgba });
+    frames.push({ width, height, rgba, type: 1 });
   }
   return frames;
 }
 
-// Parse a .act's playback into per-action layer-0 frame-index sequences plus each
-// action's frame delay in ms (the stored float ×25). This is byte-accurate for
-// the 2.x acts the effect sprites use: the version>=2.0 layer carries a 4-byte
-// packed colour (not 4 floats) then scaleX/(scaleY)/rotation/spriteType, and the
-// version>=2.3 attach points are 16 bytes each. (actActionSequences above only
-// balances pre-2.0 layouts — fine for the cursor, wrong here.) After the actions
-// come the sound-event table (>=2.1) and then the per-action delays (>=2.2).
+// Parse a .act's full playback: per action, a list of frames (motions), each a
+// list of sprite layers carrying the placement the renderer needs (x/y offset of
+// the layer's centre from the act origin, sprite index + type, mirror, packed
+// colour, scaleX/Y, rotation), plus each action's frame delay in ms (the stored
+// float ×25). Byte-accurate for the 2.x acts the effect sprites use: the
+// version>=2.0 layer carries a 4-byte packed colour (not 4 floats) then
+// scaleX/(scaleY)/rotation/spriteType, and the version>=2.3 attach points are 16
+// bytes each. (actActionSequences above only balances pre-2.0 layouts — fine for
+// the cursor, wrong here.) After the actions come the sound-event table (>=2.1)
+// and then the per-action delays (>=2.2). The packed colour is little-endian
+// 0xAABBGGRR, so the four bytes in file order are R,G,B,A.
 export function parseActFrames(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let p = 0;
@@ -2661,30 +2668,33 @@ export function parseActFrames(bytes) {
   const actions = [];
   for (let a = 0; a < actionCount; a++) {
     const motionCount = i32();
-    const seq = [];
+    const frames = [];
     for (let m = 0; m < motionCount; m++) {
       seek(32); // range1[4] + range2[4]
       const layerCount = i32();
-      let first = -1;
+      const layers = [];
       for (let l = 0; l < layerCount; l++) {
-        seek(8); // x, y
+        const x = i32();
+        const y = i32();
         const index = i32();
-        i32(); // mirror
+        const mirror = i32();
+        let color = [255, 255, 255, 255];
+        let scaleX = 1, scaleY = 1, rotation = 0, sprType = 0;
         if (version >= 2.0) {
-          seek(4); // packed RGBA colour (4 bytes)
-          f32(); // scaleX
-          if (version > 2.3) f32(); // scaleY (else == scaleX)
-          i32(); // rotation angle
-          i32(); // sprite type
+          color = [u8(), u8(), u8(), u8()]; // packed RGBA colour (R,G,B,A bytes)
+          scaleX = f32();
+          scaleY = version > 2.3 ? f32() : scaleX; // separate scaleY from 2.4
+          rotation = i32(); // degrees
+          sprType = i32(); // 0 = palette-indexed image, 1 = rgba image
           if (version >= 2.5) { i32(); i32(); } // width, height
         }
-        if (l === 0) first = index;
+        layers.push({ x, y, index, sprType, mirror, color, scaleX, scaleY, rotation });
       }
       if (version >= 2.0) i32(); // sound event id
       if (version >= 2.3) { const c = i32(); seek(c * 16); } // attach points
-      seq.push(first);
+      frames.push(layers);
     }
-    actions.push(seq);
+    actions.push(frames);
   }
   if (version >= 2.1) { const events = i32(); seek(events * 40); } // sound names
   const delays = [];
@@ -2692,42 +2702,180 @@ export function parseActFrames(bytes) {
   return { actions, delays };
 }
 
-// Render a sprite-based map effect into a served bundle: <outDir>/<i>.png per .spr
-// frame plus sprite.json { frames, delays }. Frames are emitted in .spr index
-// order (which equals the .act action order for these effects); each frame's
-// delay is the delay of the .act action that plays it (ms), defaulting to 100
-// when the .act is absent or carries no/zero delay.
+// --- ACT frame compositing (sprite-based map effects) -------------------------
+// A faithful JS port of the native renderer's per-layer affine placement
+// (sprite.transformOfSprite + geom.Transform) and rasteriser (raster.DrawSprite /
+// AlphaBlend / TintPixel), just enough to bake one .act frame's sprite stack into
+// a single RGBA image. Matrices are row-major length-9; coordinates are RO sprite
+// pixels with +x right / +y down and the act origin at (0,0).
+
+const ACT_PI180 = Math.PI / 180;
+
+// Round half away from zero (D's std.math.round, which the renderer matches at
+// sub-pixel boundaries — JS Math.round rounds half toward +∞ instead).
+const roundHalfAway = (v) => (v < 0 ? -Math.round(-v) : Math.round(v));
+
+function mat3Mul(a, b) {
+  const m = new Array(9);
+  for (let r = 0; r < 3; r++)
+    for (let c = 0; c < 3; c++)
+      m[r * 3 + c] = a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
+  return m;
+}
+
+// m · (x, y, 1) → [x', y'].
+function mat3Apply(m, x, y) {
+  return [m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]];
+}
+
+// Matrix inverse, mirroring geom.Mat3.Inverse (det clamped to float epsilon).
+function mat3Inverse(m) {
+  let det =
+    m[0] * m[4] * m[8] + m[1] * m[5] * m[6] + m[2] * m[3] * m[7] -
+    m[6] * m[4] * m[2] - m[7] * m[5] * m[0] - m[8] * m[3] * m[1];
+  if (det === 0) det = 1.19209290e-7;
+  const inv = 1 / det;
+  return [
+    inv * (m[4] * m[8] - m[5] * m[7]),
+    inv * (m[2] * m[7] - m[1] * m[8]),
+    inv * (m[1] * m[5] - m[2] * m[4]),
+    inv * (m[5] * m[6] - m[3] * m[8]),
+    inv * (m[0] * m[8] - m[2] * m[6]),
+    inv * (m[2] * m[3] - m[0] * m[5]),
+    inv * (m[3] * m[7] - m[4] * m[6]),
+    inv * (m[1] * m[6] - m[0] * m[7]),
+    inv * (m[0] * m[4] - m[1] * m[3]),
+  ];
+}
+
+// Build one layer's affine transform and its integer bounding box, mirroring
+// sprite.transformOfSprite + geom.Transform.Calculate/BoundingBox. Origin is the
+// sprite centre (0.5, 0.5); the composition order is T·R·S·translate(-size/2).
+// Returns null when the layer is fully transparent (the renderer skips it).
+function actLayerTransform(layer, width, height) {
+  if (layer.color[3] === 0) return null;
+  let mirror = 1, mirrorAdjust = 0;
+  if (layer.mirror & 1) { mirror = -1; mirrorAdjust = 0.5; } // mirror rounding hack
+  const sizeX = width - mirrorAdjust, sizeY = height;
+
+  let m = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  m = mat3Mul(m, [1, 0, layer.x, 0, 1, layer.y, 0, 0, 1]); // translation
+  const s = Math.sin(layer.rotation * ACT_PI180), c = Math.cos(layer.rotation * ACT_PI180);
+  m = mat3Mul(m, [c, -s, 0, s, c, 0, 0, 0, 1]); // rotation
+  m = mat3Mul(m, [layer.scaleX * mirror, 0, 0, 0, layer.scaleY, 0, 0, 0, 1]); // scale
+  const ox = roundHalfAway(-sizeX * 0.5), oy = roundHalfAway(-sizeY * 0.5);
+  m = mat3Mul(m, [1, 0, ox, 0, 1, oy, 0, 0, 1]); // -size*origin
+
+  const corners = [mat3Apply(m, 0, 0), mat3Apply(m, sizeX, 0), mat3Apply(m, 0, sizeY), mat3Apply(m, sizeX, sizeY)];
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [px, py] of corners) {
+    if (px < minX) minX = px; if (py < minY) minY = py;
+    if (px > maxX) maxX = px; if (py > maxY) maxY = py;
+  }
+  // Box bounds truncate toward zero (geom.Box's int() cast).
+  return { m, box: { x1: Math.trunc(minX), y1: Math.trunc(minY), x2: Math.trunc(maxX), y2: Math.trunc(maxY) } };
+}
+
+// Composite one .act frame's layers (resolved against framesByType, the decoded
+// .spr split into [type0, type1] lists) into a single RGBA image at its natural
+// bounding size, baking in every layer's placement, scale, rotation, mirror and
+// colour. Returns { width, height, rgba, offset:[x,y] } where offset is the centre
+// of the composited image relative to the act origin (RO px, +x right / +y down),
+// or null when no layer contributes. Ports raster.DrawSprite + AlphaBlend +
+// TintPixel exactly (nearest-neighbour inverse sampling, integer alpha math).
+export function compositeActFrame(framesByType, layers) {
+  const built = [];
+  let ux1 = Infinity, uy1 = Infinity, ux2 = -Infinity, uy2 = -Infinity;
+  for (const layer of layers) {
+    const src = framesByType[layer.sprType] && framesByType[layer.sprType][layer.index];
+    if (!src) continue;
+    const t = actLayerTransform(layer, src.width, src.height);
+    if (!t) continue;
+    built.push({ src, m: t.m, box: t.box, color: layer.color });
+    if (t.box.x1 < ux1) ux1 = t.box.x1; if (t.box.y1 < uy1) uy1 = t.box.y1;
+    if (t.box.x2 > ux2) ux2 = t.box.x2; if (t.box.y2 > uy2) uy2 = t.box.y2;
+  }
+  if (!built.length) return null;
+  const W = Math.abs(ux2 - ux1), H = Math.abs(uy2 - uy1);
+  if (W === 0 || H === 0) return null;
+
+  const dest = new Uint8Array(W * H * 4);
+  for (const b of built) {
+    const w = Math.abs(b.box.x2 - b.box.x1), h = Math.abs(b.box.y2 - b.box.y1);
+    if (w === 0 || h === 0) continue;
+    const inv = mat3Inverse(b.m);
+    const offX = b.box.x1 - ux1, offY = b.box.y1 - uy1;
+    const [tr, tg, tb, ta] = b.color;
+    const { width: sw, height: sh, rgba: src } = b.src;
+    for (let i = 0; i < w * h; i++) {
+      const tx = i % w, ty = (i / w) | 0;
+      const dx = tx + offX, dy = ty + offY;
+      if (dx < 0 || dx >= W || dy < 0 || dy >= H) continue;
+      const [sxf, syf] = mat3Apply(inv, tx + b.box.x1, ty + b.box.y1);
+      const sx = roundHalfAway(sxf), sy = roundHalfAway(syf);
+      if (sx < 0 || sy < 0 || sx >= sw || sy >= sh) continue;
+      const si = (sx + sy * sw) * 4;
+      if (src[si + 3] === 0) continue;
+      // TintPixel: per-channel multiply by the layer colour.
+      const cr = (tr * src[si]) / 255 | 0;
+      const cg = (tg * src[si + 1]) / 255 | 0;
+      const cb = (tb * src[si + 2]) / 255 | 0;
+      const ca = (ta * src[si + 3]) / 255 | 0;
+      // AlphaBlend src over dest (integer un-premultiply, matching the renderer).
+      const di = (dx + dy * W) * 4;
+      const da = dest[di + 3];
+      if (da === 0 || ca === 255) {
+        dest[di] = cr; dest[di + 1] = cg; dest[di + 2] = cb; dest[di + 3] = ca;
+        continue;
+      }
+      const newA = ca + Math.trunc((da * (255 - ca)) / 255);
+      if (newA === 0) { dest[di] = dest[di + 1] = dest[di + 2] = dest[di + 3] = 0; continue; }
+      const ch = (sc, dc) =>
+        Math.trunc((Math.trunc((sc * ca) / 255) + Math.trunc((dc * da * (255 - ca)) / (255 * 255))) * 255 / newA);
+      dest[di] = ch(cr, dest[di]);
+      dest[di + 1] = ch(cg, dest[di + 1]);
+      dest[di + 2] = ch(cb, dest[di + 2]);
+      dest[di + 3] = newA;
+    }
+  }
+  return { width: W, height: H, rgba: dest, offset: [(ux1 + ux2) / 2, (uy1 + uy2) / 2] };
+}
+
+// Render a sprite-based map effect into a served bundle: <outDir>/<i>.png — one
+// composited PNG per frame of the effect's first action (these map effects have a
+// single action) — plus sprite.json { frames: [{ img, delay, offset:[x,y] }] }.
+// Each PNG bakes in every .act layer's placement, scale, rotation, mirror and
+// colour (so it already looks like the in-game frame), and `offset` is the centre
+// of that composited image relative to the effect's placement origin (RO px,
+// +x right / +y down; the client negates y for its Y-up world). `delay` is the
+// action's real frame interval in ms (the .act float ×25), defaulting to 100 when
+// it carries no/zero delay.
 function buildSpriteEffect(grf, spritePath, key, outDir) {
   const sprEntry = findBestEntry(grf, normalize(spritePath + ".spr"));
   if (!sprEntry) throw new Error("no .spr in GRF");
-  const frames = decodeSprFrames(extractFile(grf, sprEntry));
-  if (!frames.length) throw new Error("no frames");
+  const decoded = decodeSprFrames(extractFile(grf, sprEntry));
+  if (!decoded.length) throw new Error("no frames");
+  // Split into the two index spaces a .act layer's sprType selects between.
+  const framesByType = [[], []];
+  for (const f of decoded) framesByType[f.type].push(f);
 
-  // Per-frame delay from the .act: an action's delay applies to every frame its
-  // layer-0 sequence shows (first writer wins for a frame shown by several).
-  const delayByFrame = new Array(frames.length).fill(0);
   const actEntry = findBestEntry(grf, normalize(spritePath + ".act"));
-  if (actEntry) {
-    try {
-      const { actions, delays } = parseActFrames(extractFile(grf, actEntry));
-      actions.forEach((seq, ai) => {
-        const d = delays[ai];
-        for (const idx of seq) if (idx >= 0 && idx < frames.length && !delayByFrame[idx]) delayByFrame[idx] = d;
-      });
-    } catch (err) {
-      console.warn(`  ! sprites/${key}: .act parse failed: ${err.message}`);
-    }
-  }
-  const norm = (d) => (d && d > 0 ? Math.round(d) : 100);
-  const fallback = norm(delayByFrame.find((d) => d > 0));
+  if (!actEntry) throw new Error("no .act in GRF");
+  const { actions, delays } = parseActFrames(extractFile(grf, actEntry));
+  const action = actions[0];
+  if (!action || !action.length) throw new Error("act action 0 has no frames");
+  const delay = delays[0] > 0 ? Math.round(delays[0]) : 100;
 
-  const fileNames = [];
-  frames.forEach((f, i) => {
-    writeFileSync(join(outDir, `${i}.png`), encodePng(f.width, f.height, Buffer.from(f.rgba)));
-    fileNames.push(`${i}.png`);
+  const frames = [];
+  action.forEach((layers, i) => {
+    const frame = compositeActFrame(framesByType, layers);
+    if (!frame) return; // a frame with no visible layers contributes nothing
+    const img = `${i}.png`;
+    writeFileSync(join(outDir, img), encodePng(frame.width, frame.height, Buffer.from(frame.rgba)));
+    frames.push({ img, delay, offset: [roundHalfAway(frame.offset[0]), roundHalfAway(frame.offset[1])] });
   });
-  const delays = frames.map((_, i) => (delayByFrame[i] > 0 ? norm(delayByFrame[i]) : fallback));
-  writeFileSync(join(outDir, "sprite.json"), JSON.stringify({ frames: fileNames, delays }));
+  if (!frames.length) throw new Error("no composited frames");
+  writeFileSync(join(outDir, "sprite.json"), JSON.stringify({ frames }));
   return { frames: frames.length };
 }
 

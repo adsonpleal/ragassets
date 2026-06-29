@@ -168,7 +168,7 @@ func effectsServer(t *testing.T) *server {
 	if err := os.MkdirAll(filepath.Join(dir, "sprites", "torch_01"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	write(filepath.Join("sprites", "torch_01", "sprite.json"), `{"frames":["0.png"],"delays":[100]}`)
+	write(filepath.Join("sprites", "torch_01", "sprite.json"), `{"frames":[{"img":"0.png","delay":100,"offset":[0,0]}]}`)
 	write(filepath.Join("sprites", "torch_01", "0.png"), "\x89PNG\r\n\x1a\n")
 	return &server{cfg: config{effectsDir: dir, port: "0"}, flight: newFlightGroup()}
 }
