@@ -3,6 +3,30 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-06-29
+
+### Added
+- **Parametric map emitters are now baked into `manifest.effects`.** The modern
+  ambient map effects `EF_EMITTER` (`974`), `EF_ANIMATED_EMITTER` (`1073`) and
+  `EF_MAGIC_FLOOR` (`1025`) are **not** `.str` files (roBrowser's `EffectTable.js`
+  leaves them undefined and the client draws them from a particle spec, not an
+  asset). That spec lives per-map in the client's
+  `data/luafiles514/lua files/effecttool/<map>.lub` as Lua emitter tables
+  (`_<map>_emitterInfo` / `_animatedEmitterInfo` / `_magicfloorInfo`, plus a generic
+  `_<map>_Effect` container). During `--maps` extraction we now read that lub
+  (`readEffectToolLub` — a straight-line Lua 5.1 VM reusing the iteminfo reader's
+  opcode/table machinery, with a plain-text fallback for the one uncompiled lub),
+  match each `.rsw` placement to its lub entry by horizontal **X/Z** position
+  (≤5 units), and bake the entry's spec inline as an `emitter` field:
+  `{"id","pos","delay","param","emitter":{…}}`. The emitter's `texture` is rewritten
+  into the shared `_t` store (content-addressed, deduplicated like every other map
+  texture); magic-floor entries carry `Speed`/`Size`/`Angle`/`RiseAngle`/`Alpha`/
+  `Height0…20` instead of a texture. STR-effect baking is unchanged, and the classic
+  hardcoded ambient effects (forest lights, torches, light pillars, …) remain
+  skipped — the client draws those procedurally with no data we can ship. A full run
+  bakes **6,740 emitter placements across 106 maps** (`974`: 6,573, `1073`: 141,
+  `1025`: 26), resolving 6,713 distinct emitter textures.
+
 ## 2026-06-28
 
 ### Added

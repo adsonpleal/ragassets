@@ -316,7 +316,7 @@ cost. These endpoints return `404` until you run the `--maps` step.
 | Path | What you get |
 |---|---|
 | `GET /maps/index.json` | Catalogue: `{"maps":[…]}` — every extracted map name. |
-| `GET /maps/{map}/manifest.json` | The map's asset manifest: `files` (geometry), `models`, `textures`, `water`, `ui` — resource names mapped to shared blob paths (`../_t/<hash>.png`, …) — plus `fog` (`{near,far,color:[r,g,b],factor}`, present only for maps listed in `data/fogparametertable.txt`) and `effects` (the `.rsw` in-world `.str` effects; present only for maps that place any). |
+| `GET /maps/{map}/manifest.json` | The map's asset manifest: `files` (geometry), `models`, `textures`, `water`, `ui` — resource names mapped to shared blob paths (`../_t/<hash>.png`, …) — plus `fog` (`{near,far,color:[r,g,b],factor}`, present only for maps listed in `data/fogparametertable.txt`) and `effects` (the `.rsw` in-world effects — `.str` bundles and parametric emitters; present only for maps that place any). |
 | `GET /maps/{map}/{map}.gat\|gnd\|rsw` | Raw geometry binaries (altitude, ground mesh, world objects). |
 | `GET /maps/_t/{hash}.png` | A shared texture (TGA alpha kept; BMP magenta-keyed → alpha, fringe-bled). |
 | `GET /maps/_m/{hash}.rsm` | A shared model (raw `.rsm`). |
@@ -337,20 +337,36 @@ store. Map names are lowercase slugs (`[a-z0-9_@-]`); blob hashes are 16 hex cha
 Responses carry the same immutable cache headers, `ETag`/`304` and wildcard CORS as
 `/icons` and `/effects`.
 
-When a map's `.rsw` places in-world `.str` effects, the manifest carries an `effects`
+When a map's `.rsw` places in-world effects, the manifest carries an `effects`
 array — one entry per placed instance (positions are **not** deduplicated; the client
-proximity-culls):
+proximity-culls). There are two renderable kinds:
 
 ```json
-"effects": [ { "id": 109, "pos": [x, y, z], "str": ["bubble1","bubble2","bubble3","bubble4"], "delay": 0, "param": [0,0,0,0] } ]
+"effects": [
+  { "id": 109, "pos": [x, y, z], "str": ["bubble1","bubble2","bubble3","bubble4"], "delay": 0, "param": [0,0,0,0] },
+  { "id": 974, "pos": [x, y, z], "delay": 1, "param": [0,0,0,0],
+    "emitter": { "dir1": [-3,-5,-3], "dir2": [5,0,5], "gravity": [0.7,-2,0.7], "color": [255,255,255,255],
+                 "rate": [1,3], "size": [6,8], "life": [3,4], "texture": "../_t/<hash>.png",
+                 "speed": [0], "srcmode": [5], "destmode": [2], "maxcount": [20], "zenable": [1] } }
+]
 ```
 
-`id` is the `.rsw` effect id (resolved via the ported `EffectTable.js` STR subset),
-`pos` is the ÷5 world position, and `str` is the id's deduped set of
-[`/effects/{key}/`](#get-effects--effect-only-costumes) bundle keys the client picks
-from at random per spawn. Effects whose id isn't a servable STR effect (FUNC/3D/weather
-types, e.g. `45` `EF_FIREFLY`) are skipped. `iz_dun03`, for instance, places 312 of
-`id 109` (`EF_BUBBLE` → `bubble1`…`bubble4`).
+`id` is the `.rsw` effect id and `pos` is the ÷5 world position.
+
+- **STR effects** carry `str` — the id's deduped set of
+  [`/effects/{key}/`](#get-effects--effect-only-costumes) bundle keys (resolved via the
+  ported `EffectTable.js` STR subset) the client picks from at random per spawn.
+  `iz_dun03`, for instance, places 312 of `id 109` (`EF_BUBBLE` → `bubble1`…`bubble4`).
+- **Parametric emitters** — `EF_EMITTER` (`974`), `EF_ANIMATED_EMITTER` (`1073`) and
+  `EF_MAGIC_FLOOR` (`1025`) are not `.str` files; their particle spec lives per-map in
+  the client's `effecttool/<map>.lub` (a parsed Lua emitter table). Each placement is
+  matched to its lub entry by horizontal (X/Z) position and the spec is baked inline as
+  `emitter` (a `texture` field is rewritten into the shared `_t` store; magic-floor
+  entries carry `Speed`/`Size`/`Angle`/`RiseAngle`/`Alpha`/`Height0…20` instead).
+
+Effects that are neither — non-STR types (FUNC/3D/weather, e.g. `45` `EF_FIREFLY`) and
+the classic hardcoded ambient effects (forest lights, torches, light pillars, …) the
+client draws procedurally with no shippable data — are skipped.
 
 ### `GET /bgm/...` — per-map background music
 

@@ -2618,6 +2618,170 @@ function extractMapUi(grf, index, store) {
   return ui;
 }
 
+// ---------------------------------------------------------------------------
+// EffectTool emitter lubs — the modern parametric map effects EF_EMITTER (974),
+// EF_ANIMATED_EMITTER (1073) and EF_MAGIC_FLOOR (1025) are NOT .str files. Their
+// particle spec lives per-map in `data/luafiles514/lua files/effecttool/<map>.lub`
+// as global tables (`_<map>_emitterInfo`/`_animatedEmitterInfo`/`_magicfloorInfo`
+// and a generic `_<map>_Effect` container with Type/ID fields). Each .rsw type-4
+// placement of these ids matches a lub entry by horizontal (X/Z) position, so we
+// attach the matched entry's spec to the manifest effect — the client renders it
+// from that, no client EXE needed.
+//
+// The `*Info` data is ALWAYS a straight-line table constructor; the FORLOOP/CALL
+// in these lubs live only in trailing loader closures that must NOT be executed
+// (running their control flow corrupts the data). So executeLub runs straight
+// line — branch/loop/call/upvalue ops are no-ops, nested closures are captured
+// but never run — while still evaluating arithmetic (some coords are computed).
+// EffectTool arrays are 0-indexed (keys 0..N); one lub (1@def03) ships as plain
+// Lua source rather than LuaQ bytecode, so readEffectToolLub handles both.
+// ---------------------------------------------------------------------------
+
+const EMITTER_EFFECT_IDS = new Set([974, 1073, 1025]);
+
+// Straight-line execution of a lub's root proto (see note above). Reuses the
+// shared OP/BITRK/FIELDS_PER_FLUSH/LuaTable defined for the iteminfo reader.
+function executeLub(proto, globals) {
+  const R = [];
+  const K = proto.k;
+  const rk = (x) => (x & BITRK ? K[x & (BITRK - 1)] : R[x]);
+  let pc = 0;
+  const code = proto.code;
+  while (pc < code.length) {
+    const i = code[pc++];
+    const op = i & 0x3f;
+    const a = (i >>> 6) & 0xff;
+    const c = (i >>> 14) & 0x1ff;
+    const b = (i >>> 23) & 0x1ff;
+    const bx = (i >>> 14) & 0x3ffff;
+    switch (op) {
+      case OP.MOVE: R[a] = R[b]; break;
+      case OP.LOADK: R[a] = K[bx]; break;
+      case OP.LOADBOOL: R[a] = b !== 0; if (c) pc++; break;
+      case OP.LOADNIL: for (let r = a; r <= b; r++) R[r] = undefined; break;
+      case OP.GETGLOBAL: R[a] = globals.get(K[bx]); break;
+      case OP.SETGLOBAL: globals.set(K[bx], R[a]); break;
+      case OP.NEWTABLE: R[a] = new LuaTable(); break;
+      case OP.GETTABLE: { const t = R[b]; R[a] = t instanceof LuaTable ? t.get(rk(c)) : undefined; break; }
+      case OP.SETTABLE: { const t = R[a]; if (t instanceof LuaTable) t.set(rk(b), rk(c)); break; }
+      case OP.ADD: R[a] = rk(b) + rk(c); break;
+      case OP.SUB: R[a] = rk(b) - rk(c); break;
+      case OP.MUL: R[a] = rk(b) * rk(c); break;
+      case OP.DIV: R[a] = rk(b) / rk(c); break;
+      case OP.MOD: { const x = rk(b), y = rk(c); R[a] = x - Math.floor(x / y) * y; break; }
+      case OP.POW: R[a] = Math.pow(rk(b), rk(c)); break;
+      case OP.UNM: R[a] = -R[b]; break;
+      case OP.SETLIST: {
+        let n = b;
+        let block = c;
+        if (block === 0) block = code[pc++]; // real C stored in the next word
+        if (n === 0) { n = 0; while (R[a + n + 1] !== undefined) n++; } // B=0: flush to top
+        const base = (block - 1) * FIELDS_PER_FLUSH;
+        const t = R[a];
+        for (let j = 1; j <= n; j++) t.set(base + j, R[a + j]);
+        break;
+      }
+      case OP.CLOSURE: R[a] = { __closure: proto.protos[bx] }; break; // captured, not run
+      case OP.RETURN: return;
+      default: break; // JMP/FOR*/CALL/EQ/…/upvalues — no-op (straight-line)
+    }
+  }
+}
+
+// LuaTable → plain JS. EffectTool list tables are 0-indexed (keys 0..N) while Lua
+// literals like {x,y,z} are 1-indexed, so an all-integer-keyed table is walked
+// min..max (walking 1..max would silently drop entry 0).
+function lubToJS(v, seen = new Set()) {
+  if (v instanceof LuaTable) {
+    if (seen.has(v)) return undefined;
+    seen.add(v);
+    const keys = [...v.map.keys()];
+    const arrish = keys.length > 0 && keys.every((k) => typeof k === "number" && Number.isInteger(k));
+    if (arrish) {
+      const min = Math.min(...keys), max = Math.max(...keys);
+      const arr = [];
+      for (let i = min; i <= max; i++) arr.push(lubToJS(v.map.get(i), seen));
+      return arr;
+    }
+    const o = {};
+    for (const k of keys) o[k] = lubToJS(v.map.get(k), seen);
+    return o;
+  }
+  if (typeof v === "number") return Math.abs(v) < 1e-9 ? 0 : Math.round(v * 1e4) / 1e4;
+  return v;
+}
+
+// Minimal Lua table-literal parser for the rare uncompiled (plain-text) lub.
+function parseLubSource(src) {
+  src = src.replace(/--\[\[[\s\S]*?\]\]/g, "").replace(/--[^\n]*/g, "");
+  let i = 0;
+  const n = src.length;
+  const ws = () => { while (i < n && /\s/.test(src[i])) i++; };
+  function value() {
+    ws();
+    const ch = src[i];
+    if (ch === "{") return table();
+    if (ch === "[" && src[i + 1] === "[") { i += 2; const e = src.indexOf("]]", i); const s = src.slice(i, e); i = e + 2; return s; }
+    if (ch === '"' || ch === "'") { const q = ch; i++; let s = ""; while (i < n && src[i] !== q) { if (src[i] === "\\") { s += src[i + 1]; i += 2; } else s += src[i++]; } i++; return s; }
+    let j = i; while (j < n && /[^,}\s\]=]/.test(src[j])) j++; const tok = src.slice(i, j); i = j;
+    if (tok === "true") return true; if (tok === "false") return false; if (tok === "nil") return undefined;
+    const num = Number(tok); return Number.isNaN(num) ? tok : num;
+  }
+  function table() {
+    const t = {}; const arr = []; i++;
+    for (;;) {
+      ws(); if (src[i] === "}") { i++; break; }
+      if (src[i] === "[") {
+        i++; ws(); let key;
+        if (src[i] === '"' || src[i] === "'") { const q = src[i++]; key = ""; while (src[i] !== q) key += src[i++]; i++; }
+        else { let j = i; while (src[j] !== "]") j++; key = Number(src.slice(i, j).trim()); i = j; }
+        ws(); i++; ws(); i++; t[key] = value();
+      } else if (/[A-Za-z_]/.test(src[i])) {
+        let j = i; while (/[A-Za-z0-9_]/.test(src[j])) j++; const key = src.slice(i, j); i = j; ws();
+        if (src[i] === "=") { i++; t[key] = value(); } else { i = j; arr.push(value()); }
+      } else arr.push(value());
+      ws(); if (src[i] === "," || src[i] === ";") i++;
+    }
+    if (arr.length) arr.forEach((v, k) => (t[k + 1] = v));
+    return Object.keys(t).every((k) => /^\d+$/.test(k)) ? Object.values(t) : t;
+  }
+  const globals = {};
+  const re = /(_[A-Za-z0-9_]+)\s*=\s*/g;
+  let m;
+  while ((m = re.exec(src))) { i = re.lastIndex; ws(); globals[m[1]] = value(); re.lastIndex = i; }
+  return globals;
+}
+
+// Read an EffectTool lub (LuaQ bytecode or plain-text source) → globals object.
+function readEffectToolLub(bytes) {
+  if (bytes[0] === 0x1b && bytes[1] === 0x4c && bytes[2] === 0x75 && bytes[3] === 0x61) {
+    const g = new LuaTable();
+    executeLub(loadChunk(bytes), g);
+    const out = {};
+    for (const k of g.map.keys()) out[k] = lubToJS(g.get(k));
+    return out;
+  }
+  return parseLubSource(Buffer.from(bytes).toString("latin1"));
+}
+
+// All emitter placement records from a map's lub: every global that's a non-empty
+// array of objects carrying a `pos` (covers emitterInfo/animatedEmitterInfo/
+// magicfloorInfo and the generic Effect container). [] when the map has no lub.
+function readMapEmitters(grf, index, map) {
+  const entry = index.get(`data/luafiles514/lua files/effecttool/${map}.lub`);
+  if (!entry) return [];
+  let globals;
+  try { globals = readEffectToolLub(extractFile(grf, entry)); }
+  catch (err) { console.warn(`  ! ${map}: effecttool lub parse failed: ${err.message}`); return []; }
+  const out = [];
+  for (const val of Object.values(globals)) {
+    if (!Array.isArray(val) || !val.length) continue;
+    if (!val.every((e) => e && typeof e === "object" && !Array.isArray(e) && Array.isArray(e.pos))) continue;
+    out.push(...val);
+  }
+  return out;
+}
+
 // Extract one map into <outBase>/<map>/ (raw geometry + manifest) plus its
 // model/texture/water blobs into the shared store. Returns a stats object, or
 // { skipped } when a required geometry file is missing.
@@ -2687,15 +2851,63 @@ function extractOneMap(grf, index, map, outBase, store, ui, fogTable) {
   const fog = fogTable && fogTable.get(map);
   if (fog) manifest.fog = fog;
 
-  // In-world .str effects: one entry per placed type-4 object whose id resolves to
-  // a STR effect (positions are NOT deduped — the client proximity-culls). `str` is
-  // the id's deduped set of /effects/<key>/ bundles (built by --effects). Effects
-  // whose id isn't a (servable) STR — e.g. id 45 EF_FIREFLY, a FUNC — are skipped.
+  // In-world effects: one entry per placed type-4 object. Two renderable kinds:
+  //  - STR effects (`str` = the id's deduped set of /effects/<key>/ bundles built
+  //    by --effects); positions are NOT deduped — the client proximity-culls.
+  //  - Parametric emitters (EF_EMITTER/ANIMATED_EMITTER/MAGIC_FLOOR): not .str —
+  //    each placement is matched by horizontal (X/Z) position to its EffectTool
+  //    lub entry, whose particle spec is baked inline as `emitter` (texture
+  //    rewritten into the shared _t store). Effects that are neither (e.g. id 45
+  //    EF_FIREFLY, a FUNC, or the hardcoded classic light/torch/pillar effects)
+  //    are skipped — the client draws those procedurally with no data we can ship.
+  const hasEmitters = rswEffects.some((e) => EMITTER_EFFECT_IDS.has(e.id));
+  const emitterEntries = hasEmitters ? readMapEmitters(grf, index, map) : [];
+  const emitterTexCache = new Map(); // normalized texture name -> ../_t/<hash>.png | null
+  // Resolve an emitter texture (e.g. "effect\\smoke2.bmp" / "smoke2.bmp") into the
+  // shared _t store, relative to data/texture/effect/ (then data/texture/).
+  const resolveEmitterTexture = (texName) => {
+    const key = normName(texName);
+    if (emitterTexCache.has(key)) return emitterTexCache.get(key);
+    const rel = key.replace(/^effect\//, "");
+    const ent = index.get(`data/texture/effect/${rel}`) || index.get(`data/texture/${rel}`);
+    let served = null;
+    if (ent) {
+      const png = effectTextureToPng(extractFile(grf, ent), rel);
+      if (png) served = "../" + store("_t", "png", png);
+    }
+    emitterTexCache.set(key, served);
+    return served;
+  };
+  // Nearest lub entry to a placement by X/Z (.rsw pos is ÷5; lub pos is raw), within
+  // 5 world units. The lub `pos` is dropped from the baked spec (the placement's own
+  // `pos` is authoritative and scene-consistent); `texture` is rewritten to a path.
+  const matchEmitter = (e) => {
+    const rx = e.pos[0] * 5, rz = e.pos[2] * 5;
+    let best = null, bestD = Infinity;
+    for (const rec of emitterEntries) {
+      const dx = rec.pos[0] - rx, dz = rec.pos[2] - rz;
+      const d = dx * dx + dz * dz;
+      if (d < bestD) { bestD = d; best = rec; }
+    }
+    if (!best || bestD > 25) return null;
+    const { pos, ...spec } = best;
+    if (typeof spec.texture === "string") spec.texture = resolveEmitterTexture(spec.texture);
+    return spec;
+  };
+
   const mapEffects = [];
+  let emitterMissed = 0;
   for (const e of rswEffects) {
     const refs = effectStrRefs(e.id);
-    if (!refs.length) continue;
-    mapEffects.push({ id: e.id, pos: e.pos, str: refs.map((r) => r.key), delay: e.delay, param: e.param });
+    if (refs.length) {
+      mapEffects.push({ id: e.id, pos: e.pos, str: refs.map((r) => r.key), delay: e.delay, param: e.param });
+      continue;
+    }
+    if (EMITTER_EFFECT_IDS.has(e.id)) {
+      const spec = matchEmitter(e);
+      if (spec) mapEffects.push({ id: e.id, pos: e.pos, delay: e.delay, param: e.param, emitter: spec });
+      else emitterMissed++;
+    }
   }
   if (mapEffects.length) manifest.effects = mapEffects;
 
@@ -2713,6 +2925,8 @@ function extractOneMap(grf, index, map, outBase, store, ui, fogTable) {
     waterFrames: waterFrames.length,
     fog: !!fog,
     effects: mapEffects.length,
+    emitters: mapEffects.filter((e) => e.emitter).length,
+    emitterMissed,
   };
 }
 
