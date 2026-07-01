@@ -3,6 +3,26 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-07-01
+
+### Added
+- **Status icons for EFSTs missing from `StateIconImgList`, starting with the stat
+  food buffs.** `/icons/status/<id>.png` was previously extracted only from
+  `stateiconimginfo.lub`'s `StateIconImgList` (~450 of ~1241 EFSTs). Many EFSTs the
+  client *does* show an icon for are absent from that table — the client maps them to
+  a `data/texture/effect/*.tga` via a convention hardcoded in its exe, not the lua
+  data — so those ids `404`ed. `extract-grf.mjs` now applies a supplemental hardcoded
+  `STATUS_ICON_OVERRIDES` table after `StateIconImgList` (the lua table wins whenever
+  it has its own entry for an id), seeded with the 12 stat-food mappings:
+  `241`–`246` (`EFST_FOOD_STR`…`LUK`) and `271`–`276` (their `_CASH` variants) →
+  `str/agi/vit/dex/int/luk_gogi.tga`. Each referenced TGA is decoded to a transparent
+  PNG and written to `resources/icons/status/<id>.png` exactly like the existing path,
+  so `/icons/status/241.png`…`246.png` and `271.png`…`276.png` now serve the gogi
+  icons. The writer reads each TGA's own header for dimensions (it never assumed a
+  fixed size), so the served PNG matches the client asset regardless of shape. The
+  override table is the extension point for porting the client's remaining ~129
+  hardcoded EFST→effect-texture mappings.
+
 ## 2026-06-29
 
 ### Added

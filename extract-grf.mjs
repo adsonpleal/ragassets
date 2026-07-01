@@ -901,12 +901,38 @@ function parseSkillIds(map) {
   return ids;
 }
 
+// Supplemental EFST id -> icon filename table for status effects the client
+// shows an icon for but that StateIconImgList (stateiconimginfo.lub) never
+// references. For these ids the client maps the EFST to a data/texture/effect/
+// *.tga via a convention hardcoded in the client exe, not the lua data, so they
+// would otherwise 404. Values are basenames relative to data/texture/effect/
+// (same convention as StateIconImgList entries), resolved against the GRF by the
+// writer. StateIconImgList wins whenever it has its own entry for an id (see
+// parseStatusIcons). Note these TGAs are not necessarily 32x32 — the *_gogi
+// stat-food icons are 32x24 — so the writer must read each TGA's own header.
+const STATUS_ICON_OVERRIDES = {
+  // Stat food buffs (EFST_FOOD_*) and their cash-shop variants (EFST_FOOD_*_CASH).
+  241: "str_gogi.tga", // EFST_FOOD_STR
+  242: "agi_gogi.tga", // EFST_FOOD_AGI
+  243: "vit_gogi.tga", // EFST_FOOD_VIT
+  244: "dex_gogi.tga", // EFST_FOOD_DEX
+  245: "int_gogi.tga", // EFST_FOOD_INT
+  246: "luk_gogi.tga", // EFST_FOOD_LUK
+  271: "str_gogi.tga", // EFST_FOOD_STR_CASH
+  272: "agi_gogi.tga", // EFST_FOOD_AGI_CASH
+  273: "vit_gogi.tga", // EFST_FOOD_VIT_CASH
+  274: "dex_gogi.tga", // EFST_FOOD_DEX_CASH
+  275: "int_gogi.tga", // EFST_FOOD_INT_CASH
+  276: "luk_gogi.tga", // EFST_FOOD_LUK_CASH
+};
+
 // EFST status-effect id -> icon filename. efstids.lub defines the global
 // EFST_IDs (name -> numeric id); stateiconimginfo.lub then builds
 // StateIconImgList[priority][EFST_IDs[name]] = "<file>.tga", so it must run over
 // the SAME globals AFTER efstids for those lookups to resolve. We flatten the
 // per-priority sub-tables down to id -> filename (the filename is a client
-// string — EUC-KR for the Korean names — resolved against the GRF later).
+// string — EUC-KR for the Korean names — resolved against the GRF later), then
+// fill in ids the lua table omits from STATUS_ICON_OVERRIDES (lua data wins).
 function parseStatusIcons(map) {
   const out = new Map();
   const efst = map.get("data/luafiles514/lua files/stateicon/efstids.lub");
@@ -930,6 +956,11 @@ function parseStatusIcons(map) {
     }
   } catch (err) {
     console.error(`! stateicon tables could not be executed (${err.message}); skipping status icons`);
+  }
+  // Apply the hardcoded override table for ids StateIconImgList doesn't cover.
+  for (const [id, file] of Object.entries(STATUS_ICON_OVERRIDES)) {
+    const n = Number(id);
+    if (!out.has(n)) out.set(n, file);
   }
   return out;
 }

@@ -247,8 +247,14 @@ immutable cache headers and `ETag`/`304` support as `/image`. Unknown names
 (or types) return `404`.
 
 The `status` type is keyed by the client's **EFST** status id (the numeric ids in
-`luafiles514/.../stateicon/efstids.lub`). Not every EFST has an icon — only those
-the client maps to an image in `stateiconimginfo.lub` are served.
+`luafiles514/.../stateicon/efstids.lub`). Not every EFST has an icon — those the
+client maps to an image in `stateiconimginfo.lub` are served, plus a supplemental
+hardcoded `STATUS_ICON_OVERRIDES` table (in `extract-grf.mjs`) for EFSTs the client
+shows an icon for via a convention baked into its exe rather than the lua data —
+e.g. the stat food buffs (`241`–`246` `EFST_FOOD_*` and `271`–`276` `*_CASH`) →
+`data/texture/effect/*_gogi.tga`. `stateiconimginfo.lub` wins whenever it has its
+own entry for an id. Most status icons are 32×32, but the source TGA's own header
+is honoured (the `*_gogi` icons vary), so the served PNG matches the client asset.
 
 The `ui` type exposes the character-creation screen's elements under their
 original client filenames:
