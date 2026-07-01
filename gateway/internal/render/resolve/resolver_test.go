@@ -3,7 +3,7 @@ package resolve
 import (
 	"testing"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/rotype"
+	"github.com/ragassets/gateway/internal/render/rotype"
 )
 
 func TestPredicates(t *testing.T) {

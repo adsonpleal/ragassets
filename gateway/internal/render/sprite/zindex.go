@@ -1,6 +1,6 @@
 package sprite
 
-import "github.com/ragassets/zrenderer-gateway/internal/render/roformat"
+import "github.com/ragassets/gateway/internal/render/roformat"
 
 // IsTopLeftDir reports whether a facing direction (0..7) draws "top-left", which
 // flips several z-order relationships. Directions 2..5 are top-left.

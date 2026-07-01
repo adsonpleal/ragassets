@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/engine"
-	"github.com/ragassets/zrenderer-gateway/internal/render/resolve"
+	"github.com/ragassets/gateway/internal/render/engine"
+	"github.com/ragassets/gateway/internal/render/resolve"
 )
 
 func newTestServer(t *testing.T) *server {

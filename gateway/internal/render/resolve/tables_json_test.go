@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/rotype"
+	"github.com/ragassets/gateway/internal/render/rotype"
 )
 
 func TestDefaultTablesLoads(t *testing.T) {

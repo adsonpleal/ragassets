@@ -15,7 +15,7 @@ node_modules/
 .env
 
 # Go build artifacts (the gateway is normally built inside Docker)
-/gateway/zrenderer-gateway
+/gateway/ragassets-gateway
 /gateway/*.exe
 
 # Local Claude settings

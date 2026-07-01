@@ -10,10 +10,10 @@ RUN go mod download
 COPY . .
 
 # CGO off → fully static binary that runs on the empty distroless/static image.
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /zrenderer-gateway .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /ragassets-gateway .
 
 FROM gcr.io/distroless/static:nonroot
 EXPOSE 8080
-COPY --from=build /zrenderer-gateway /zrenderer-gateway
+COPY --from=build /ragassets-gateway /ragassets-gateway
 USER nonroot:nonroot
-ENTRYPOINT ["/zrenderer-gateway"]
+ENTRYPOINT ["/ragassets-gateway"]

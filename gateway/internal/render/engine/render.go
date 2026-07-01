@@ -1,10 +1,10 @@
 package engine
 
 import (
-	"github.com/ragassets/zrenderer-gateway/internal/render/geom"
-	"github.com/ragassets/zrenderer-gateway/internal/render/raster"
-	"github.com/ragassets/zrenderer-gateway/internal/render/rotype"
-	"github.com/ragassets/zrenderer-gateway/internal/render/sprite"
+	"github.com/ragassets/gateway/internal/render/geom"
+	"github.com/ragassets/gateway/internal/render/raster"
+	"github.com/ragassets/gateway/internal/render/rotype"
+	"github.com/ragassets/gateway/internal/render/sprite"
 )
 
 // sortFunc reorders sprite indices by z-index for a given output frame.

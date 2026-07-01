@@ -465,7 +465,7 @@ A standalone extractor, `extract-grf.mjs`, is included. It needs only **Node 18+
 `0x300` "Event Horizon" fork used by recent official clients, with the per-entry
 DES decryption that the standard tools can't handle.
 
-Extract exactly the directories zrenderer needs into `./resources`:
+Extract exactly the directories the gateway needs into `./resources`:
 
 ```bash
 node extract-grf.mjs --extract resources --grf path/to/data.grf \

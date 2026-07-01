@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/raster"
+	"github.com/ragassets/gateway/internal/render/raster"
 )
 
 // Palette is a 256-entry RGBA color table.

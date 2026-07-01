@@ -1,4 +1,4 @@
-// zrenderer-gateway is a fast, public HTTP layer that renders Ragnarok Online
+// ragassets-gateway is a fast, public HTTP layer that renders Ragnarok Online
 // sprites in-process (see internal/render, a native Go reimplementation of
 // zhad3/zrenderer) and serves them as PNG/APNG. It maps query parameters to an
 // engine.Request, renders, and streams the bytes with long-lived immutable cache
@@ -31,8 +31,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/engine"
-	"github.com/ragassets/zrenderer-gateway/internal/render/resolve"
+	"github.com/ragassets/gateway/internal/render/engine"
+	"github.com/ragassets/gateway/internal/render/resolve"
 )
 
 // ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ func main() {
 	mux.HandleFunc("/", s.handleRoot)
 
 	addr := ":" + cfg.port
-	log.Printf("zrenderer-gateway listening on %s (resources: %s)", addr, cfg.resourceDir)
+	log.Printf("ragassets-gateway listening on %s (resources: %s)", addr, cfg.resourceDir)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      logRequests(mux),
@@ -142,7 +142,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	io.WriteString(w, "zrenderer-gateway — a caching layer over zhad3/zrenderer.\n\n"+
+	io.WriteString(w, "ragassets-gateway — renders and serves Ragnarok Online sprites, icons, maps, and BGM.\n\n"+
 		"Try: /image?job=1002            (still image)\n"+
 		"     /image?job=1002&action=0   (animation, APNG)\n"+
 		"     /gif?job=1002&action=0     (same, as an animated GIF)\n"+
@@ -305,7 +305,7 @@ func ifNoneMatch(r *http.Request, etag string) bool {
 
 // ---------------------------------------------------------------------------
 // /icons handler — static item/collection/skill/job icons extracted from the
-// client GRF by extract-grf.mjs --icons. No zrenderer involvement.
+// client GRF by extract-grf.mjs --icons. Served as-is; no sprite rendering.
 // ---------------------------------------------------------------------------
 
 // The kinds and the filenames mirror what extract-grf.mjs --icons produces —

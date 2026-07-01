@@ -21,7 +21,7 @@
 //   # List every entry:
 //   node extract-grf.mjs --list data.grf
 //
-//   # Extract just the resources zrenderer needs into ./resources:
+//   # Extract just the resources the gateway needs into ./resources:
 //   node extract-grf.mjs --extract resources --grf data.grf \
 //     --match "data\\(sprite|palette|imf|luafiles514)\\"
 //

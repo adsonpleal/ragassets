@@ -3,7 +3,7 @@ package roformat
 import (
 	"testing"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/raster"
+	"github.com/ragassets/gateway/internal/render/raster"
 )
 
 func TestParseSpr_Uncompressed(t *testing.T) {

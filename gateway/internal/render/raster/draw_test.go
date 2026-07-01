@@ -3,7 +3,7 @@ package raster
 import (
 	"testing"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/geom"
+	"github.com/ragassets/gateway/internal/render/geom"
 )
 
 func TestDrawSprite_IdentityOffset(t *testing.T) {

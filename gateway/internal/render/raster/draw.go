@@ -1,6 +1,6 @@
 package raster
 
-import "github.com/ragassets/zrenderer-gateway/internal/render/geom"
+import "github.com/ragassets/gateway/internal/render/geom"
 
 // DrawObject is a positioned, transformed sprite layer ready to be rasterized.
 // It mirrors zrenderer's draw.DrawObject. A node with Children is a frame whose

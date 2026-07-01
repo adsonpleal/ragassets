@@ -8,7 +8,7 @@ import (
 
 	"github.com/kettek/apng"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/raster"
+	"github.com/ragassets/gateway/internal/render/raster"
 )
 
 // PNG encodes a single frame as a standard PNG.

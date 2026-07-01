@@ -5,10 +5,10 @@
 package sprite
 
 import (
-	"github.com/ragassets/zrenderer-gateway/internal/render/geom"
-	"github.com/ragassets/zrenderer-gateway/internal/render/raster"
-	"github.com/ragassets/zrenderer-gateway/internal/render/roformat"
-	"github.com/ragassets/zrenderer-gateway/internal/render/rotype"
+	"github.com/ragassets/gateway/internal/render/geom"
+	"github.com/ragassets/gateway/internal/render/raster"
+	"github.com/ragassets/gateway/internal/render/roformat"
+	"github.com/ragassets/gateway/internal/render/rotype"
 )
 
 // Type classifies a sprite for z-ordering and head-direction handling.

@@ -4,9 +4,9 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/raster"
-	"github.com/ragassets/zrenderer-gateway/internal/render/roformat"
-	"github.com/ragassets/zrenderer-gateway/internal/render/rotype"
+	"github.com/ragassets/gateway/internal/render/raster"
+	"github.com/ragassets/gateway/internal/render/roformat"
+	"github.com/ragassets/gateway/internal/render/rotype"
 )
 
 // tinySpr builds a valid 1x1 opaque (palette index 1) SPR for tests.

@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/rotype"
+	"github.com/ragassets/gateway/internal/render/rotype"
 )
 
 // Korean path tokens used in resolved sprite/palette paths.

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/raster"
+	"github.com/ragassets/gateway/internal/render/raster"
 )
 
 // ActSprite is one layer of an animation frame: which SPR image to draw and how

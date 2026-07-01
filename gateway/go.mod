@@ -1,4 +1,4 @@
-module github.com/ragassets/zrenderer-gateway
+module github.com/ragassets/gateway
 
 go 1.22
 

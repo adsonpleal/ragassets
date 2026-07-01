@@ -3,13 +3,13 @@ package engine
 import (
 	"fmt"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/geom"
-	"github.com/ragassets/zrenderer-gateway/internal/render/raster"
-	"github.com/ragassets/zrenderer-gateway/internal/render/resolve"
-	"github.com/ragassets/zrenderer-gateway/internal/render/resource"
-	"github.com/ragassets/zrenderer-gateway/internal/render/roformat"
-	"github.com/ragassets/zrenderer-gateway/internal/render/rotype"
-	"github.com/ragassets/zrenderer-gateway/internal/render/sprite"
+	"github.com/ragassets/gateway/internal/render/geom"
+	"github.com/ragassets/gateway/internal/render/raster"
+	"github.com/ragassets/gateway/internal/render/resolve"
+	"github.com/ragassets/gateway/internal/render/resource"
+	"github.com/ragassets/gateway/internal/render/roformat"
+	"github.com/ragassets/gateway/internal/render/rotype"
+	"github.com/ragassets/gateway/internal/render/sprite"
 )
 
 // Request is a single render request (one job). Frame < 0 means "all frames"
