@@ -14,6 +14,8 @@ services:
       MAPS_DIR: "/maps"
       BGM_DIR: "/bgm"
       GATEWAY_PORT: "8080"
+      GOMEMLIMIT: "500MiB"                  # keep GC honest on small hosts (see prod compose)
+    mem_limit: 600m
     volumes:
       - ./resources:/resources:ro          # extracted GRF assets (data/sprite, palette, imf, ...)
       - ./resources/icons:/icons:ro        # static icons from extract-grf.mjs --icons (optional)

@@ -64,3 +64,33 @@ func TestManagerExists(t *testing.T) {
 		t.Error("expected swordman body spr to exist")
 	}
 }
+
+// TestManagerEvictsBeyondCap loads more sprite entries than the LRU cap and
+// verifies the cache size stays bounded. Uses a tiny cap so we don't need a
+// huge unique-name corpus.
+func TestManagerEvictsBeyondCap(t *testing.T) {
+	m := NewManagerWithLimits(resourcesRoot(t), 2, 2)
+
+	// Three distinct names — the least-recently-used one should be evicted.
+	names := []string{
+		"인간족/몸통/남/검사_남",
+		"인간족/몸통/여/검사_여",
+		"인간족/머리통/남/1_남",
+	}
+	for _, n := range names {
+		if _, err := m.Spr(n); err != nil {
+			t.Fatalf("Spr(%s): %v", n, err)
+		}
+	}
+	if got := m.spr.len(); got != 2 {
+		t.Errorf("spr cache size = %d, want 2 (cap enforced)", got)
+	}
+
+	// The first name was evicted; re-loading it must not exceed the cap.
+	if _, err := m.Spr(names[0]); err != nil {
+		t.Fatalf("Spr reload: %v", err)
+	}
+	if got := m.spr.len(); got != 2 {
+		t.Errorf("spr cache size after reload = %d, want 2", got)
+	}
+}

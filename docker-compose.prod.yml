@@ -18,6 +18,11 @@ services:
       MAPS_DIR: "/maps"
       BGM_DIR: "/bgm"
       GATEWAY_PORT: "8080"
+      # Cap Go's heap target so the runtime runs GC hard before the container hits
+      # its mem_limit. Prod EC2 has only ~900 MiB total; without this the process
+      # grew to ~350 MiB RSS over ~24 h and the kernel OOM-killed it.
+      GOMEMLIMIT: "500MiB"
+    mem_limit: 600m
     volumes:
       - ./resources:/resources:ro
       - ./resources/icons:/icons:ro     # static icons from extract-grf.mjs --icons (optional)

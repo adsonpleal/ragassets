@@ -3,6 +3,14 @@
 // It mirrors zrenderer's resource.ResourceManager but caches parsed, immutable
 // results (per-request mutations like shadow scaling are applied by the engine,
 // never to the cached structs).
+//
+// spr and act are the two large caches (Spr retains the full file buffer; Act
+// parses into structured frame data). Both are bounded with LRU eviction so the
+// process footprint stays flat under a large working set — otherwise every
+// unique sprite ever requested would sit in memory forever and the container
+// eventually gets OOM-killed on a small host. pal and imf are left uncapped:
+// their total on-disk sets are tiny (~5 MB combined) and cannot grow without
+// bound.
 package resource
 
 import (
@@ -10,18 +18,31 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/ragassets/zrenderer-gateway/internal/render/roformat"
+	"github.com/ragassets/gateway/internal/render/roformat"
+)
+
+// Default LRU capacities. Sized so the retained cache stays comfortably under
+// GOMEMLIMIT (~500 MiB in prod). spr entries retain the raw file buffer
+// (avg ~39 KB, occasionally several MB for large monster sprites); act entries
+// carry parsed frame data (avg ~15 KB). Callers can override via
+// NewManagerWithLimits — the render engine uses these defaults.
+const (
+	DefaultSprCacheCap = 2000
+	DefaultActCacheCap = 3000
 )
 
 // Manager locates and caches parsed resources under a root directory.
 type Manager struct {
 	root string
 
-	mu  sync.RWMutex
-	spr map[string]sprEntry
-	act map[string]actEntry
-	pal map[string]palEntry
-	imf map[string]imfEntry
+	mu  sync.Mutex // guards spr, act
+	spr *lru[sprEntry]
+	act *lru[actEntry]
+
+	palMu sync.RWMutex
+	pal   map[string]palEntry
+	imfMu sync.RWMutex
+	imf   map[string]imfEntry
 }
 
 type sprEntry struct {
@@ -42,12 +63,24 @@ type imfEntry struct {
 }
 
 // NewManager returns a Manager rooted at the given resource directory (the
-// directory that contains "data/").
+// directory that contains "data/") using default LRU capacities.
 func NewManager(root string) *Manager {
+	return NewManagerWithLimits(root, DefaultSprCacheCap, DefaultActCacheCap)
+}
+
+// NewManagerWithLimits is NewManager but with explicit LRU capacities for the
+// spr and act caches. Values <= 0 fall back to the defaults.
+func NewManagerWithLimits(root string, sprCap, actCap int) *Manager {
+	if sprCap <= 0 {
+		sprCap = DefaultSprCacheCap
+	}
+	if actCap <= 0 {
+		actCap = DefaultActCacheCap
+	}
 	return &Manager{
 		root: root,
-		spr:  map[string]sprEntry{},
-		act:  map[string]actEntry{},
+		spr:  newLRU[sprEntry](sprCap),
+		act:  newLRU[actEntry](actCap),
 		pal:  map[string]palEntry{},
 		imf:  map[string]imfEntry{},
 	}
@@ -63,51 +96,55 @@ func (m *Manager) readFile(folder, name, ext string) ([]byte, error) {
 	return os.ReadFile(m.path(folder, name, ext))
 }
 
-// Spr returns the parsed .spr for a resolved sprite name (cached, incl. errors).
+// Spr returns the parsed .spr for a resolved sprite name (LRU-cached, incl. errors).
 func (m *Manager) Spr(name string) (*roformat.Spr, error) {
-	m.mu.RLock()
-	e, ok := m.spr[name]
-	m.mu.RUnlock()
-	if ok {
+	m.mu.Lock()
+	if e, ok := m.spr.get(name); ok {
+		m.mu.Unlock()
 		return e.v, e.err
 	}
-	var e2 sprEntry
+	m.mu.Unlock()
+
+	var e sprEntry
 	if data, err := m.readFile("sprite", name, "spr"); err != nil {
-		e2.err = err
+		e.err = err
 	} else {
-		e2.v, e2.err = roformat.ParseSpr(data)
+		e.v, e.err = roformat.ParseSpr(data)
 	}
 	m.mu.Lock()
-	m.spr[name] = e2
+	m.spr.put(name, e)
 	m.mu.Unlock()
-	return e2.v, e2.err
+	return e.v, e.err
 }
 
-// Act returns the parsed .act for a resolved sprite name (cached, incl. errors).
+// Act returns the parsed .act for a resolved sprite name (LRU-cached, incl. errors).
 func (m *Manager) Act(name string) (*roformat.Act, error) {
-	m.mu.RLock()
-	e, ok := m.act[name]
-	m.mu.RUnlock()
-	if ok {
+	m.mu.Lock()
+	if e, ok := m.act.get(name); ok {
+		m.mu.Unlock()
 		return e.v, e.err
 	}
-	var e2 actEntry
+	m.mu.Unlock()
+
+	var e actEntry
 	if data, err := m.readFile("sprite", name, "act"); err != nil {
-		e2.err = err
+		e.err = err
 	} else {
-		e2.v, e2.err = roformat.ParseAct(data)
+		e.v, e.err = roformat.ParseAct(data)
 	}
 	m.mu.Lock()
-	m.act[name] = e2
+	m.act.put(name, e)
 	m.mu.Unlock()
-	return e2.v, e2.err
+	return e.v, e.err
 }
 
 // Pal returns the parsed .pal for a resolved palette name (cached, incl. errors).
+// Uncapped: the on-disk .pal set is small (~4 KB per entry, a few thousand total)
+// and cannot grow without bound.
 func (m *Manager) Pal(name string) (roformat.Palette, error) {
-	m.mu.RLock()
+	m.palMu.RLock()
 	e, ok := m.pal[name]
-	m.mu.RUnlock()
+	m.palMu.RUnlock()
 	if ok {
 		return e.v, e.err
 	}
@@ -117,17 +154,18 @@ func (m *Manager) Pal(name string) (roformat.Palette, error) {
 	} else {
 		e2.v, e2.err = roformat.ParsePal(data)
 	}
-	m.mu.Lock()
+	m.palMu.Lock()
 	m.pal[name] = e2
-	m.mu.Unlock()
+	m.palMu.Unlock()
 	return e2.v, e2.err
 }
 
 // Imf returns the parsed .imf for a resolved imf name (cached, incl. errors).
+// Uncapped: only a few hundred imf files exist, all small.
 func (m *Manager) Imf(name string) (*roformat.Imf, error) {
-	m.mu.RLock()
+	m.imfMu.RLock()
 	e, ok := m.imf[name]
-	m.mu.RUnlock()
+	m.imfMu.RUnlock()
 	if ok {
 		return e.v, e.err
 	}
@@ -137,9 +175,9 @@ func (m *Manager) Imf(name string) (*roformat.Imf, error) {
 	} else {
 		e2.v, e2.err = roformat.ParseImf(data)
 	}
-	m.mu.Lock()
+	m.imfMu.Lock()
 	m.imf[name] = e2
-	m.mu.Unlock()
+	m.imfMu.Unlock()
 	return e2.v, e2.err
 }
 
