@@ -19,6 +19,7 @@ const (
 	kBodyPal    = "몸"    // body palette folder
 	kShield     = "방패"   // shield folder
 	kMonster    = "몬스터"  // monster folder
+	kEffect     = "이팩트"  // effect sprite folder
 	kMerc       = "용병"   // mercenary folder
 	kHairPrefix = "머리"   // head palette filename prefix ("머리<id>_...")
 )
@@ -118,10 +119,24 @@ func (r *Resolver) PlayerHeadSprite(jobID, headID uint32, gender rotype.Gender) 
 	return join(race, kHeadDir, gender.String(), utoa(headID)+"_"+gender.String())
 }
 
+// nonPlayerSpriteOverride maps specific non-player job ids to a sprite path that
+// differs from what jobname.lub resolves. The Windhawk (Ranger 4th-job) companions
+// are drawn by the client from class-specific effect sprites in the 이팩트
+// ("effect") folder, not the generic monster sprites jobname.lub points them at
+// (20830→몬스터/매 brown falcon, 20833→몬스터/워그 gray warg). Both 4JOB ids are
+// Windhawk-only, so the remap is safe.
+var nonPlayerSpriteOverride = map[uint32]string{
+	20830: join(kEffect, "windhawk_hawk"), // JT_4JOB_H_FALCON — dark falcon w/ red ribbons
+	20833: join(kEffect, "windhawk_wolf"), // JT_4JOB_WORG — black warg w/ green eyes
+}
+
 // NonPlayerSprite returns the body sprite path for monsters/NPCs/homun/merc.
 func (r *Resolver) NonPlayerSprite(jobID uint32) string {
 	if IsPlayer(jobID) {
 		return ""
+	}
+	if path, ok := nonPlayerSpriteOverride[jobID]; ok {
+		return path
 	}
 	jobname := r.JobSpriteName(jobID, rotype.MadogearRobot)
 	if jobname == "" {

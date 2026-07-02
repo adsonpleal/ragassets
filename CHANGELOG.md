@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-07-02
+
+### Fixed
+- **Windhawk 4th-job companions now render their class-specific sprites.** The Ranger
+  4th-job (Windhawk) falcon (`job=20830`, `JT_4JOB_H_FALCON`) and warg (`job=20833`,
+  `JT_4JOB_WORG`) were served as the generic light monster sprites (`몬스터/매` brown
+  falcon, `몬스터/워그` gray warg) because `jobname.lub` maps those ids to the plain
+  monster names. The client actually draws these two from class-specific sprites in
+  the `이팩트` ("effect") folder — `windhawk_hawk` (dark falcon with red ribbon
+  streamers) and `windhawk_wolf` (black armored warg with green eyes) — which are
+  distinct assets, not the monster ones. The resolver now hardcodes a targeted
+  `nonPlayerSpriteOverride` for these two ids (both are Windhawk-only, so the remap is
+  safe); they still render like any monster (own `.act`, embedded SPR palette, all 8
+  directions + walk). Investigated the rest of the companion cluster too — the other
+  two 4th-job companion ids `20831` (`매2`) and `20832` (`owl`) already resolve
+  correctly (their `이팩트/` copies are byte-identical to the `몬스터/` sprites), and the
+  lone other effect-folder creature sprite, `soul_falcon`, is a skill effect (action 0
+  only, no directional frames), not a companion — so no other remap is needed.
+
 ## 2026-07-01
 
 ### Added

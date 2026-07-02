@@ -182,6 +182,13 @@ standby pose, `--action=93` a player attack variant (`88 + 5`) facing direction 
 > `.act` file — zrenderer renders whatever index exists in it, so the valid range
 > varies per sprite.
 
+> A few companion job ids don't render the sprite `jobname.lub` names for them: the
+> Windhawk (Ranger 4th-job) falcon `job=20830` and warg `job=20833` are drawn by the
+> client from class-specific sprites in the `이팩트` ("effect") folder
+> (`windhawk_hawk` / `windhawk_wolf`), not the generic monster falcon/warg. The
+> resolver hardcodes these two remaps; every other companion (e.g. `job=20831`,
+> `job=20832`) already resolves correctly.
+
 Note: body direction is part of `action`; the separate `headdir` parameter only
 rotates the **head**.
 

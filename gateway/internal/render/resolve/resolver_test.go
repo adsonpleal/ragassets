@@ -135,6 +135,14 @@ func TestNonPlayerSprite(t *testing.T) {
 	if got := r.NonPlayerSprite(1); got != "" {
 		t.Errorf("player nonplayer = %q, want empty", got)
 	}
+	// Windhawk 4th-job companions are remapped to the effect-folder sprites
+	// instead of the generic monster sprites jobname.lub points them at.
+	if got := r.NonPlayerSprite(20830); got != "이팩트/windhawk_hawk" {
+		t.Errorf("windhawk falcon = %q, want 이팩트/windhawk_hawk", got)
+	}
+	if got := r.NonPlayerSprite(20833); got != "이팩트/windhawk_wolf" {
+		t.Errorf("windhawk warg = %q, want 이팩트/windhawk_wolf", got)
+	}
 }
 
 // fakeTables provides deterministic client-table values for resolver tests.
