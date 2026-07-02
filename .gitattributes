@@ -1,5 +1,5 @@
 # Normalize line endings to LF. These files are read inside Linux containers
-# (zrenderer.docker.conf, Dockerfile, *.go); CRLF could corrupt config values.
+# (Caddyfile, Dockerfile, *.go); CRLF could corrupt config values.
 * text=auto eol=lf
 *.png binary
 *.spr binary

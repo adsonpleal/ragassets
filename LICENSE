@@ -22,8 +22,9 @@ SOFTWARE.
 
 ---
 
-This project is only a caching gateway. The actual sprite rendering is performed
-by zrenderer (https://github.com/zhad3/zrenderer), which is a separate project
-distributed under its own license. The bundled GRF extractor (extract-grf.mjs)
-ports a DES routine from grf-loader (https://github.com/vthibault/grf-loader, MIT).
-This project distributes no Ragnarok Online game assets.
+This project's sprite rendering is a native Go port of the rendering algorithm
+from zrenderer (https://github.com/zhad3/zrenderer), a separate project
+distributed under its own license; no zrenderer source is bundled. The GRF
+extractor (extract-grf.mjs) ports a DES routine from grf-loader
+(https://github.com/vthibault/grf-loader, MIT). This project distributes no
+Ragnarok Online game assets.
