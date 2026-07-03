@@ -329,6 +329,48 @@ negates `y` for its Y-up world), so frames whose size shifts across the animatio
 still sit on the effect's origin. A map's `manifest.effects` references these by `key`
 in a `sprite` field (see [`/maps`](#get-maps--world-maps)).
 
+### `GET /effect/...` — skill & world effects (data + textures)
+
+The [`.rrf` replay viewer](https://github.com/adsonpleal/latamvisuais) renders
+**skill effects** (Fire Bolt flames, Heal sparkles, Storm Gust, auras…) itself in
+WebGL — a port of roBrowser's `StrEffect` renderer, which needs the correct
+per-layer additive blending. So ragassets is a **data + texture server** here, not
+a renderer: it parses the `.str` binaries and converts the layer textures, but
+never bakes an effect to a flat image (that would destroy the blend modes). This
+is a separate namespace from [`/effects/...`](#get-effects--effect-only-costumes)
+above (pre-built costume/map bundles); `/effect/...` (singular) parses **any**
+effect on demand from the extracted GRF tree.
+
+`str`/`texture` read from `data/texture/effect/` in `RESOURCE_DIR`, so they need
+that subtree extracted (see [GRF extraction](#resources--grf-extraction-required))
+and `404` otherwise. `skill-map`/`table` are embedded in the binary and always
+serve.
+
+| Path | What you get |
+|---|---|
+| `GET /effect/str?file=<name>` | The parsed `.str` as JSON: `{"fps","maxKey","layers":[{"textures":["<name>",…],"animations":[{"frame","type","pos":[x,y],"uv":[8],"xy":[8],"aniframe","anitype","delay","angle","color":[r,g,b,a],"srcalpha","destalpha","mtpreset"}]}]}`. `srcalpha`/`destalpha` are the **raw D3DBLEND ints** (the client maps them to `gl.blendFunc` — never collapsed); `color` stays in the file's `0–255` range. `<name>` is relative to `data/texture/effect/` and may omit the `.str` suffix. |
+| `GET /effect/texture?file=<name>` | One `.str` layer texture as an RGBA PNG: magenta (`#FF00FF`) colorkey → alpha, transparent RGB bled outward to kill bilinear fringes; 32-bit TGA keeps its real alpha. `.bmp`/`.tga` source resolves either way when the extension is omitted. |
+| `GET /effect/skill-map` | `skillId → {effectId?, hitEffectId?, groundEffectId?}` — roBrowser's `SkillEffect` table, verbatim. |
+| `GET /effect/table` | `effectId → [{type, file, min?, wav?, attachedEntity?, rand?, …}]` — roBrowser's `EffectTable`, verbatim. `type` is `STR` for the served (`.str`) effects; `SPR`/`CYLINDER`/`FUNC` parts carry their metadata but their assets aren't served yet (v1 covers STR, the vast majority). |
+
+```
+/effect/str?file=stormgust                 # Storm Gust  (skill 89 → effectId 89)
+/effect/str?file=firewall1                  # Fire Wall   (skill 18 → groundEffectId 25)
+/effect/texture?file=snow_a                 # a Storm Gust layer texture (.bmp)
+/effect/texture?file=stormcannon/sto_shine_00
+/effect/skill-map
+/effect/table
+```
+
+Resolve a skill to its assets client-side: `skill-map[skillId]` → the `effectId`s →
+`table[effectId]` → each part's `file` (expand a `%d` over `rand:[a,b]`) → fetch
+`/effect/str?file=<file>`, then `/effect/texture?file=<texname>` for every name the
+STR lists. `<name>` lookups are **case-insensitive** (GRF paths carry inconsistent
+casing / EUC-KR); responses carry the same immutable cache headers, `ETag`/`304`
+and wildcard CORS as `/icons`. The two tables are ported by
+`tools/gen-effect-tables.mjs` and embedded, so they need no extraction; re-run that
+script if the upstream roBrowser tables change.
+
 ### `GET /maps/...` — world maps
 
 The full 3D world maps (ground mesh, models, textures, animated water) for the
@@ -482,12 +524,16 @@ Extract exactly the directories the gateway needs into `./resources`:
 
 ```bash
 node extract-grf.mjs --extract resources --grf path/to/data.grf \
-  --match "data\\(sprite|palette|imf|luafiles514)\\"
+  --match "data\\(sprite|palette|imf|luafiles514|texture\\effect)\\"
 ```
 
 This populates `resources/data/sprite`, `resources/data/palette`,
-`resources/data/imf`, `resources/data/luafiles514`, etc., which the gateway reads
-via `RESOURCE_DIR` (default `/resources` in the container). The headgear/garment
+`resources/data/imf`, `resources/data/luafiles514`, `resources/data/texture/effect`,
+etc., which the gateway reads via `RESOURCE_DIR` (default `/resources` in the
+container). `texture/effect` holds the `.str` skill/world effects and their layer
+textures that [`/effect/str`](#get-effect--skill--world-effects-data--textures) and
+`/effect/texture` parse on demand; drop `texture\\effect` from the match if you
+don't need those endpoints. The headgear/garment
 ID→sprite-name tables are baked from the client `luafiles514/.lub` into the binary
 by `gateway/cmd/gen-resolver` — re-run it when you update the client (see that
 directory's `dump.lua` and `main.go`).

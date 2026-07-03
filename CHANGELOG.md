@@ -3,6 +3,39 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-07-03
+
+### Added
+- **Skill/world effect data + textures for the `.rrf` replay viewer (`/effect/…`).**
+  A new, self-contained subsystem that serves Ragnarok effect assets (Fire Bolt,
+  Heal, Storm Gust, auras…) as **data**, not baked images — the replay client
+  renders them itself in WebGL (a port of roBrowser's `StrEffect`) and needs the
+  per-layer additive blend fields intact. Four endpoints (distinct from the
+  existing `/effects/…` costume bundles):
+  - `GET /effect/str?file=<name>` — parses a `.str` (STRM) binary into JSON:
+    `fps`, `maxKey`, and per-layer `textures` + keyframe `animations` (`frame`,
+    `type`, `pos`, `uv`, `xy`, `aniframe`, `anitype`, `delay`, `angle`, `color`,
+    `srcalpha`, `destalpha`, `mtpreset`). The `srcalpha`/`destalpha` D3DBLEND ints
+    are kept **raw** (the client maps them to `gl.blendFunc`); `color` stays in the
+    file's `0–255` range. Cross-checked byte-for-byte against the existing
+    `--effects` bundle keyframes.
+  - `GET /effect/texture?file=<name>` — converts a `.str` layer texture (`.bmp`
+    magenta-`#FF00FF`-colorkeyed, or 32-bit `.tga` with real alpha) to an RGBA PNG
+    with the transparent RGB bled outward to kill bilinear fringes. Pixel-identical
+    to the vetted `extract-grf.mjs` texture pipeline.
+  - `GET /effect/skill-map` and `GET /effect/table` — roBrowser's `SkillEffect` and
+    `EffectTable` lookups, ported verbatim to embedded JSON by the new
+    `tools/gen-effect-tables.mjs` (63 skills, 318 effect ids). Lets the client
+    resolve `skillId → effectId(s) → parts` without shipping its own copy.
+
+  `str`/`texture` parse on demand from `RESOURCE_DIR/data/texture/effect` (like
+  `/image` renders from the sprite tree — no on-disk cache), with case-insensitive,
+  traversal-safe path resolution for the GRF's inconsistent casing / EUC-KR names,
+  and the usual immutable cache headers + `ETag`/`304` + wildcard CORS. Add
+  `texture\effect` to the base `--match` to populate the source tree (see README).
+  New Go package `gateway/internal/effect` (STR parser, BMP/TGA decoder, file
+  store, embedded tables) with unit tests.
+
 ## 2026-07-02
 
 ### Fixed

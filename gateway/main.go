@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -31,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ragassets/gateway/internal/effect"
 	"github.com/ragassets/gateway/internal/render/engine"
 	"github.com/ragassets/gateway/internal/render/resolve"
 )
@@ -74,6 +76,12 @@ type server struct {
 	cfg    config
 	eng    *engine.Engine
 	flight *flightGroup
+	estore *effect.Store // raw effect assets under RESOURCE_DIR/data/texture/effect
+
+	// Precomputed strong validators for the two embedded lookup tables (their
+	// bytes are fixed at build time, so the ETag is computed once).
+	skillMapETag string
+	effTableETag string
 }
 
 func main() {
@@ -83,9 +91,12 @@ func main() {
 	}
 
 	s := &server{
-		cfg:    cfg,
-		eng:    engine.New(cfg.resourceDir, resolve.DefaultTables()),
-		flight: newFlightGroup(),
+		cfg:          cfg,
+		eng:          engine.New(cfg.resourceDir, resolve.DefaultTables()),
+		flight:       newFlightGroup(),
+		estore:       effect.NewStore(cfg.resourceDir),
+		skillMapETag: hashBytes(effect.SkillMapJSON),
+		effTableETag: hashBytes(effect.EffectTableJSON),
 	}
 
 	if fi, err := os.Stat(cfg.iconsDir); err != nil || !fi.IsDir() {
@@ -98,6 +109,12 @@ func main() {
 		log.Printf("effects: %s not found — /effects/* will return 404 (run extract-grf.mjs --effects)", cfg.effectsDir)
 	} else {
 		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png}, /effects/sprites/{key}/{sprite.json,N.png} and /effects/index.json", cfg.effectsDir)
+	}
+
+	if fi, err := os.Stat(filepath.Join(cfg.resourceDir, "data", "texture", "effect")); err != nil || !fi.IsDir() {
+		log.Printf("effect assets: %s/data/texture/effect not found — /effect/str and /effect/texture will 404 (extract data/texture/effect into RESOURCE_DIR); /effect/skill-map and /effect/table still serve", cfg.resourceDir)
+	} else {
+		log.Printf("effect assets: serving /effect/str, /effect/texture, /effect/skill-map, /effect/table")
 	}
 
 	if fi, err := os.Stat(cfg.mapsDir); err != nil || !fi.IsDir() {
@@ -117,6 +134,7 @@ func main() {
 	mux.HandleFunc("/gif", s.handleGif)
 	mux.HandleFunc("/icons/", s.handleIcon)
 	mux.HandleFunc("/effects/", s.handleEffect)
+	mux.HandleFunc("/effect/", s.handleEffectAsset)
 	mux.HandleFunc("/maps/", s.handleMap)
 	mux.HandleFunc("/bgm/", s.handleBgm)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -150,6 +168,10 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"     /effects/index.json        (effect-only costume catalogue)\n"+
 		"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n"+
 		"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's per-frame img/delay/offset)\n"+
+		"     /effect/str?file=stormgust  (a skill effect's parsed .str keyframe animation, as JSON)\n"+
+		"     /effect/texture?file=stormgust/storm_ball  (one .str layer texture, colorkeyed PNG)\n"+
+		"     /effect/skill-map          (skillId → effectId(s) lookup, ported from roBrowser)\n"+
+		"     /effect/table              (effectId → effect parts lookup, ported from roBrowser)\n"+
 		"     /maps/index.json           (world-map catalogue for the map simulator)\n"+
 		"     /maps/prontera/manifest.json  (one map's geometry + shared asset manifest)\n"+
 		"     /bgm/index.json            (per-map background-music catalogue)\n"+
@@ -411,6 +433,139 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), contentType)
+}
+
+// ---------------------------------------------------------------------------
+// /effect handler — skill/world effect data for the .rrf replay viewer, which
+// renders effects itself in WebGL (a port of roBrowser's StrEffect). ragassets
+// is a data + texture server here, not a renderer, so nothing is baked to a flat
+// image (that would destroy the per-layer additive blending the client needs):
+//
+//   /effect/str?file=<name>       a parsed .str keyframe animation, as JSON
+//                                 (raw D3DBLEND src/dest alpha kept verbatim)
+//   /effect/texture?file=<name>   one .str layer texture as a colorkeyed PNG
+//                                 (magenta #FF00FF → alpha; .bmp/.tga source)
+//   /effect/skill-map             skillId → { effectId?, hitEffectId?, groundEffectId? }
+//   /effect/table                 effectId → [ { type, file, min, wav, rand, ... } ]
+//
+// str/texture parse on demand from RESOURCE_DIR/data/texture/effect (like /image
+// renders from the sprite tree); <name> is relative to that dir, may omit the
+// .str / .bmp / .tga suffix, and is resolved case-insensitively. skill-map/table
+// are embedded JSON ported verbatim from roBrowser (see internal/effect).
+// ---------------------------------------------------------------------------
+
+func (s *server) handleEffectAsset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	switch strings.TrimPrefix(r.URL.Path, "/effect/") {
+	case "str":
+		s.handleEffectStr(w, r)
+	case "texture":
+		s.handleEffectTexture(w, r)
+	case "skill-map":
+		s.serveEmbeddedJSON(w, r, effect.SkillMapJSON, s.skillMapETag)
+	case "table":
+		s.serveEmbeddedJSON(w, r, effect.EffectTableJSON, s.effTableETag)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// handleEffectStr parses data/texture/effect/<file>.str and returns it as JSON.
+// The parse is deterministic in the file bytes, so (like /image) the query hash
+// is a valid content ETag and identical requests render only once (single-flight).
+func (s *server) handleEffectStr(w http.ResponseWriter, r *http.Request) {
+	file := r.URL.Query().Get("file")
+	if file == "" {
+		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		return
+	}
+	etag := etagFor(r.URL.Query()) + "-effstr"
+	if ifNoneMatch(r, etag) {
+		notModified(w, etag)
+		return
+	}
+
+	data, ok, err := s.estore.Read(file, []string{".str"})
+	if err != nil {
+		log.Printf("effect str read failed for %q: %v", file, err)
+		http.Error(w, "read failed", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	out, err := s.flight.Do(etag, func() ([]byte, error) {
+		str, err := effect.ParseStr(data)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(str)
+	})
+	if err != nil {
+		log.Printf("effect str parse failed for %q: %v", file, err)
+		http.Error(w, "parse failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.serveBytes(w, r, out, etag, "application/json")
+}
+
+// handleEffectTexture converts a data/texture/effect/ BMP or TGA to a colorkeyed
+// RGBA PNG. Either extension resolves when the caller omits it.
+func (s *server) handleEffectTexture(w http.ResponseWriter, r *http.Request) {
+	file := r.URL.Query().Get("file")
+	if file == "" {
+		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		return
+	}
+	etag := etagFor(r.URL.Query()) + "-efftex"
+	if ifNoneMatch(r, etag) {
+		notModified(w, etag)
+		return
+	}
+
+	p, ok := s.estore.ResolveEffect(file, []string{".bmp", ".tga"})
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		log.Printf("effect texture read failed for %q: %v", file, err)
+		http.Error(w, "read failed", http.StatusInternalServerError)
+		return
+	}
+
+	out, err := s.flight.Do(etag, func() ([]byte, error) {
+		return effect.TextureToPNG(data, p)
+	})
+	if err != nil {
+		log.Printf("effect texture decode failed for %q: %v", file, err)
+		http.Error(w, "decode failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.serveBytes(w, r, out, etag, "image/png")
+}
+
+// serveEmbeddedJSON serves a fixed embedded JSON blob with the shared immutable
+// cache/CORS headers and conditional-request support against its precomputed ETag.
+func (s *server) serveEmbeddedJSON(w http.ResponseWriter, r *http.Request, data []byte, etag string) {
+	if ifNoneMatch(r, etag) {
+		notModified(w, etag)
+		return
+	}
+	s.serveBytes(w, r, data, etag, "application/json")
+}
+
+// hashBytes is the strong validator for a fixed byte blob (the embedded tables).
+func hashBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // ---------------------------------------------------------------------------
