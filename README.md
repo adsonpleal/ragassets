@@ -350,8 +350,8 @@ serve.
 |---|---|
 | `GET /effect/str?file=<name>` | The parsed `.str` as JSON: `{"fps","maxKey","layers":[{"textures":["<name>",…],"animations":[{"frame","type","pos":[x,y],"uv":[8],"xy":[8],"aniframe","anitype","delay","angle","color":[r,g,b,a],"srcalpha","destalpha","mtpreset"}]}]}`. `srcalpha`/`destalpha` are the **raw D3DBLEND ints** (the client maps them to `gl.blendFunc` — never collapsed); `color` stays in the file's `0–255` range. `<name>` is relative to `data/texture/effect/` and may omit the `.str` suffix. |
 | `GET /effect/texture?file=<name>` | One `.str` layer texture as an RGBA PNG: magenta (`#FF00FF`) colorkey → alpha, transparent RGB bled outward to kill bilinear fringes; 32-bit TGA keeps its real alpha. `.bmp`/`.tga` source resolves either way when the extension is omitted. |
-| `GET /effect/skill-map` | `skillId → {effectId?, hitEffectId?, groundEffectId?}` — roBrowser's `SkillEffect` table, verbatim. |
-| `GET /effect/table` | `effectId → [{type, file, min?, wav?, attachedEntity?, rand?, …}]` — roBrowser's `EffectTable`, verbatim. `type` is `STR` for the served (`.str`) effects; `SPR`/`CYLINDER`/`FUNC` parts carry their metadata but their assets aren't served yet (v1 covers STR, the vast majority). |
+| `GET /effect/skill-map` | `skillId → {effectId?, hitEffectId?, groundEffectId?}` — from roBrowserLegacy's `SkillEffect` (~488 skills, all job eras). `skillId` is the AEGIS/packet id the client sends (matches rAthena). |
+| `GET /effect/table` | `effectId → [{type, file, min?, wav?, attachedEntity?, rand?, …}]` — roBrowserLegacy's `EffectTable`. `type` is `STR` for the served (`.str`) effects; `2D`/`3D`/`SPR`/`CYLINDER`/`FUNC` parts are procedural (client-only) and carry only metadata. |
 
 ```
 /effect/str?file=stormgust                 # Storm Gust  (skill 89 → effectId 89)
@@ -367,9 +367,11 @@ Resolve a skill to its assets client-side: `skill-map[skillId]` → the `effectI
 `/effect/str?file=<file>`, then `/effect/texture?file=<texname>` for every name the
 STR lists. `<name>` lookups are **case-insensitive** (GRF paths carry inconsistent
 casing / EUC-KR); responses carry the same immutable cache headers, `ETag`/`304`
-and wildcard CORS as `/icons`. The two tables are ported by
-`tools/gen-effect-tables.mjs` and embedded, so they need no extraction; re-run that
-script if the upstream roBrowser tables change.
+and wildcard CORS as `/icons`. The two tables are ported from **roBrowserLegacy**
+(`SkillConst`/`SkillEffect`/`EffectTable`) by `tools/gen-effect-tables.mjs` and
+embedded, so they need no extraction; re-run that script (optionally `--src <dir>`)
+if the upstream tables change. Only `type:"STR"` effects render; a skill that maps
+only to procedural (`2D`/`3D`/`SPR`/`CYLINDER`/`FUNC`) effects shows nothing.
 
 ### `GET /maps/...` — world maps
 

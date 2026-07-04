@@ -3,6 +3,39 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-07-04
+
+### Changed
+- **Broadened `/effect/skill-map` from 63 to 488 skills** so modern skills render in
+  the `.rrf` replay viewer instead of showing no effect. The client resolves a
+  skill's visual via `skill-map[skillId] → {effectId?, hitEffectId?, groundEffectId?}`,
+  but the table only covered classic 1st/2nd-job skills, so anything 3rd-job or newer
+  (Arrow Storm, Chain Lightning, the 4th-job classes…) mapped to nothing.
+  - **Source switched to [roBrowserLegacy](https://github.com/MrAntares/roBrowserLegacy)**
+    (`SkillConst`/`SkillEffect`/`EffectTable`), whose `SkillEffect` covers ~1000 skills
+    vs. the ~63 in the old vthibault/roBrowser port. The client's own
+    `skilleffectinfolist.lub` was evaluated but is **not** the full table — it holds
+    only ~66 scripted `KO_*` skills; every other skill's visual is hardcoded in the
+    packed client EXE, so roBrowserLegacy's reconstruction is the usable source.
+  - Both `skill_map.json` and `effect_table.json` are regenerated from the **same**
+    Legacy source, because the effect-id numbering shifted between roBrowser versions
+    (~130 of 318 ids differ) and the two tables only agree within one source. Skill
+    ids are the AEGIS/packet ids the client sends (match rAthena; verified `SM_BASH=5`,
+    `WZ_STORMGUST=89`). `effect_table.json` grew 318 → 752 effect ids.
+  - `tools/gen-effect-tables.mjs` was rewritten to evaluate the Legacy **ES** modules
+    (strip imports, stub renderer deps, bind the real `SkillConst` so `SkillEffect`
+    keys resolve to numeric skill ids), fold multi/named/function effect values down
+    to the single-numeric-id contract, and apply a small validated override for four
+    skills Legacy leaves empty but its `EffectTable` still defines (Safety Wall,
+    Brandish Spear, Auto Counter, Chain Lightning). Deterministic; `--src <dir>`
+    produces byte-identical output to the GitHub fetch.
+  - All 63 previously-mapped skills are preserved and still resolve. Verified the
+    full chain end-to-end against the extracted GRF: Arrow Storm
+    (`2233 → 746 → arrowstorm.str`), Storm Gust, Pneuma, Fire Wall, Meteor and Chain
+    Lightning all resolve to on-disk `.str` files with valid `STRM` magic. ~179 skills
+    resolve to a `STR` effect; the rest map to procedural (`2D`/`3D`/`SPR`/`CYLINDER`/
+    `FUNC`) effects the client can't render (unchanged behavior). No client changes.
+
 ## 2026-07-03
 
 ### Added
