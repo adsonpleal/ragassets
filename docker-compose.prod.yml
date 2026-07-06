@@ -44,6 +44,8 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data      # persists issued certificates
       - caddy-config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # lets Caddy reach the `short` systemd service on the host (port 8081)
     restart: unless-stopped
 
 volumes:

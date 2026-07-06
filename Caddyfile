@@ -5,3 +5,10 @@
 ragassets.duckdns.org, assets.latam-tools.com.br {
 	reverse_proxy gateway:8080
 }
+
+# URL shortener (sibling project `short`): runs as a bare systemd service on the
+# host, not in compose — reached via the host-gateway alias (see extra_hosts on
+# the caddy service in docker-compose.prod.yml).
+short.latam-tools.com.br {
+	reverse_proxy host.docker.internal:8081
+}
