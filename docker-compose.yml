@@ -1,4 +1,5 @@
-# Public RO sprite image/animation provider.
+# Public RO sprite image/animation provider — LOCAL DEVELOPMENT ONLY.
+# (Production runs the gateway and Caddy as native systemd services, no Docker.)
 #
 # Rendering is done in-process by the Go gateway (see gateway/internal/render);
 # there is no longer a separate zrenderer container. The gateway reads extracted
@@ -14,7 +15,7 @@ services:
       MAPS_DIR: "/maps"
       BGM_DIR: "/bgm"
       GATEWAY_PORT: "8080"
-      GOMEMLIMIT: "500MiB"                  # keep GC honest on small hosts (see prod compose)
+      GOMEMLIMIT: "500MiB"                  # keep GC honest on small hosts (prod uses the same value)
     mem_limit: 600m
     volumes:
       - ./resources:/resources:ro          # extracted GRF assets (data/sprite, palette, imf, ...)

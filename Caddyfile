@@ -1,14 +1,16 @@
-# Caddy reverse proxy: terminates TLS (automatic Let's Encrypt) and forwards to
-# the gateway on the internal compose network. Used by docker-compose.prod.yml.
-# Both hostnames are served (each gets its own auto-provisioned certificate);
-# point each domain's A record at this host's public IP before starting.
+# Caddy reverse proxy on the production host (native systemd service, deployed
+# to /etc/caddy/Caddyfile — no Docker in prod). Terminates TLS with automatic
+# Let's Encrypt certificates and forwards to the two app services, which run as
+# plain systemd units on the same host. Point each domain's A record at the
+# host's public IP before starting so ACME validation succeeds.
+
+# ragassets gateway (ragassets-gateway.service, port 8080). Both hostnames are
+# served; each gets its own auto-provisioned certificate.
 ragassets.duckdns.org, assets.latam-tools.com.br {
-	reverse_proxy gateway:8080
+	reverse_proxy localhost:8080
 }
 
-# URL shortener (sibling project `short`): runs as a bare systemd service on the
-# host, not in compose — reached via the host-gateway alias (see extra_hosts on
-# the caddy service in docker-compose.prod.yml).
+# URL shortener (sibling project `short`; short.service, port 8081).
 short.latam-tools.com.br {
-	reverse_proxy host.docker.internal:8081
+	reverse_proxy localhost:8081
 }

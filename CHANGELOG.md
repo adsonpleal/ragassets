@@ -3,6 +3,24 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-07-06
+
+### Changed
+- **Production no longer uses Docker.** The EC2 host now runs everything as
+  native systemd services: the gateway is built on the server with the Go
+  toolchain (installed at `/usr/local/go`) and runs as `ragassets-gateway.service`
+  (port 8080, `GOMEMLIMIT=500MiB`, `MemoryMax=600M`), and Caddy is installed from
+  its official apt repo as `caddy.service` reading the repo `Caddyfile` from
+  `/etc/caddy/Caddyfile`. The existing Let's Encrypt certificates were migrated
+  out of the old `caddy-data` volume, so no re-issuance occurred. The `short`
+  URL shortener (already a native systemd service on port 8081) is unaffected —
+  Caddy now reaches both apps via `localhost` instead of the compose network /
+  `host.docker.internal`. Docker Engine was purged from the instance, freeing
+  ~4 GB of disk and ~370 MB of RAM.
+  - `docker-compose.prod.yml` is gone; the `Caddyfile` now targets
+    `localhost:8080` / `localhost:8081`. `docker-compose.yml` and
+    `gateway/Dockerfile` remain for local development only.
+
 ## 2026-07-04
 
 ### Changed
