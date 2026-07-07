@@ -21,6 +21,14 @@ continuously (no version tags), so entries are grouped by date.
     server/template maps skipped), 272 with fog, 289 with in-world effects.
   - **Per-map background music** (`/bgm/*`): 1081 map→track mappings, 183 unique
     tracks.
+- **Regenerated the baked resolver tables** (`gateway/internal/render/resolve/data/`)
+  from the updated client `.lub` so the newly-added equipment resolves for
+  `/image` rendering. Dumped via the 32-bit lua5.1 path + `cmd/gen-resolver`;
+  a clean additive change (43 insertions, 0 removed): 6 new headgears
+  (`2866`–`2871`) and 2 new garments (`323`/`324`) in `tables.json`, plus 30 new
+  `layer_priority.json` entries. `accname=2853 robe=323 weapon=101 jobname=5011
+  istoplayer=219 layerPriority=559`. Requires the gateway rebuild+redeploy below
+  (the tables are `go:embed`ed).
 
 ## 2026-07-06
 
