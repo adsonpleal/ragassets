@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-07-07
+
+### Changed
+- **Full GRF re-extraction against the updated client.** The client `data.grf`
+  (and `System/iteminfo_new.lub`) picked up newly-added items, so every served
+  asset tree was rebuilt from the current GRF:
+  - **Icons** — item `15792` / collection `15793` (up from ~`15189` at the June
+    baseline, ≈ +600 new items), skill `1194`, job `282`, status `459`, ui `128`.
+  - **Core sprite/palette/imf/luafiles514/texture-effect** data (used by the
+    in-process renderer and `/effect/*`): 208,071 files re-extracted, 12,171 of
+    them DES-decrypted.
+  - **Effect-only costume + map-effect bundles** (`/effects/*`): catalogue of 23
+    costume bundles plus 3 sprite effects; the level-aura / EXE-bound costumes
+    remain unresolved by design (no derivable `.str`).
+  - **World maps** (`/maps/*`): 922 maps extracted (17 ground-mesh-less
+    server/template maps skipped), 272 with fog, 289 with in-world effects.
+  - **Per-map background music** (`/bgm/*`): 1081 map→track mappings, 183 unique
+    tracks.
+
 ## 2026-07-06
 
 ### Changed
