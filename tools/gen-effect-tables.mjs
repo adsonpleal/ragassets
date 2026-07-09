@@ -29,11 +29,14 @@
 // the client SKID for the classic range (verified: SM_BASH=5, WZ_STORMGUST=89).
 //
 // These are ES modules (import .. / export default ..); we strip the imports,
-// stub the runtime deps (renderer classes etc., only referenced inside procedural
-// FUNC callbacks we drop anyway), turn `export default` into a return, and run the
-// body in a Function sandbox so the returned data object falls out.  SkillEffect's
-// SkillConst import is bound to the real SK map so SkillEffect[SK.NAME] keys resolve
-// to numeric skill ids.
+// stub the runtime deps (renderer classes etc., referenced from procedural FUNC
+// callbacks), turn `export default` into a return, and run the body in a Function
+// sandbox so the returned data object falls out.  SkillEffect's SkillConst import is
+// bound to the real SK map so SkillEffect[SK.NAME] keys resolve to numeric skill ids.
+// FUNC callbacks can't be serialized into the JSON table, so instead of dropping them
+// (which silently erased ~90 effects' logic) we name each part via its callback's
+// referenced renderer class and lift the source into effect_funcs.json (see
+// cleanEffectTable / deriveFuncName).
 //
 // The contract is single numeric ids per field; roBrowserLegacy sometimes uses
 // arrays (multi-effect), named-string effects ('quake_magnum', 'ef_anklesnare'),
@@ -151,32 +154,95 @@ function evalModule(src, overrides = {}) {
   return run(...args, STUB);
 }
 
-// Flag FUNC parts and drop unserializable callbacks. roBrowserLegacy marks a part
-// procedural either with type:'FUNC' or by giving it a render/init/func callback; we
-// normalize to type:'FUNC' so the client can tell served (STR/SPR) parts from ones
-// it must render itself. All function values are dropped (not serializable, not ours
-// to run); non-STR types (2D/3D/CYLINDER/SPR/RSM/...) are kept as-is and the client
-// skips them.
-function cleanEffectTable(table) {
+// Parse the top-level import binding names from an ES-module source (the renderer
+// classes / helpers a module pulls in). Used to tell an instantiated renderer class
+// (`new LockOnTarget(...)`) from an incidental `new Date()` inside a FUNC body.
+function parseImportNames(src) {
+  const names = new Set();
+  const IMPORT = /import\s+([^;]+?)\s+from\s+['"][^'"]+['"];?/gs;
+  src.replace(IMPORT, (_, clause) => {
+    clause = clause.trim();
+    let m;
+    if ((m = clause.match(/^\*\s+as\s+([A-Za-z_$][\w$]*)/))) names.add(m[1]);
+    else {
+      const def = clause.match(/^([A-Za-z_$][\w$]*)/);
+      if (def && !clause.startsWith("{")) names.add(def[1]);
+      const braces = clause.match(/\{([^}]*)\}/);
+      if (braces)
+        braces[1].split(",").forEach((p) => {
+          p = p.trim();
+          if (!p) return;
+          const as = p.split(/\s+as\s+/);
+          names.add((as[1] || as[0]).trim());
+        });
+    }
+    return "";
+  });
+  return names;
+}
+
+// Utility namespaces whose static calls are incidental (loop math, timers), never
+// the effect's identity — skipped when guessing a name from a static call.
+const UTIL_NS = /^(Math|Events|JSON|Object|Array|Date|Number|String|console)\./;
+
+// Derive a stable dispatch name for a procedural (FUNC) part from its callback
+// source. Priority: (1) the callback's own function name (roBrowserLegacy names many
+// FUNC bodies, e.g. `function EffectBodyColor(Params)`), (2) the renderer class it
+// instantiates (`new LockOnTarget(...)`, when imported), (3) a non-utility static
+// call (`Camera.setQuake`, `CloudWeatherEffect.startOrRestart`, `Blind.setActive`),
+// (4) a `*Effects.forEach` song bundle, (5) the first `new X`, else 'inline'. These
+// keys route a FUNC id to its ported procedural renderer and are the Phase-2 list.
+function deriveFuncName(body, importSet) {
+  const named = body.match(/^function\s+([A-Za-z_$][\w$]*)\s*\(/);
+  if (named) return named[1];
+  const news = [...body.matchAll(/new\s+([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
+  const importedNew = news.find((n) => importSet.has(n));
+  if (importedNew) return importedNew;
+  const calls = [...body.matchAll(/\b([A-Z][\w$]*\.[a-zA-Z]\w*)\(/g)].map((m) => m[1]);
+  const call = calls.find((c) => !UTIL_NS.test(c));
+  if (call) return call;
+  const forEach = body.match(/\b([A-Za-z_$][\w$]*Effects)\.forEach/);
+  if (forEach) return forEach[1];
+  if (news.length) return news[0];
+  return "inline";
+}
+
+// Flag FUNC parts, name them, and lift their (unserializable) callback source into a
+// sidecar. roBrowserLegacy marks a part procedural either with type:'FUNC' or by
+// giving it a render/init/func callback. We normalize to type:'FUNC', attach a stable
+// `func` dispatch name (see deriveFuncName) so the viewer can route it to a ported
+// procedural renderer, and record every callback's source text in `funcs` keyed by
+// "<effectId>#<partIndex>" — the JSON table can't hold a function, and dropping it
+// (as the old generator did) silently erased ~90 effects' logic. Non-STR data types
+// (2D/3D/CYLINDER/SPR/RSM/QuadHorn) are kept as-is for the viewer's generic renderers.
+function cleanEffectTable(table, importSet) {
   const out = {};
+  const funcs = {};
   for (const [id, parts] of Object.entries(table)) {
     if (!Array.isArray(parts)) continue;
-    out[id] = parts.map((part) => {
+    out[id] = parts.map((part, idx) => {
       const p = {};
-      let hasFunc = false;
+      let funcName = null;
       for (const [k, v] of Object.entries(part)) {
         if (typeof v === "function") {
-          if (k === "func" || k === "render" || k === "init") hasFunc = true;
+          if (k === "func" || k === "render" || k === "init") {
+            const srcText = v.toString();
+            if (funcName === null) funcName = deriveFuncName(srcText, importSet);
+            funcs[`${id}#${idx}`] = { name: funcName, key: k, src: srcText };
+          }
           continue; // callbacks aren't serializable and aren't ours to run
         }
         if (v === STUB || v === undefined) continue;
         p[k] = v;
       }
-      if (hasFunc && !p.type) p.type = "FUNC";
+      if (funcName !== null) {
+        if (!p.type) p.type = "FUNC";
+        p.func = funcName;
+      }
       return p;
     });
   }
-  return out;
+  return { table: out, funcs };
 }
 
 // Pick the first finite number from a value that may be a number or an array
@@ -241,7 +307,11 @@ async function main() {
 
   const SK = evalModule(skillConstSrc); // { NAME: numericSkillId }
   const skillEffect = evalModule(skillEffectSrc, { SK }); // SkillEffect[SK.NAME] -> raw entry
-  const effectTable = cleanEffectTable(evalModule(effectTableSrc));
+  const effectImports = parseImportNames(effectTableSrc);
+  const { table: effectTable, funcs: effectFuncs } = cleanEffectTable(
+    evalModule(effectTableSrc),
+    effectImports,
+  );
 
   // Fold every numeric-keyed skill entry; keep only skills with a contract field.
   const skillMap = {};
@@ -269,6 +339,19 @@ async function main() {
 
   writeFileSync(join(outDir, "skill_map.json"), JSON.stringify(skillOut) + "\n");
   writeFileSync(join(outDir, "effect_table.json"), JSON.stringify(effectTable) + "\n");
+
+  // Sidecar: the recovered FUNC callback sources the served JSON can't carry, keyed
+  // by "<effectId>#<partIndex>". This is the port spec for the viewer's procedural
+  // renderers (Phase 2) — it is committed for reference, not served by the gateway.
+  writeFileSync(join(outDir, "effect_funcs.json"), JSON.stringify(effectFuncs, null, 1) + "\n");
+
+  // Provenance manifest: effect id -> data source. Every id is roBrowser today; as
+  // client-lua / EXE-recovered params supersede specific ids, flip them here so the
+  // origin of every served effect stays auditable (client-lua | exe | roBrowser |
+  // curated).
+  const provenance = {};
+  for (const id of Object.keys(effectTable)) provenance[id] = "roBrowser";
+  writeFileSync(join(outDir, "effect_provenance.json"), JSON.stringify(provenance) + "\n");
 
   // Report coverage.
   const strEffects = Object.keys(effectTable).filter((id) => hasStr(effectTable, id)).length;

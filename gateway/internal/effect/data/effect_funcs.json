@@ -1,0 +1,517 @@
+{
+ "60#0": {
+  "name": "LockOnTarget",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tthis.add(new LockOnTarget(Params.Init.ownerEntity, Params.Inst.startTick, Params.Inst.endTick), Params);\n\t\t\t}"
+ },
+ "79#6": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick;\n\t\t\t\tconst duration = 200;\n\t\t\t\tCamera.setQuake(start, duration);\n\t\t\t}"
+ },
+ "92#1": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick + 600;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "102#1": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick + 350;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "122#0": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tconst delay = Params.Inst.startTick - Renderer.tick;\n\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tif (tick >= delay) {\n\t\t\t\t\t\tentity.direction = (entity.direction + 2) % 8; // Spinning around\n\t\t\t\t\t\treturn true;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t}"
+ },
+ "142#0": {
+  "name": "QuadHorn",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tfor (let i = -2; i <= 2; i++) {\n\t\t\t\t\tfor (let j = -2; j <= 2; j++) {\n\t\t\t\t\t\tconst newParams = {\n\t\t\t\t\t\t\teffect: {\n\t\t\t\t\t\t\t\ttype: 'QuadHorn',\n\t\t\t\t\t\t\t\ttextureFile: 'effect/stone.bmp',\n\t\t\t\t\t\t\t\tattachedEntity: false,\n\t\t\t\t\t\t\t\tduration: 1000,\n\t\t\t\t\t\t\t\theight: [0.75, 1.2],\n\t\t\t\t\t\t\t\toffsetX: [0.2, 0.2],\n\t\t\t\t\t\t\t\toffsetY: [0.2, 0.2],\n\t\t\t\t\t\t\t\toffsetZ: -0.1,\n\t\t\t\t\t\t\t\tbottomSize: [0.4, 0.7],\n\t\t\t\t\t\t\t\tblendMode: 1,\n\t\t\t\t\t\t\t\trotateY: [1, 360],\n\t\t\t\t\t\t\t\trotateZ: [-8.0, 8.0],\n\t\t\t\t\t\t\t\tcolor: [1.0, 1.0, 1.0, 1.0],\n\t\t\t\t\t\t\t\tanimation: 3,\n\t\t\t\t\t\t\t\tanimationSpeed: 250,\n\t\t\t\t\t\t\t\tanimationOut: true\n\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\tInit: {},\n\t\t\t\t\t\t\tInst: {}\n\t\t\t\t\t\t};\n\t\t\t\t\t\tconst newPos = [Params.Init.position[0] + i, Params.Init.position[1] + j];\n\t\t\t\t\t\tObject.assign(newParams.Init, Params.Init);\n\t\t\t\t\t\tnewParams.Init.position = [newPos[0], newPos[1], Altitude.getCellHeight(newPos[0], newPos[1])];\n\t\t\t\t\t\tnewParams.Init.duration = newParams.effect.duration;\n\t\t\t\t\t\tObject.assign(newParams.Inst, Params.Inst);\n\t\t\t\t\t\tnewParams.Inst.position = [newPos[0], newPos[1], Altitude.getCellHeight(newPos[0], newPos[1])];\n\t\t\t\t\t\tnewParams.Inst.duration = newParams.effect.duration;\n\t\t\t\t\t\tnewParams.Inst.endTick = newParams.Inst.startTick + newParams.effect.duration;\n\t\t\t\t\t\tthis.add(new QuadHorn(newParams.effect, newParams.Inst, newParams.Init), newParams);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}"
+ },
+ "142#2": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick;\n\t\t\t\tconst duration = 200;\n\t\t\t\tCamera.setQuake(start, duration);\n\t\t\t}"
+ },
+ "161#0": {
+  "name": "RainWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tRainWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "162#0": {
+  "name": "SnowWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tSnowWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "163#0": {
+  "name": "SakuraWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tSakuraWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "166#0": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tif (!entity) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\n\t\t\t\tentity._enableTrail = true;\n\t\t\t\tentity._blurType = 1;\n\n\t\t\t\tsetTimeout(() => {\n\t\t\t\t\tentity._enableTrail = false;\n\t\t\t\t}, Params.Init.duration || 2000);\n\t\t\t}"
+ },
+ "183#1": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick;\n\t\t\t\tconst duration = 200;\n\t\t\t\tCamera.setQuake(start, duration);\n\t\t\t}"
+ },
+ "200#0": {
+  "name": "SwirlingAura",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tthis.add(\n\t\t\t\t\tnew SwirlingAura(Params.Init.ownerEntity.position, 'ring_blue.tga', Params.Inst.startTick),\n\t\t\t\t\tParams\n\t\t\t\t);\n\t\t\t}"
+ },
+ "201#0": {
+  "name": "GroundAura",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tthis.add(\n\t\t\t\t\tnew GroundAura(\n\t\t\t\t\t\tParams.Init.ownerEntity.position,\n\t\t\t\t\t\t100, // size (same as original Aura.js)\n\t\t\t\t\t\t15.0, // distance (same as original Aura.js)\n\t\t\t\t\t\t'pikapika2.bmp',\n\t\t\t\t\t\tParams.Inst.startTick\n\t\t\t\t\t),\n\t\t\t\t\tParams\n\t\t\t\t);\n\t\t\t}"
+ },
+ "202#0": {
+  "name": "Level99Bubble",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\t// Default to blue variant (flag1 = 1) unless overridden\n\t\t\t\tlet flag1 = 1;\n\n\t\t\t\t// Allow effect table or caller to override tint variant\n\t\t\t\tif (typeof Params.effect.flag1 !== 'undefined') {\n\t\t\t\t\tflag1 = Params.effect.flag1;\n\t\t\t\t} else if (Params.Inst && typeof Params.Inst.flag1 !== 'undefined') {\n\t\t\t\t\tflag1 = Params.Inst.flag1;\n\t\t\t\t}\n\n\t\t\t\tthis.add(\n\t\t\t\t\tnew Level99Bubble(Params.Init.ownerEntity.position, 'whitelight.tga', Params.Inst.startTick, flag1),\n\t\t\t\t\tParams\n\t\t\t\t);\n\t\t\t}"
+ },
+ "217#1": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\t// Wait for drain particles from Part 1 (Soul Drain travel)\n\t\t\t\t\tif (tick < 500) {\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\tconst time = tick - 500;\n\n\t\t\t\t\t// Part 2: Blue tint progression (200ms duration from official source)\n\t\t\t\t\tif (time < 200) {\n\t\t\t\t\t\t// Formula from official source: m_master->SetArgb(-1, 255-(m_stateCnt+50), 255-(m_stateCnt+50), 255)\n\t\t\t\t\t\tconst val = (255 - (time + 50)) / 255;\n\t\t\t\t\t\tentity._flashColor[0] = val;\n\t\t\t\t\t\tentity._flashColor[1] = val;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\t// Part 3: Smooth fade back to normal (200ms) for premium feel\n\t\t\t\t\tif (time < 400) {\n\t\t\t\t\t\tconst progress = (time - 200) / 200;\n\t\t\t\t\t\tconst startVal = 5 / 255; // 255 - (200 + 50)\n\t\t\t\t\t\tconst val = startVal + (1.0 - startVal) * progress;\n\t\t\t\t\t\tentity._flashColor[0] = val;\n\t\t\t\t\t\tentity._flashColor[1] = val;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\t// Final reset\n\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\treturn true;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "217#2": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\t// make target blue\n\t\t\t\tconst entity = Params.Init.otherEntity;\n\t\t\t\tif (!entity) return true;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tconst time = tick;\n\n\t\t\t\t\t// Part 1: Blue tint progression (200ms duration from official source)\n\t\t\t\t\tif (time < 200) {\n\t\t\t\t\t\t// Formula from official source: m_master->SetArgb(-1, 255-(m_stateCnt+50), 255-(m_stateCnt+50), 255)\n\t\t\t\t\t\tconst val = (255 - (time + 50)) / 255;\n\t\t\t\t\t\tentity._flashColor[0] = val;\n\t\t\t\t\t\tentity._flashColor[1] = val;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\t// Part 2: Smooth fade back to normal (200ms) for premium feel\n\t\t\t\t\tif (time < 400) {\n\t\t\t\t\t\tconst progress = (time - 200) / 200;\n\t\t\t\t\t\tconst startVal = 5 / 255; // 255 - (200 + 50)\n\t\t\t\t\t\tconst val = startVal + (1.0 - startVal) * progress;\n\t\t\t\t\t\tentity._flashColor[0] = val;\n\t\t\t\t\t\tentity._flashColor[1] = val;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\t// Final reset\n\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\treturn true;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "220#1": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick + 200;\n\t\t\t\tconst duration = 200;\n\t\t\t\tCamera.setQuake(start, duration);\n\t\t\t}"
+ },
+ "228#0": {
+  "name": "SpiritSphere",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst spiritNum = Params.Init.spiritNum || 0;\n\t\t\t\tconst Spheres = new SpiritSphere(Params.Init.ownerEntity, spiritNum, false);\n\t\t\t\tthis.add(Spheres, Params);\n\t\t\t}"
+ },
+ "229#0": {
+  "name": "CloudWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tCloudWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "230#0": {
+  "name": "CloudWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tCloudWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "233#0": {
+  "name": "CloudWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tCloudWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "239#0": {
+  "name": "PropertyGround",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tthis.add(\n\t\t\t\t\tnew PropertyGround(Params.Inst.position, 3.0, 1.0, 2, 'ring_red', Params.Inst.startTick),\n\t\t\t\t\tParams\n\t\t\t\t);\n\t\t\t}"
+ },
+ "240#0": {
+  "name": "PropertyGround",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tthis.add(\n\t\t\t\t\tnew PropertyGround(Params.Inst.position, 3.0, 1.0, 2, 'ring_blue', Params.Inst.startTick),\n\t\t\t\t\tParams\n\t\t\t\t);\n\t\t\t}"
+ },
+ "241#0": {
+  "name": "PropertyGround",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tthis.add(\n\t\t\t\t\tnew PropertyGround(Params.Inst.position, 3.0, 1.0, 2, 'ring_yellow', Params.Inst.startTick),\n\t\t\t\t\tParams\n\t\t\t\t);\n\t\t\t}"
+ },
+ "242#0": {
+  "name": "LPEffect",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tthis.add(new LPEffect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t}"
+ },
+ "295#0": {
+  "name": "DB.getRandomJoke",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tif (Params.Init.ownerAID == Session.Entity.GID) {\n\t\t\t\t\tconst msg = DB.getRandomJoke();\n\t\t\t\t\tif (msg) {\n\t\t\t\t\t\tChatBox.onRequestTalk('', msg, ChatBox.TYPE.PUBLIC);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}"
+ },
+ "296#0": {
+  "name": "DB.getRandomScream",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tif (Params.Init.ownerAID == Session.Entity.GID) {\n\t\t\t\t\tconst msg = DB.getRandomScream();\n\t\t\t\t\tif (msg) {\n\t\t\t\t\t\tChatBox.onRequestTalk('', msg, ChatBox.TYPE.PUBLIC);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}"
+ },
+ "297#0": {
+  "name": "PokJukWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tPokJukWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "303#0": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick + 132;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "333#0": {
+  "name": "SakuraWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tSakuraWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "334#0": {
+  "name": "Blind.setActive",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tBlind.setActive(true);\n\t\t\t}"
+ },
+ "335#0": {
+  "name": "Poison.setActive",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tPoison.setActive(true);\n\t\t\t}"
+ },
+ "365#2": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick + 500;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "366#0": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\t// Official: Halo (Double Body) is active between tick 20 and 40.\n\t\t\t\t\tentity._enableHalo = tick >= 150 && tick <= 450;\n\n\t\t\t\t\tif (tick >= 150 && tick <= 450) {\n\t\t\t\t\t\t// SetArgb(-1, 255, 200, 200) -> Light Red\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 0.78;\n\t\t\t\t\t\tentity._flashColor[2] = 0.78;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t} else {\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t}\n\t\t\t\t\treturn tick > 500;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "377#0": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\t// Official: Halo (Double Body) is active between tick 5 and 35.\n\t\t\t\t\tentity._enableHalo = tick >= 50 && tick <= 350;\n\n\t\t\t\t\tif (tick >= 50 && tick <= 350) {\n\t\t\t\t\t\t// SetArgb(-1, 255, 100, 100) -> Red\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 0.39;\n\t\t\t\t\t\tentity._flashColor[2] = 0.39;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t} else {\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t}\n\t\t\t\t\treturn tick > 400;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "379#0": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\t// Wait for drain particles from Part 1 (Soul Drain travel)\n\t\t\t\t\tif (tick < 500) {\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\tconst time = tick - 500;\n\n\t\t\t\t\t// Enable halo (BL_DOUBLE_BODY actor)\n\t\t\t\t\tentity._enableHalo = true;\n\n\t\t\t\t\t// Part 2: Blue tint progression (200ms duration from official source)\n\t\t\t\t\tif (time < 200) {\n\t\t\t\t\t\t// Formula from official source: m_master->SetArgb(-1, 255-(m_stateCnt+50), 255-(m_stateCnt+50), 255)\n\t\t\t\t\t\tconst val = (255 - (time + 50)) / 255;\n\t\t\t\t\t\tentity._flashColor[0] = val;\n\t\t\t\t\t\tentity._flashColor[1] = val;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\t// Part 3: Smooth fade back to normal (200ms) for premium feel\n\t\t\t\t\tif (time < 400) {\n\t\t\t\t\t\tconst progress = (time - 200) / 200;\n\t\t\t\t\t\tconst startVal = 5 / 255; // 255 - (200 + 50)\n\t\t\t\t\t\tconst val = startVal + (1.0 - startVal) * progress;\n\t\t\t\t\t\tentity._flashColor[0] = val;\n\t\t\t\t\t\tentity._flashColor[1] = val;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\t// Final reset\n\t\t\t\t\tentity._enableHalo = false;\n\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\treturn true;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "380#0": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tif (tick < 1000) {\n\t\t\t\t\t\tif (tick > 500) {\n\t\t\t\t\t\t\tentity._flashColor[0] = Math.random();\n\t\t\t\t\t\t\tentity._flashColor[1] = Math.random();\n\t\t\t\t\t\t\tentity._flashColor[2] = Math.random();\n\t\t\t\t\t\t\tentity._flashColor[3] = 0.6;\n\t\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\t}\n\t\t\t\t\t} else {\n\t\t\t\t\t\tentity._flashColor[0] = 1;\n\t\t\t\t\t\tentity._flashColor[1] = 1;\n\t\t\t\t\t\tentity._flashColor[2] = 1;\n\t\t\t\t\t\tentity._flashColor[3] = 1;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn true;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t}"
+ },
+ "380#1": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick + 300;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "387#1": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick + 300;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "394#0": {
+  "name": "BlueTile",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst BlueTile = FlatColorTile('salmon', { r: 0xff / 255, g: 0x8a / 255, b: 0xbb / 255, a: 0.6 });\n\t\t\t\tthis.add(new BlueTile(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t}"
+ },
+ "399#0": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\t// Enable halo (BL_DOUBLE_BODY actor)\n\t\t\t\t\tentity._enableHalo = true;\n\n\t\t\t\t\tif (tick < 200) {\n\t\t\t\t\t\tconst val = (255 - (tick + 50)) / 255;\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\t\tentity._flashColor[2] = val;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\tif (tick < 500) {\n\t\t\t\t\t\tconst progress = (tick - 200) / 300;\n\t\t\t\t\t\tconst startVal = 5 / 255; // 255 - (200 + 50)\n\t\t\t\t\t\tconst val = startVal + (1.0 - startVal) * progress;\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\t\tentity._flashColor[2] = val;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\t// Final reset\n\t\t\t\t\tentity._enableHalo = false;\n\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\treturn true;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "400#0": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\t// Official: Halo (Double Body) is active between state 20 and 50.\n\t\t\t\t\t// Scaling to ms (approx 200ms to 500ms).\n\t\t\t\t\tif (tick >= 150 && tick <= 500) {\n\t\t\t\t\t\tentity._enableHalo = true;\n\t\t\t\t\t} else {\n\t\t\t\t\t\tentity._enableHalo = false;\n\t\t\t\t\t}\n\t\t\t\t\treturn tick > 600;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "402#0": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tconst time = tick;\n\n\t\t\t\t\tif (time < 200) {\n\t\t\t\t\t\tentity._flashColor[0] = 1.0; // Red\n\t\t\t\t\t\tentity._flashColor[1] = 1.0; // Green\n\t\t\t\t\t\tentity._flashColor[2] = 0.0; // Blue\n\t\t\t\t\t\tentity._flashColor[3] = 0.1; // Alpha (10%)\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\t// Part 2: Smooth fade back to normal\n\t\t\t\t\tif (time < 800) {\n\t\t\t\t\t\tconst progress = (time - 200) / 600;\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\t\tentity._flashColor[2] = 0.0 + 1.0 * progress;\n\t\t\t\t\t\tentity._flashColor[3] = 0.1 + 0.9 * progress;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\n\t\t\t\t\t// Final reset\n\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\treturn true;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "403#0": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tif (tick < 1000) {\n\t\t\t\t\t\tentity._flashColor[0] = Math.random();\n\t\t\t\t\t\tentity._flashColor[1] = Math.random();\n\t\t\t\t\t\tentity._flashColor[2] = Math.random();\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t} else {\n\t\t\t\t\t\tentity._flashColor[0] = 1;\n\t\t\t\t\t\tentity._flashColor[1] = 1;\n\t\t\t\t\t\tentity._flashColor[2] = 1;\n\t\t\t\t\t\tentity._flashColor[3] = 1;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn true;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t}"
+ },
+ "404#0": {
+  "name": "SpiderWeb",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tthis.add(new SpiderWeb(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t}"
+ },
+ "420#0": {
+  "name": "EffectSmallTransition",
+  "key": "func",
+  "src": "function EffectSmallTransition(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tconst xSize = entity.xSize;\n\t\t\t\tconst ySize = entity.ySize;\n\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tentity.xSize = xSize + (2.5 - xSize) * (Math.min(tick, 300) / 300);\n\t\t\t\t\tentity.ySize = ySize + (2.5 - ySize) * (Math.min(tick, 300) / 300);\n\n\t\t\t\t\treturn tick > 300;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "421#0": {
+  "name": "EffectSmall",
+  "key": "func",
+  "src": "function EffectSmall(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.xSize = 2.5;\n\t\t\t\tentity.ySize = 2.5;\n\t\t\t}"
+ },
+ "422#0": {
+  "name": "EffectBigTransition",
+  "key": "func",
+  "src": "function EffectBigTransition(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tconst xSize = entity.xSize;\n\t\t\t\tconst ySize = entity.ySize;\n\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tentity.xSize = xSize + (7.5 - xSize) * (Math.min(tick, 300) / 300);\n\t\t\t\t\tentity.ySize = ySize + (7.5 - ySize) * (Math.min(tick, 300) / 300);\n\n\t\t\t\t\treturn tick > 300;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "423#0": {
+  "name": "EffectBig",
+  "key": "func",
+  "src": "function EffectBig(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.xSize = 7.5;\n\t\t\t\tentity.ySize = 7.5;\n\t\t\t}"
+ },
+ "501#0": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tconst duration = 500;\n\t\t\t\tconst count = 50;\n\t\t\t\tconst delay = duration / count;\n\n\t\t\t\tfor (let i = 0; i < count; i++) {\n\t\t\t\t\tlet delta = 1;\n\n\t\t\t\t\tif (i <= 15) {\n\t\t\t\t\t\tdelta = 12 * (8 / 360);\n\t\t\t\t\t} else if (i <= 30) {\n\t\t\t\t\t\tdelta = 18 * (8 / 360);\n\t\t\t\t\t} else if (i <= 40) {\n\t\t\t\t\t\tdelta = 24 * (8 / 360);\n\t\t\t\t\t} else {\n\t\t\t\t\t\tdelta = 48 * (8 / 360);\n\t\t\t\t\t}\n\n\t\t\t\t\tEvents.setTimeout(function () {\n\t\t\t\t\t\tentity.direction = Math.floor(entity.direction + delta) % 8;\n\t\t\t\t\t}, delay * i);\n\t\t\t\t}\n\t\t\t}"
+ },
+ "504#0": {
+  "name": "SpiritSphere",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst spiritNum = Params.Init.spiritNum || 0;\n\t\t\t\tconst Spheres = new SpiritSphere(Params.Init.ownerEntity, spiritNum, false);\n\t\t\t\tthis.add(Spheres, Params);\n\t\t\t}"
+ },
+ "512#0": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick + 132;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "513#0": {
+  "name": "MagicTarget",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tthis.add(\n\t\t\t\t\tnew MagicTarget(\n\t\t\t\t\t\tParams.Init.skillId,\n\t\t\t\t\t\tParams.Init.position[0],\n\t\t\t\t\t\tParams.Init.position[1],\n\t\t\t\t\t\tParams.Inst.endTick,\n\t\t\t\t\t\tParams.Init.otherEntity\n\t\t\t\t\t),\n\t\t\t\t\tParams\n\t\t\t\t);\n\t\t\t}"
+ },
+ "515#0": {
+  "name": "CloudWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tCloudWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "516#0": {
+  "name": "CloudWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tCloudWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "537#0": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick + 200;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "563#0": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick;\n\t\t\t\tconst duration = 200;\n\t\t\t\tCamera.setQuake(start, duration);\n\t\t\t}"
+ },
+ "592#0": {
+  "name": "CloudWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tCloudWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "629#0": {
+  "name": "SpiritSphere",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst spiritNum = Params.Init.spiritNum || 0;\n\t\t\t\tconst Spheres = new SpiritSphere(Params.Init.ownerEntity, spiritNum, true);\n\t\t\t\tthis.add(Spheres, Params);\n\t\t\t}"
+ },
+ "666#1": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "668#1": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "674#0": {
+  "name": "EvillandEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tEvillandEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "697#0": {
+  "name": "CloudWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tCloudWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "698#0": {
+  "name": "CloudWeatherEffect.startOrRestart",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tCloudWeatherEffect.startOrRestart(Params);\n\t\t\t}"
+ },
+ "732#1": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick;\n\t\t\t\tconst duration = 200;\n\t\t\t\tCamera.setQuake(start, duration);\n\t\t\t}"
+ },
+ "775#0": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tconst duration = 500;\n\t\t\t\tconst count = 8;\n\t\t\t\tconst delay = duration / count;\n\n\t\t\t\tfor (let i = 0; i < count; i++) {\n\t\t\t\t\tconst delta = 1;\n\n\t\t\t\t\tEvents.setTimeout(function () {\n\t\t\t\t\t\tentity.direction = Math.floor(entity.direction + delta) % 8;\n\t\t\t\t\t}, delay * i);\n\t\t\t\t}\n\t\t\t}"
+ },
+ "805#0": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tif (!entity.cast.display) {\n\t\t\t\t\t\t//we don't know cast time here so.. let's hack\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn true;\n\t\t\t\t\t}\n\t\t\t\t\tentity._flashColor[0] = Math.random();\n\t\t\t\t\tentity._flashColor[1] = Math.random();\n\t\t\t\t\tentity._flashColor[2] = Math.random();\n\t\t\t\t\tentity._flashColor[3] = 0.5 + Math.random() / 2;\n\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t});\n\t\t\t}"
+ },
+ "833#0": {
+  "name": "SpiritSphere",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst spiritNum = Params.Init.spiritNum || 0;\n\t\t\t\tconst Spheres = new SpiritSphere(Params.Init.ownerEntity, spiritNum, false);\n\t\t\t\tthis.add(Spheres, Params);\n\t\t\t}"
+ },
+ "885#0": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\t// Halo (Double Body) - Blue variant\n\t\t\t\t\tentity._enableHalo = tick >= 150 && tick <= 450;\n\n\t\t\t\t\tif (tick >= 150 && tick <= 450) {\n\t\t\t\t\t\t// Blue tint\n\t\t\t\t\t\tentity._flashColor[0] = 0.5;\n\t\t\t\t\t\tentity._flashColor[1] = 0.5;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t} else {\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t}\n\t\t\t\t\treturn tick > 500;\n\t\t\t\t});\n\t\t\t}"
+ },
+ "1111#0": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\tentity._flashColor[1] = 0.0;\n\t\t\t\tentity._flashColor[2] = 0.0;\n\t\t\t\tentity._flashColor[3] = 0.0;\n\t\t\t\tentity.recalculateBlendingColor();\n\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tentity._flashColor[3] = 0.0 + tick / 100;\n\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\tif (tick > 300) {\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn true;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t}"
+ },
+ "277_ground#0": {
+  "name": "DissonanceEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tDissonanceEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "278_ground#0": {
+  "name": "LullabyEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tLullabyEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "279_ground#0": {
+  "name": "MrKimEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tMrKimEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "280_ground#0": {
+  "name": "EtChaosEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tEtChaosEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "281_ground#0": {
+  "name": "DrumEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tDrumEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "282_ground#0": {
+  "name": "NibelungEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tNibelungEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "283_ground#0": {
+  "name": "LokiEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tLokiEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "284_ground#0": {
+  "name": "AbyssEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tAbyssEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "285_ground#0": {
+  "name": "SiegfiedEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tSiegfiedEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "286_ground#0": {
+  "name": "WhistleEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tWhistleEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "287_ground#0": {
+  "name": "SinEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tSinEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "288_ground#0": {
+  "name": "bragiNoteEffect",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tconst bragiNoteEffect = getBragiSpellNote();\n\t\t\t\tself.add(new bragiNoteEffect(Params.Inst.position, Params.Inst.startTick, 2), Params);\n\t\t\t}"
+ },
+ "289_ground#0": {
+  "name": "AppleEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tAppleEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "290_ground#0": {
+  "name": "UglyEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tUglyEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "291_ground#0": {
+  "name": "HummingEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tHummingEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "292_ground#0": {
+  "name": "ForgetEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tForgetEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "293_ground#0": {
+  "name": "FortuneEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tFortuneEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "294_ground#0": {
+  "name": "ServiceEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tServiceEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "339_beforecast#0": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\tentity.recalculateBlendingColor();\n\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tif (!entity.cast.display) {\n\t\t\t\t\t\t//we don't know cast time here so.. let's hack\n\t\t\t\t\t\tentity._flashColor[0] = 1.0;\n\t\t\t\t\t\tentity._flashColor[1] = 1.0;\n\t\t\t\t\t\tentity._flashColor[2] = 1.0;\n\t\t\t\t\t\tentity._flashColor[3] = 1.0;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn true;\n\t\t\t\t\t}\n\t\t\t\t\tentity._flashColor[1] = 0.0 + Math.sin(tick / (6 * Math.PI));\n\t\t\t\t\tentity._flashColor[2] = 0.0 + Math.sin(tick / (6 * Math.PI));\n\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t});\n\t\t\t}"
+ },
+ "370_ground#0": {
+  "name": "GospelEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tGospelEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "405_ground#0": {
+  "name": "FogEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tFogEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "496_beforecast#0": {
+  "name": "MagicRing",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tthis.add(new MagicRing(entity, 2.45, 0.8, 2.8, 'ring_jadu', Params.Inst.startTick + 10000), Params);\n\t\t\t}"
+ },
+ "522_ground#0": {
+  "name": "GravityEffects.forEach",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst self = this;\n\t\t\t\tGravityEffects.forEach(function (effect) {\n\t\t\t\t\tself.add(new effect(Params.Inst.position, Params.Inst.startTick), Params);\n\t\t\t\t});\n\t\t\t}"
+ },
+ "522_ground#1": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick;\n\t\t\t\tconst duration = 200;\n\t\t\t\tCamera.setQuake(start, duration);\n\t\t\t}"
+ },
+ "maximize_power_sounds#0": {
+  "name": "MaximizePowerSounds",
+  "key": "func",
+  "src": "function MaximizePowerSounds(Params) {\n\t\t\t\tEvents.setTimeout(function () {\n\t\t\t\t\tSoundManager.play('effect/black_maximize_power_circle.wav');\n\t\t\t\t}, 1);\n\t\t\t\tEvents.setTimeout(function () {\n\t\t\t\t\tSoundManager.play('effect/black_maximize_power_sword.wav');\n\t\t\t\t}, 550);\n\t\t\t\tEvents.setTimeout(function () {\n\t\t\t\t\tSoundManager.play('effect/black_maximize_power_sword.wav');\n\t\t\t\t}, 700);\n\t\t\t\tEvents.setTimeout(function () {\n\t\t\t\t\tSoundManager.play('effect/black_maximize_power_sword_bic.wav');\n\t\t\t\t}, 950);\n\t\t\t}"
+ },
+ "ef_rush_windmill#4": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\tconst entity = Params.Init;\n\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tif (tick < 500) {\n\t\t\t\t\t\tif (tick % 2 == 0) {\n\t\t\t\t\t\t\tentity._flashColor[0] = 1;\n\t\t\t\t\t\t\tentity._flashColor[1] = 1;\n\t\t\t\t\t\t\tentity._flashColor[2] = 1;\n\t\t\t\t\t\t\tentity._flashColor[3] = 0.4;\n\t\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tentity._flashColor[0] = 1;\n\t\t\t\t\t\t\tentity._flashColor[1] = 1;\n\t\t\t\t\t\t\tentity._flashColor[2] = 1;\n\t\t\t\t\t\t\tentity._flashColor[3] = 1;\n\t\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\t}\n\t\t\t\t\t} else {\n\t\t\t\t\t\tentity._flashColor[0] = 1;\n\t\t\t\t\t\tentity._flashColor[1] = 1;\n\t\t\t\t\t\tentity._flashColor[2] = 1;\n\t\t\t\t\t\tentity._flashColor[3] = 1;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn true;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t}"
+ },
+ "ef_swing_dance#4": {
+  "name": "EffectBodyColor",
+  "key": "func",
+  "src": "function EffectBodyColor(Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\n\t\t\t\tentity.animations.add(function (tick) {\n\t\t\t\t\tif (tick < 500) {\n\t\t\t\t\t\tif (tick % 2 == 0) {\n\t\t\t\t\t\t\tentity._flashColor[0] = 1;\n\t\t\t\t\t\t\tentity._flashColor[1] = 0.1;\n\t\t\t\t\t\t\tentity._flashColor[2] = 0.5;\n\t\t\t\t\t\t\tentity._flashColor[3] = 0.4;\n\t\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tentity._flashColor[0] = 1;\n\t\t\t\t\t\t\tentity._flashColor[1] = 1;\n\t\t\t\t\t\t\tentity._flashColor[2] = 1;\n\t\t\t\t\t\t\tentity._flashColor[3] = 1;\n\t\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\t}\n\t\t\t\t\t} else {\n\t\t\t\t\t\tentity._flashColor[0] = 1;\n\t\t\t\t\t\tentity._flashColor[1] = 1;\n\t\t\t\t\t\tentity._flashColor[2] = 1;\n\t\t\t\t\t\tentity._flashColor[3] = 1;\n\t\t\t\t\t\tentity.recalculateBlendingColor();\n\t\t\t\t\t\treturn true;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t}"
+ },
+ "ef_moonslasher#1": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tconst duration = 500;\n\t\t\t\tconst count = 8;\n\t\t\t\tconst delay = duration / count;\n\n\t\t\t\tfor (let i = 0; i < count; i++) {\n\t\t\t\t\tconst delta = 1;\n\n\t\t\t\t\tEvents.setTimeout(function () {\n\t\t\t\t\t\tentity.direction = Math.floor(entity.direction + delta) % 8;\n\t\t\t\t\t}, delay * i);\n\t\t\t\t}\n\t\t\t}"
+ },
+ "ef_windmill#1": {
+  "name": "inline",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tconst duration = 500;\n\t\t\t\tconst count = 8;\n\t\t\t\tconst delay = duration / count;\n\n\t\t\t\tfor (let i = 0; i < count; i++) {\n\t\t\t\t\tconst delta = 1;\n\n\t\t\t\t\tEvents.setTimeout(function () {\n\t\t\t\t\t\tentity.direction = Math.floor(entity.direction + delta) % 8;\n\t\t\t\t\t}, delay * i);\n\t\t\t\t}\n\t\t\t}"
+ },
+ "temporary_warlock_sphere#0": {
+  "name": "WarlockSphere",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst entity = Params.Init.ownerEntity;\n\t\t\t\tconst spheres = [];\n\t\t\t\tif (entity.Summon1) {\n\t\t\t\t\tspheres.push(entity.Summon1);\n\t\t\t\t}\n\t\t\t\tif (entity.Summon2) {\n\t\t\t\t\tspheres.push(entity.Summon2);\n\t\t\t\t}\n\t\t\t\tif (entity.Summon3) {\n\t\t\t\t\tspheres.push(entity.Summon3);\n\t\t\t\t}\n\t\t\t\tif (entity.Summon4) {\n\t\t\t\t\tspheres.push(entity.Summon4);\n\t\t\t\t}\n\t\t\t\tif (entity.Summon5) {\n\t\t\t\t\tspheres.push(entity.Summon5);\n\t\t\t\t}\n\n\t\t\t\tconst wl_spheres = new WarlockSphere(entity, spheres);\n\n\t\t\t\tthis.add(wl_spheres, Params);\n\t\t\t}"
+ },
+ "quake#0": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick;\n\t\t\t\tCamera.setQuake(start);\n\t\t\t}"
+ },
+ "quake_magnum#0": {
+  "name": "Camera.setQuake",
+  "key": "func",
+  "src": "function (Params) {\n\t\t\t\tconst start = Params.Inst.startTick;\n\t\t\t\tconst duration = 50;\n\t\t\t\tCamera.setQuake(start, duration);\n\t\t\t}"
+ }
+}
