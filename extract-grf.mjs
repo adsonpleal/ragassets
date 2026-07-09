@@ -1915,6 +1915,40 @@ function extractEffects(grfPath, outBase, args) {
       }
     }
 
+    // Skill SPR effects: every `type:"SPR"` row in the effect table is a played
+    // .spr/.act the client loads from data/sprite/이팩트/<file>. Build one bundle per
+    // effect id under sprites/eff_<id>/ so the replay viewer's loadSprEntry resolves
+    // any SPR effect by id (no per-name slug map). The table `file` is EUC-KR bytes
+    // kept as latin1 (like every client string here) — decode before pathing.
+    let sprEffBuilt = 0;
+    const sprEffFailed = [];
+    const effTablePath = new URL("./gateway/internal/effect/data/effect_table.json", import.meta.url);
+    if (existsSync(effTablePath)) {
+      const effTable = JSON.parse(readFileSync(effTablePath, "utf8"));
+      for (const [id, parts] of Object.entries(effTable)) {
+        if (!Array.isArray(parts)) continue;
+        const sprPart = parts.find((p) => p && p.type === "SPR" && typeof p.file === "string");
+        if (!sprPart) continue;
+        const key = `eff_${id}`;
+        if (seenSpriteKeys.has(key)) continue;
+        seenSpriteKeys.add(key);
+        const name = decodeClientString(sprPart.file);
+        const sprite = `data/sprite/이팩트/${name}`;
+        const outDir = join(spritesRoot, key);
+        rmSync(outDir, { recursive: true, force: true });
+        mkdirSync(outDir, { recursive: true });
+        try {
+          const info = buildSpriteEffect(grf, sprite, key, outDir);
+          console.error(`  ✓ sprites/${key} (skill SPR ${name}) → ${info.frames} frames`);
+          sprEffBuilt++;
+        } catch (err) {
+          rmSync(outDir, { recursive: true, force: true });
+          sprEffFailed.push(`${id}:${name}`);
+        }
+      }
+      console.error(`  skill SPR effects: ${sprEffBuilt} built` + (sprEffFailed.length ? `, ${sprEffFailed.length} unresolved: [${sprEffFailed.join(", ")}]` : "") + ` → sprites/eff_<id>/`);
+    }
+
     // Report: resolved / unresolved / excluded (the unresolved set is expected
     // manual follow-up — Korean-named and EXE/shared-bound effects).
     console.error(`\nEffects → ${root}`);
