@@ -14,6 +14,7 @@ services:
       EFFECTS_DIR: "/effects"
       MAPS_DIR: "/maps"
       BGM_DIR: "/bgm"
+      SOUNDS_DIR: "/sounds"
       GATEWAY_PORT: "8080"
       GOMEMLIMIT: "500MiB"                  # keep GC honest on small hosts (prod uses the same value)
     mem_limit: 600m
@@ -23,6 +24,7 @@ services:
       - ./resources/effects:/effects:ro    # effect-only costume bundles from extract-grf.mjs --effects (optional)
       - ./resources/maps:/maps:ro          # world-map bundles from extract-grf.mjs --maps (optional)
       - ./resources/bgm:/bgm:ro            # per-map background music from extract-grf.mjs --bgm (optional)
+      - ./resources/sounds:/sounds:ro      # skill/effect/monster sound effects from extract-grf.mjs --sounds (optional)
     ports:
       - "${GATEWAY_PORT:-8080}:8080"        # the only public-facing port
     restart: unless-stopped

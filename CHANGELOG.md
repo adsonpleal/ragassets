@@ -3,6 +3,40 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-07-11
+
+### Added
+- **`GET /effect/sound?file=<name>` serves skill/effect/monster sound-effect
+  audio** so the replay viewer can play the "swing" of Bash, the Frost Diver
+  freeze, portal whoosh, heal chime, monster death cries, hit sparks, etc. It is
+  the audio counterpart of the `wav` field the `/effect/table` rows already carry
+  (435 references → 304 unique names): the client resolves a skill to its
+  effect(s), reads each row's `wav`, and fetches it here — no new mapping. `<name>`
+  is a `data/wav/`-relative path without the `.wav` extension, exactly as the table
+  stores it (`effect/ef_portal`, the bare `_heal_effect`). Same immutable-cache /
+  wildcard-CORS / `ETag` headers as `/bgm`; a name the client GRF never shipped
+  returns `404` (the viewer treats that as "no sound" and skips it — a wrong sound
+  is never served). `GET /effect/sound/index.json` lists the names present.
+- **`extract-grf.mjs --sounds <out-dir>`** extracts the whole `data/wav/` tree
+  (every name a `wav` field can reference, `%d` variants included) into `<out>/`,
+  mirroring the GRF paths. Standard PCM wavs are copied verbatim; the handful
+  stored as **MS/IMA ADPCM** (which some browsers can't decode) are transcoded to
+  16-bit PCM, so the tree is uniformly browser-playable under one `audio/wav`
+  Content-Type. Current client: **2678 sounds written, 6 transcoded from ADPCM, 1
+  corrupt GRF entry skipped**; writes `index.json`. Served via the new `SOUNDS_DIR`
+  env (`docker-compose.yml` mounts `resources/sounds` at `/sounds`).
+- **Coverage: 296 of the 304 table `wav` names resolve** (293 concrete + all three
+  `%d` families: `ef_firearrow`/`ef_icearrow` 1–3, `_hit_fist` 1–4), verified live
+  end-to-end (browser `decodeAudioData` succeeds on PCM, both ADPCM formats, and
+  Korean names). 87 of those are Korean names the effect table stores as raw
+  **EUC-KR bytes** rendered one-per-rune; the resolver retries a miss under the
+  decoded Hangul path (`effect.EUCKRReinterpret`), reproducing how the real client
+  matches them. The 8 that stay silent are genuinely absent from this client's GRF
+  (or reference an `effect/`-prefixed path that exists only bare — a client-data
+  quirk the real client would also `404`); the resolver never strips/adds the
+  prefix. The `wav` field was already emitted by `gen-effect-tables.mjs`, so no
+  table regeneration was needed.
+
 ## 2026-07-07
 
 ### Changed

@@ -272,6 +272,82 @@ func TestResolveMapPath(t *testing.T) {
 	}
 }
 
+// soundsServer builds a server over a throwaway sound tree that mirrors the
+// shapes extract-grf.mjs --sounds produces: an ASCII effect sound, a bare-name
+// sound, and a Korean sound stored under its decoded UTF-8 (Hangul) name — the
+// last exercises the EUC-KR reinterpretation the resolver does for names the
+// effect table carries as raw EUC-KR bytes.
+func soundsServer(t *testing.T) *server {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("effect/ef_portal.wav", "RIFFfake-wav-portal")
+	write("_heal_effect.wav", "RIFFfake-wav-heal")
+	write("effect/흡기.wav", "RIFFfake-wav-heupgi") // table asks for it as "effect/Èí±â"
+	write("index.json", `{"count":3,"names":["_heal_effect","effect/ef_portal","effect/흡기"]}`)
+	return &server{cfg: config{soundsDir: dir, port: "0"}, flight: newFlightGroup()}
+}
+
+func TestSoundEndpoint(t *testing.T) {
+	s := soundsServer(t)
+	cases := []struct {
+		path string
+		code int
+		ct   string
+	}{
+		{"/effect/sound?file=effect/ef_portal", http.StatusOK, "audio/wav"},
+		{"/effect/sound?file=_heal_effect", http.StatusOK, "audio/wav"},
+		{"/effect/sound?file=effect/ef_portal.wav", http.StatusOK, "audio/wav"}, // stray extension tolerated
+		{"/effect/sound?file=EFFECT/EF_PORTAL", http.StatusOK, "audio/wav"},     // case folded
+		{"/effect/sound?file=effect/Èí±â", http.StatusOK, "audio/wav"},          // EUC-KR mojibake → Hangul
+		{"/effect/sound/index.json", http.StatusOK, "application/json"},
+		{"/effect/sound?file=effect/does_not_exist", http.StatusNotFound, ""}, // absent, not 500
+		{"/effect/sound?file=effect/", http.StatusNotFound, ""},               // degenerate empty basename
+		{"/effect/sound", http.StatusBadRequest, ""},                          // missing file param
+	}
+	for _, c := range cases {
+		rec := get(t, s, s.handleEffectAsset, c.path)
+		if rec.Code != c.code {
+			t.Errorf("%s: status = %d, want %d", c.path, rec.Code, c.code)
+		}
+		if c.code == http.StatusOK {
+			if ct := rec.Header().Get("Content-Type"); ct != c.ct {
+				t.Errorf("%s: content-type = %q, want %q", c.path, ct, c.ct)
+			}
+			if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+				t.Errorf("%s: missing CORS header", c.path)
+			}
+			if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+				t.Errorf("%s: cache-control = %q, want immutable", c.path, cc)
+			}
+		}
+	}
+}
+
+// TestSoundTraversal confirms the resolver can't be walked out of the sound tree.
+func TestSoundTraversal(t *testing.T) {
+	s := soundsServer(t)
+	for _, p := range []string{
+		"/effect/sound?file=../main.go",
+		"/effect/sound?file=effect/../../main.go",
+		"/effect/sound?file=/etc/passwd",
+		"/effect/sound?file=effect/..%2f..%2fmain.go",
+		"/effect/sound?file=..\\..\\main.go",
+	} {
+		rec := get(t, s, s.handleEffectAsset, p)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", p, rec.Code)
+		}
+	}
+}
+
 func bgmServer(t *testing.T) *server {
 	t.Helper()
 	dir := t.TempDir()

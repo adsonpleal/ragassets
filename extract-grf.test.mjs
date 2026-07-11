@@ -11,6 +11,10 @@ import {
   decodeSprFrames,
   parseActFrames,
   compositeActFrame,
+  parseWav,
+  encodeWavPcm,
+  decodeImaAdpcm,
+  toPlayableWav,
 } from "./extract-grf.mjs";
 
 // The real data/fogparametertable.txt lays out each record across five
@@ -244,4 +248,83 @@ test("compositeActFrame composites layers and reports the image centre offset", 
   assert.deepEqual([...out.rgba.slice(0, 4)], [10, 20, 30, 255]);
   const last = (out.width * out.height - 1) * 4;
   assert.deepEqual([...out.rgba.slice(last, last + 4)], [40, 50, 60, 255]);
+});
+
+// --- sound extraction: WAV muxing + ADPCM transcode -------------------------
+
+// Build a minimal WAV: fmt (with optional extra bytes) + data chunk.
+function makeWav({ audioFormat, channels, sampleRate, blockAlign, bits, ext = Buffer.alloc(0), data }) {
+  const fmtBody = Buffer.alloc(16 + ext.length);
+  fmtBody.writeUInt16LE(audioFormat, 0);
+  fmtBody.writeUInt16LE(channels, 2);
+  fmtBody.writeUInt32LE(sampleRate, 4);
+  fmtBody.writeUInt32LE(sampleRate * blockAlign, 8);
+  fmtBody.writeUInt16LE(blockAlign, 12);
+  fmtBody.writeUInt16LE(bits, 14);
+  ext.copy(fmtBody, 16);
+  const chunk = (id, body) => {
+    const h = Buffer.alloc(8);
+    h.write(id, 0, "ascii");
+    h.writeUInt32LE(body.length, 4);
+    return Buffer.concat([h, body, body.length & 1 ? Buffer.from([0]) : Buffer.alloc(0)]);
+  };
+  const body = Buffer.concat([Buffer.from("WAVE", "ascii"), chunk("fmt ", fmtBody), chunk("data", data)]);
+  const riff = Buffer.alloc(8);
+  riff.write("RIFF", 0, "ascii");
+  riff.writeUInt32LE(body.length, 4);
+  return Buffer.concat([riff, body]);
+}
+
+test("encodeWavPcm/parseWav round-trip preserves the format and samples", () => {
+  const pcm = Buffer.from(Int16Array.from([0, 1000, -1000, 32767, -32768]).buffer);
+  const wav = encodeWavPcm(pcm, 1, 22050, 16);
+  const parsed = parseWav(wav);
+  assert.equal(parsed.fmt.audioFormat, 1);
+  assert.equal(parsed.fmt.channels, 1);
+  assert.equal(parsed.fmt.sampleRate, 22050);
+  assert.equal(parsed.fmt.bits, 16);
+  assert.equal(parsed.data.len, pcm.length);
+  assert.deepEqual(wav.subarray(parsed.data.offset, parsed.data.offset + parsed.data.len), pcm);
+});
+
+test("toPlayableWav passes standard PCM through verbatim", () => {
+  const pcm = Buffer.from(Int16Array.from([1, 2, 3, 4]).buffer);
+  const wav = makeWav({ audioFormat: 1, channels: 1, sampleRate: 22050, blockAlign: 2, bits: 16, data: pcm });
+  const r = toPlayableWav(wav);
+  assert.equal(r.transcoded, false);
+  assert.equal(r.format, 1);
+  assert.deepEqual(r.bytes, wav); // byte-for-byte, no re-muxing
+});
+
+test("toPlayableWav transcodes IMA ADPCM to PCM (first sample = block predictor)", () => {
+  // One mono IMA block: predictor=1234, stepIndex=0, reserved=0, then 4 data bytes.
+  const block = Buffer.alloc(8);
+  block.writeInt16LE(1234, 0);
+  block[2] = 0; // step index
+  block[3] = 0; // reserved
+  block[4] = 0x00; block[5] = 0x11; block[6] = 0x22; block[7] = 0x33; // 8 nibbles
+  const wav = makeWav({ audioFormat: 17, channels: 1, sampleRate: 22050, blockAlign: 8, bits: 4, data: block });
+  const r = toPlayableWav(wav);
+  assert.equal(r.transcoded, true);
+  assert.equal(r.format, 17);
+  const out = parseWav(r.bytes);
+  assert.equal(out.fmt.audioFormat, 1); // now standard PCM
+  assert.equal(out.fmt.bits, 16);
+  // 1 header sample + 8 nibble samples = 9 samples (18 bytes).
+  assert.equal(out.data.len, 18);
+  const first = r.bytes.readInt16LE(out.data.offset);
+  assert.equal(first, 1234); // IMA's first emitted sample is the stored predictor
+});
+
+test("decodeImaAdpcm keeps every decoded sample in int16 range", () => {
+  const block = Buffer.alloc(12);
+  block.writeInt16LE(-5000, 0);
+  block[2] = 40; // a large step index — exercises growth/clamping
+  block.fill(0xff, 4); // max-magnitude nibbles
+  const pcm = decodeImaAdpcm(block, { channels: 1, blockAlign: 12 }, { offset: 0, len: 12 });
+  assert.equal(pcm.length % 2, 0);
+  for (let i = 0; i < pcm.length; i += 2) {
+    const s = pcm.readInt16LE(i);
+    assert.ok(s >= -32768 && s <= 32767, `sample ${s} out of range`);
+  }
 });

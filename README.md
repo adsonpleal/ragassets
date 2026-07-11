@@ -350,8 +350,10 @@ serve.
 |---|---|
 | `GET /effect/str?file=<name>` | The parsed `.str` as JSON: `{"fps","maxKey","layers":[{"textures":["<name>",…],"animations":[{"frame","type","pos":[x,y],"uv":[8],"xy":[8],"aniframe","anitype","delay","angle","color":[r,g,b,a],"srcalpha","destalpha","mtpreset"}]}]}`. `srcalpha`/`destalpha` are the **raw D3DBLEND ints** (the client maps them to `gl.blendFunc` — never collapsed); `color` stays in the file's `0–255` range. `<name>` is relative to `data/texture/effect/` and may omit the `.str` suffix. |
 | `GET /effect/texture?file=<name>` | One `.str` layer texture as an RGBA PNG: magenta (`#FF00FF`) colorkey → alpha, transparent RGB bled outward to kill bilinear fringes; 32-bit TGA keeps its real alpha. `.bmp`/`.tga` source resolves either way when the extension is omitted. |
+| `GET /effect/sound?file=<name>` | One sound effect as browser-playable WAV (`audio/wav`) — the audio behind an effect table row's `wav` field. `<name>` is relative to `data/wav/` **without** the `.wav` extension, exactly as `wav` carries it (`effect/ef_portal`, the bare `_heal_effect`). Reads the static tree `extract-grf.mjs --sounds` writes (`SOUNDS_DIR`); a name the client GRF never shipped `404`s (the viewer treats that as "no sound" and skips it). |
+| `GET /effect/sound/index.json` | `{"count", "names":[…]}` — the sound names present in the extracted tree, for coverage preflighting. |
 | `GET /effect/skill-map` | `skillId → {effectId?, hitEffectId?, groundEffectId?}` — from roBrowserLegacy's `SkillEffect` (~488 skills, all job eras). `skillId` is the AEGIS/packet id the client sends (matches rAthena). |
-| `GET /effect/table` | `effectId → [{type, file, min?, wav?, attachedEntity?, rand?, …}]` — roBrowserLegacy's `EffectTable`. `type` is `STR` for the served (`.str`) effects; `2D`/`3D`/`SPR`/`CYLINDER`/`FUNC` parts are procedural (client-only) and carry only metadata. |
+| `GET /effect/table` | `effectId → [{type, file, min?, wav?, attachedEntity?, rand?, …}]` — roBrowserLegacy's `EffectTable`. `type` is `STR` for the served (`.str`) effects; `2D`/`3D`/`SPR`/`CYLINDER`/`FUNC` parts are procedural (client-only) and carry only metadata. The `wav` field is the sound name for `/effect/sound` above (both visual rows and sound-only rows carry it). |
 
 ```
 /effect/str?file=stormgust                 # Storm Gust  (skill 89 → effectId 89)
@@ -360,18 +362,35 @@ serve.
 /effect/texture?file=stormcannon/sto_shine_00
 /effect/skill-map
 /effect/table
+/effect/sound?file=effect/ef_portal        # the portal-open whoosh (effect 6)
+/effect/sound?file=effect/ef_frostdiver2    # Frost Diver (skill 105 → effect 28)
+/effect/sound?file=_heal_effect             # a bare-name sound (no effect/ prefix)
 ```
 
 Resolve a skill to its assets client-side: `skill-map[skillId]` → the `effectId`s →
 `table[effectId]` → each part's `file` (expand a `%d` over `rand:[a,b]`) → fetch
 `/effect/str?file=<file>`, then `/effect/texture?file=<texname>` for every name the
-STR lists. `<name>` lookups are **case-insensitive** (GRF paths carry inconsistent
+STR lists. For **audio**, read the same rows' `wav` field and fetch
+`/effect/sound?file=<wav>` (`%d` variants like `effect/ef_firearrow%d` expand the
+same way). A row with no `type` is a sound-only part — just a `wav`, no visual. `<name>` lookups are **case-insensitive** (GRF paths carry inconsistent
 casing / EUC-KR); responses carry the same immutable cache headers, `ETag`/`304`
 and wildcard CORS as `/icons`. The two tables are ported from **roBrowserLegacy**
 (`SkillConst`/`SkillEffect`/`EffectTable`) by `tools/gen-effect-tables.mjs` and
 embedded, so they need no extraction; re-run that script (optionally `--src <dir>`)
 if the upstream tables change. Only `type:"STR"` effects render; a skill that maps
 only to procedural (`2D`/`3D`/`SPR`/`CYLINDER`/`FUNC`) effects shows nothing.
+
+`/effect/sound` reads a separate static tree (`extract-grf.mjs --sounds`, see
+[GRF extraction](#resources--grf-extraction-required)) and `404`s until it's built.
+RO's `data/wav/` is almost all standard PCM (browser-playable, copied verbatim);
+the few ADPCM sources are transcoded to PCM WAV at extraction, so every sound plays
+in Chrome/Firefox/Safari and the whole tree is one `Content-Type`. Names resolve
+case-insensitively, and a name the table stores as raw **EUC-KR** bytes (the client
+requests Korean-named sounds verbatim) is retried under its decoded Hangul path — so
+those resolve too. The endpoint never strips or adds the `effect/` prefix: a `wav`
+that points at a file this client's GRF didn't ship stays a `404`, exactly as it
+would in the real client. Responses carry the same immutable cache / `ETag` / CORS
+headers as `/bgm`.
 
 ### `GET /maps/...` — world maps
 
@@ -507,6 +526,7 @@ resources/icons/          # static icons (extract-grf.mjs --icons), served at /i
 resources/effects/        # effect-only costume bundles (extract-grf.mjs --effects), served at /effects/*
 resources/maps/           # world-map bundles (extract-grf.mjs --maps), served at /maps/*
 resources/bgm/            # per-map background music (extract-grf.mjs --bgm), served at /bgm/*
+resources/sounds/         # skill/effect/monster sound effects (extract-grf.mjs --sounds), served at /effect/sound
 extract-grf.mjs           # helper to extract a GRF into resources/
 ```
 
@@ -616,6 +636,22 @@ table) and copies each referenced track out of the client's loose `BGM/` folder 
 the `.mp3` files are **not** inside the GRF — into `resources/bgm/`, de-duplicated by
 filename (many maps share one track). It writes `resources/bgm/index.json` mapping
 each map name to its track. A full run rebuilds the directory from scratch.
+
+To serve the effect **sound** effects (`/effect/sound`), run the sound extraction
+step:
+
+```bash
+node extract-grf.mjs --sounds resources/sounds --grf path/to/data.grf
+```
+
+This extracts the whole `data/wav/` tree — every name an effect table row's `wav`
+field can reference — into `resources/sounds/`, mirroring the GRF paths
+(`effect/ef_portal.wav`, `_heal_effect.wav`, …). Standard PCM wavs are copied
+verbatim; the handful stored as MS/IMA ADPCM (which some browsers can't decode) are
+transcoded to 16-bit PCM so the whole tree is uniformly browser-playable. It writes
+`resources/sounds/index.json` listing the names present. (In the current client:
+2678 sounds, 6 transcoded from ADPCM, 1 corrupt GRF entry skipped.) A full run
+rebuilds the directory from scratch.
 
 Other modes:
 

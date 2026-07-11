@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -47,6 +48,7 @@ type config struct {
 	effectsDir  string
 	mapsDir     string
 	bgmDir      string
+	soundsDir   string
 	port        string
 }
 
@@ -57,6 +59,7 @@ func loadConfig() config {
 		effectsDir:  env("EFFECTS_DIR", "/effects"),
 		mapsDir:     env("MAPS_DIR", "/maps"),
 		bgmDir:      env("BGM_DIR", "/bgm"),
+		soundsDir:   env("SOUNDS_DIR", "/sounds"),
 		port:        env("GATEWAY_PORT", "8080"),
 	}
 }
@@ -129,6 +132,12 @@ func main() {
 		log.Printf("bgm: serving %s at /bgm/{track}.mp3 and /bgm/index.json", cfg.bgmDir)
 	}
 
+	if fi, err := os.Stat(cfg.soundsDir); err != nil || !fi.IsDir() {
+		log.Printf("sounds: %s not found — /effect/sound will return 404 (run extract-grf.mjs --sounds)", cfg.soundsDir)
+	} else {
+		log.Printf("sounds: serving %s at /effect/sound?file=<name> and /effect/sound/index.json", cfg.soundsDir)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/image", s.handleImage)
 	mux.HandleFunc("/gif", s.handleGif)
@@ -170,6 +179,8 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's per-frame img/delay/offset)\n"+
 		"     /effect/str?file=stormgust  (a skill effect's parsed .str keyframe animation, as JSON)\n"+
 		"     /effect/texture?file=stormgust/storm_ball  (one .str layer texture, colorkeyed PNG)\n"+
+		"     /effect/sound?file=effect/ef_portal  (one sound effect, browser-playable WAV)\n"+
+		"     /effect/sound/index.json   (names present in the extracted sound tree)\n"+
 		"     /effect/skill-map          (skillId → effectId(s) lookup, ported from roBrowser)\n"+
 		"     /effect/table              (effectId → effect parts lookup, ported from roBrowser)\n"+
 		"     /maps/index.json           (world-map catalogue for the map simulator)\n"+
@@ -445,13 +456,18 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 //                                 (raw D3DBLEND src/dest alpha kept verbatim)
 //   /effect/texture?file=<name>   one .str layer texture as a colorkeyed PNG
 //                                 (magenta #FF00FF → alpha; .bmp/.tga source)
+//   /effect/sound?file=<name>     one sound effect as browser-playable WAV audio
+//                                 (data/wav/<name>.wav; e.g. effect/ef_portal)
+//   /effect/sound/index.json      the names present in the extracted sound tree
 //   /effect/skill-map             skillId → { effectId?, hitEffectId?, groundEffectId? }
 //   /effect/table                 effectId → [ { type, file, min, wav, rand, ... } ]
 //
 // str/texture parse on demand from RESOURCE_DIR/data/texture/effect (like /image
 // renders from the sprite tree); <name> is relative to that dir, may omit the
 // .str / .bmp / .tga suffix, and is resolved case-insensitively. skill-map/table
-// are embedded JSON ported verbatim from roBrowser (see internal/effect).
+// are embedded JSON ported verbatim from roBrowser (see internal/effect). sound
+// serves the static tree extract-grf.mjs --sounds writes (SOUNDS_DIR), the audio
+// counterpart of the table's `wav` field.
 // ---------------------------------------------------------------------------
 
 func (s *server) handleEffectAsset(w http.ResponseWriter, r *http.Request) {
@@ -465,6 +481,10 @@ func (s *server) handleEffectAsset(w http.ResponseWriter, r *http.Request) {
 		s.handleEffectStr(w, r)
 	case "texture":
 		s.handleEffectTexture(w, r)
+	case "sound":
+		s.handleEffectSound(w, r)
+	case "sound/index.json":
+		s.handleEffectSoundIndex(w, r)
 	case "skill-map":
 		s.serveEmbeddedJSON(w, r, effect.SkillMapJSON, s.skillMapETag)
 	case "table":
@@ -550,6 +570,104 @@ func (s *server) handleEffectTexture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveBytes(w, r, out, etag, "image/png")
+}
+
+// handleEffectSound serves one sound effect from the extracted data/wav/ tree
+// (SOUNDS_DIR) as browser-playable WAV. `file` is a name relative to data/wav/
+// without the .wav extension — the same token the effect table's `wav` field
+// carries (e.g. "effect/ef_portal", the bare "_heal_effect"). A name the GRF
+// never shipped 404s, which the client treats as "no sound for this effect" and
+// silently skips — so a wrong sound is never served in place of a missing one.
+func (s *server) handleEffectSound(w http.ResponseWriter, r *http.Request) {
+	file := r.URL.Query().Get("file")
+	if file == "" {
+		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		return
+	}
+
+	p, ok := s.resolveSound(file)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+
+	// extract-grf.mjs --sounds normalizes every output to PCM WAV (transcoding the
+	// few ADPCM sources), so the whole tree is a single Content-Type.
+	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), "audio/wav")
+}
+
+// handleEffectSoundIndex serves the manifest of sound names present in the
+// extracted tree, for coverage preflighting (a sibling of /bgm/index.json).
+func (s *server) handleEffectSoundIndex(w http.ResponseWriter, r *http.Request) {
+	f, err := os.Open(filepath.Join(s.cfg.soundsDir, "index.json"))
+	if err != nil {
+		http.NotFound(w, r) // sounds not extracted yet
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), "application/json")
+}
+
+// resolveSound maps a requested wav name to a file in the extracted sound tree.
+// It appends .wav, folds case (the tree is lowercased; the table's names are
+// lowercase ASCII), and — on a miss for a name carrying EUC-KR bytes rendered as
+// latin1 — retries under the decoded Hangul path (see effect.EUCKRReinterpret),
+// which is how the client's Korean-named effect sounds match. It never strips or
+// adds the "effect/" path prefix: a name that points at a file this client's GRF
+// didn't ship stays a 404, exactly as it would in the real client.
+func (s *server) resolveSound(file string) (string, bool) {
+	file = strings.ReplaceAll(file, "\\", "/")
+	// The table never includes the extension, but tolerate a stray .wav.
+	if len(file) >= 4 && strings.EqualFold(file[len(file)-4:], ".wav") {
+		file = file[:len(file)-4]
+	}
+	if p, ok := s.soundPath(file); ok {
+		return p, true
+	}
+	if k, ok := effect.EUCKRReinterpret(file); ok {
+		if p, ok := s.soundPath(k); ok {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// soundPath folds a single candidate name to an on-disk path under SOUNDS_DIR,
+// or reports false if it's empty, escapes the tree, or names a directory.
+// path.Clean collapses every "."/".." segment, so a cleaned result that is bare
+// ".."/"." or still climbs ("../…") is the only way out of the tree — the same
+// traversal guard the effect Store uses (see internal/effect/store.go effectRel).
+func (s *server) soundPath(name string) (string, bool) {
+	rel := strings.ToLower(strings.TrimSpace(name))
+	if rel == "" || strings.HasPrefix(rel, "/") {
+		return "", false
+	}
+	cleaned := path.Clean(rel)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", false
+	}
+	p := filepath.Join(s.cfg.soundsDir, filepath.FromSlash(cleaned)+".wav")
+	if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+		return p, true
+	}
+	return "", false
 }
 
 // serveEmbeddedJSON serves a fixed embedded JSON blob with the shared immutable

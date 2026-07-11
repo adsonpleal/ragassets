@@ -90,6 +90,7 @@ function parseArgs(argv) {
     else if (a === "--map") out.map = argv[++i];
     else if (a === "--bgm") out.bgm = argv[++i];
     else if (a === "--bgmsrc") out.bgmsrc = argv[++i];
+    else if (a === "--sounds") out.sounds = argv[++i];
     else if (a === "--iteminfo") out.iteminfo = argv[++i];
     else if (a === "-h" || a === "--help") out.help = true;
   }
@@ -129,6 +130,12 @@ function usage() {
       "  from the GRF and copies the referenced .mp3 files from the client BGM folder",
       "  (next to the GRF, or --bgmsrc <dir>) into <out>/, with index.json mapping",
       "  each map name → its mp3 basename.",
+      "",
+      "  --sounds extracts the whole data/wav/ tree (skill/effect/monster sound",
+      "  effects the /effect/table references by its `wav` field) into <out>/,",
+      "  mirroring the GRF paths (effect/ef_portal.wav, _heal_effect.wav, …). PCM",
+      "  wavs are copied verbatim; MS/IMA ADPCM wavs are transcoded to 16-bit PCM so",
+      "  every sound is browser-playable. Writes index.json listing the names present.",
     ].join("\n"),
   );
 }
@@ -136,7 +143,7 @@ function usage() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects && !args.maps && !args.bgm)) {
+  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects && !args.maps && !args.bgm && !args.sounds)) {
     usage();
     process.exit(args.help ? 0 : 1);
   }
@@ -213,6 +220,15 @@ function main() {
       process.exit(1);
     }
     extractBgm(args.grf, args.bgm, args);
+    process.exit(0);
+  }
+
+  if (args.sounds) {
+    if (!args.grf) {
+      console.error("usage: --sounds <out-dir> --grf <file.grf>");
+      process.exit(1);
+    }
+    extractSounds(args.grf, args.sounds, args);
     process.exit(0);
   }
 }
@@ -3580,6 +3596,314 @@ function extractBgm(grfPath, outBase, args) {
         `  index.json: ${Object.keys(sorted).length} maps`,
     );
     if (missing.size) console.warn(`  ! missing tracks: ${[...missing].sort().join(", ")}`);
+  } finally {
+    closeGrf(grf);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sound extraction — skill/effect/monster sound effects (data/wav/**).
+//
+// The /effect/table rows reference sounds by a `wav` field: a GRF path relative
+// to data/wav/ WITHOUT the .wav extension (e.g. "effect/ef_portal" ->
+// data/wav/effect/ef_portal.wav; the bare "_heal_effect" -> data/wav/_heal_effect.wav).
+// The client asks the gateway for each name it finds there, so we extract the
+// entire data/wav/ tree — every name the table can ever hold is then present —
+// mirroring the GRF layout under <out>/:
+//
+//   <out>/effect/ef_portal.wav
+//   <out>/_heal_effect.wav
+//   <out>/index.json     { count, names: [ "effect/ef_portal", "_heal_effect", … ] }
+//
+// RO wavs are almost all standard PCM (22050 Hz mono 16-bit), directly
+// browser-playable, and are copied verbatim. The handful stored as MS ADPCM
+// (format 0x0002) or IMA ADPCM (0x0011) — which some browsers can't decode — are
+// transcoded to 16-bit PCM WAV so every served sound plays in Chrome/Firefox/
+// Safari. The output is thus uniformly PCM WAV (one Content-Type, audio/wav).
+//
+// Names are lowercased on write so the gateway's /effect/sound lookup is a plain
+// case-normalized path join (the table's `wav` values are all lowercase ASCII;
+// the GRF stores mixed casing). The gateway serves <out>/ at /effect/sound.
+// ---------------------------------------------------------------------------
+
+// Parse a RIFF/WAVE buffer to { fmt, data } (byte ranges), or null if it isn't a
+// WAVE we recognize. Chunk bodies are word-aligned (a padding byte follows an
+// odd-length body), per the RIFF spec.
+export function parseWav(b) {
+  if (b.length < 12 || b.toString("ascii", 0, 4) !== "RIFF" || b.toString("ascii", 8, 12) !== "WAVE") {
+    return null;
+  }
+  let o = 12;
+  let fmt = null;
+  let data = null;
+  while (o + 8 <= b.length) {
+    const id = b.toString("ascii", o, o + 4);
+    const sz = b.readUInt32LE(o + 4);
+    const body = o + 8;
+    if (id === "fmt " && sz >= 16 && body + 16 <= b.length) {
+      fmt = {
+        audioFormat: b.readUInt16LE(body),
+        channels: b.readUInt16LE(body + 2),
+        sampleRate: b.readUInt32LE(body + 4),
+        blockAlign: b.readUInt16LE(body + 12),
+        bits: b.readUInt16LE(body + 14),
+        // Everything after the 16-byte core (cbSize + format-specific extra).
+        ext: sz > 16 ? b.subarray(body + 16, Math.min(body + sz, b.length)) : Buffer.alloc(0),
+      };
+    } else if (id === "data") {
+      data = { offset: body, len: Math.min(sz, b.length - body) };
+    }
+    o = body + sz + (sz & 1);
+  }
+  if (!fmt || !data) return null;
+  return { fmt, data };
+}
+
+// Wrap raw little-endian PCM samples in a canonical 44-byte WAV header.
+export function encodeWavPcm(pcm, channels, sampleRate, bits) {
+  const blockAlign = channels * (bits >> 3);
+  const h = Buffer.alloc(44);
+  h.write("RIFF", 0, "ascii");
+  h.writeUInt32LE(36 + pcm.length, 4);
+  h.write("WAVE", 8, "ascii");
+  h.write("fmt ", 12, "ascii");
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20); // PCM
+  h.writeUInt16LE(channels, 22);
+  h.writeUInt32LE(sampleRate, 24);
+  h.writeUInt32LE(sampleRate * blockAlign, 28); // byte rate
+  h.writeUInt16LE(blockAlign, 32);
+  h.writeUInt16LE(bits, 34);
+  h.write("data", 36, "ascii");
+  h.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([h, pcm]);
+}
+
+const clampS16 = (v) => (v < -32768 ? -32768 : v > 32767 ? 32767 : v);
+
+// MS ADPCM (WAVE format 0x0002) → 16-bit PCM. Default coefficient/adaptation
+// tables per the Microsoft spec; the coefficient set may be overridden in the fmt
+// chunk's extra bytes (cbSize, wSamplesPerBlock, wNumCoef, aCoef[]). Decodes both
+// mono and (interleaved-nibble) stereo, though RO sounds are mono.
+const MS_ADAPT = [230, 230, 230, 230, 307, 409, 512, 614, 768, 614, 512, 409, 307, 230, 230, 230];
+const MS_COEF1 = [256, 512, 0, 192, 240, 460, 392];
+const MS_COEF2 = [0, -256, 0, 64, 0, -208, -232];
+
+function decodeMsAdpcm(b, fmt, data) {
+  const ch = fmt.channels;
+  const blockAlign = fmt.blockAlign;
+  if (ch < 1 || blockAlign < 7 * ch) return null;
+  let coef1 = MS_COEF1;
+  let coef2 = MS_COEF2;
+  if (fmt.ext.length >= 6) {
+    const numCoef = fmt.ext.readUInt16LE(4);
+    if (numCoef > 0 && fmt.ext.length >= 6 + numCoef * 4) {
+      coef1 = [];
+      coef2 = [];
+      for (let i = 0; i < numCoef; i++) {
+        coef1.push(fmt.ext.readInt16LE(6 + i * 4));
+        coef2.push(fmt.ext.readInt16LE(6 + i * 4 + 2));
+      }
+    }
+  }
+  const out = [];
+  const end = data.offset + data.len;
+  for (let p = data.offset; p + blockAlign <= end; p += blockAlign) {
+    const blk = b.subarray(p, p + blockAlign);
+    let bp = 0;
+    const pred = [];
+    const delta = [];
+    const s1 = [];
+    const s2 = [];
+    let ok = true;
+    for (let c = 0; c < ch; c++) {
+      const idx = blk[bp++];
+      if (idx >= coef1.length) { ok = false; break; }
+      pred[c] = idx;
+    }
+    if (!ok) continue;
+    for (let c = 0; c < ch; c++) { delta[c] = blk.readInt16LE(bp); bp += 2; }
+    for (let c = 0; c < ch; c++) { s1[c] = blk.readInt16LE(bp); bp += 2; }
+    for (let c = 0; c < ch; c++) { s2[c] = blk.readInt16LE(bp); bp += 2; }
+    // The block header carries the first two samples (sample2 then sample1).
+    for (let c = 0; c < ch; c++) out.push(s2[c]);
+    for (let c = 0; c < ch; c++) out.push(s1[c]);
+    let nibIdx = 0;
+    while (bp < blk.length) {
+      const byte = blk[bp++];
+      for (const nib of [byte >> 4, byte & 0x0f]) {
+        const c = nibIdx % ch;
+        const signed = nib >= 8 ? nib - 16 : nib;
+        let predicted = (s1[c] * coef1[pred[c]] + s2[c] * coef2[pred[c]]) >> 8;
+        predicted = clampS16(predicted + signed * delta[c]);
+        out.push(predicted);
+        s2[c] = s1[c];
+        s1[c] = predicted;
+        delta[c] = (MS_ADAPT[nib] * delta[c]) >> 8;
+        if (delta[c] < 16) delta[c] = 16;
+        nibIdx++;
+      }
+    }
+  }
+  return samplesToPcm(out);
+}
+
+// IMA/DVI ADPCM (WAVE format 0x0011) → 16-bit PCM. Standard step/index tables;
+// each block starts with a per-channel header (predictor i16, step index u8,
+// reserved u8) then 4-byte words decoded low-nibble first, round-robin per
+// channel for stereo.
+const IMA_INDEX = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
+// prettier-ignore
+const IMA_STEP = [
+  7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+  50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230,
+  253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963,
+  1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+  3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487,
+  12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
+];
+
+function imaNibble(nib, st) {
+  const step = IMA_STEP[st.index];
+  let diff = step >> 3;
+  if (nib & 4) diff += step;
+  if (nib & 2) diff += step >> 1;
+  if (nib & 1) diff += step >> 2;
+  st.predictor = clampS16(st.predictor + (nib & 8 ? -diff : diff));
+  st.index += IMA_INDEX[nib];
+  if (st.index < 0) st.index = 0;
+  else if (st.index > 88) st.index = 88;
+  return st.predictor;
+}
+
+export function decodeImaAdpcm(b, fmt, data) {
+  const ch = fmt.channels;
+  const blockAlign = fmt.blockAlign;
+  if (ch < 1 || blockAlign < 4 * ch) return null;
+  const out = [];
+  const end = data.offset + data.len;
+  for (let p = data.offset; p + blockAlign <= end; p += blockAlign) {
+    const blk = b.subarray(p, p + blockAlign);
+    let bp = 0;
+    const st = [];
+    const chOut = [];
+    for (let c = 0; c < ch; c++) {
+      const predictor = blk.readInt16LE(bp);
+      let index = blk[bp + 2];
+      if (index > 88) index = 88;
+      bp += 4;
+      st[c] = { predictor, index };
+      chOut[c] = [predictor];
+    }
+    while (bp + 4 * ch <= blk.length) {
+      for (let c = 0; c < ch; c++) {
+        for (let k = 0; k < 4; k++) {
+          const byte = blk[bp + k];
+          chOut[c].push(imaNibble(byte & 0x0f, st[c]));
+          chOut[c].push(imaNibble(byte >> 4, st[c]));
+        }
+        bp += 4;
+      }
+    }
+    const n = chOut[0].length;
+    for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) out.push(chOut[c][i] ?? 0);
+  }
+  return samplesToPcm(out);
+}
+
+function samplesToPcm(samples) {
+  const pcm = Buffer.alloc(samples.length * 2);
+  for (let i = 0; i < samples.length; i++) pcm.writeInt16LE(clampS16(samples[i]), i * 2);
+  return pcm;
+}
+
+// Return a browser-playable WAV for a raw GRF wav buffer. Standard PCM (8/16-bit)
+// is returned verbatim; MS/IMA ADPCM is transcoded to 16-bit PCM. Returns
+// { bytes, format, transcoded } — or null if it can't be made playable (caller
+// skips it). `format` is the source WAVE format tag, for the histogram.
+export function toPlayableWav(raw) {
+  const b = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+  const parsed = parseWav(b);
+  if (!parsed) return null;
+  const { fmt } = parsed;
+  // Standard PCM (1) and IEEE float (3) are decoded natively by browsers.
+  if ((fmt.audioFormat === 1 || fmt.audioFormat === 3) && (fmt.bits === 8 || fmt.bits === 16 || fmt.bits === 24 || fmt.bits === 32)) {
+    return { bytes: b, format: fmt.audioFormat, transcoded: false };
+  }
+  // Transcode the two ADPCM encodings some browsers can't decode. Anything else
+  // can't be made uniformly playable, so skip it (never serve unplayable bytes) —
+  // the survey found no such format in the current client.
+  let pcm = null;
+  if (fmt.audioFormat === 2) pcm = decodeMsAdpcm(b, fmt, parsed.data);
+  else if (fmt.audioFormat === 17) pcm = decodeImaAdpcm(b, fmt, parsed.data);
+  if (!pcm) return null;
+  return {
+    bytes: encodeWavPcm(pcm, fmt.channels, fmt.sampleRate, 16),
+    format: fmt.audioFormat,
+    transcoded: true,
+  };
+}
+
+function extractSounds(grfPath, outBase, args) {
+  const grf = openGrf(grfPath);
+  try {
+    const root = resolve(outBase);
+
+    // Collect every data/wav/** entry, de-duplicating patch-layered copies of the
+    // same logical path by keeping the largest (the complete copy — same rule
+    // findBestEntry uses). Key/rel path is normalized + lowercased.
+    const best = new Map(); // rel (under data/wav/, lowercased) -> entry
+    for (const entry of grf.files) {
+      if (!(entry.flags & 0x01)) continue;
+      const norm = normalize(entry.filename); // lowercased, forward slashes
+      if (!norm.startsWith("data/wav/")) continue;
+      const rel = norm.slice("data/wav/".length);
+      if (!rel || !rel.endsWith(".wav") || rel.includes("..")) continue;
+      const cur = best.get(rel);
+      if (!cur || entry.uncompSize > cur.uncompSize) best.set(rel, entry);
+    }
+
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+
+    const names = [];
+    const formatHist = {};
+    let written = 0;
+    let transcoded = 0;
+    let skipped = 0; // unparseable/corrupt or an unhandled format (see toPlayableWav)
+    for (const [rel, entry] of best) {
+      let playable;
+      try {
+        playable = toPlayableWav(extractFile(grf, entry));
+      } catch {
+        playable = null;
+      }
+      if (!playable) { skipped++; continue; }
+      formatHist[playable.format] = (formatHist[playable.format] || 0) + 1;
+      if (playable.transcoded) transcoded++;
+
+      const dest = join(root, rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, playable.bytes);
+      names.push(rel.slice(0, -".wav".length)); // request token (no extension)
+      written++;
+    }
+
+    names.sort();
+    writeFileSync(join(root, "index.json"), JSON.stringify({ count: names.length, names }));
+
+    const fmtNames = { 1: "PCM", 2: "MS-ADPCM", 3: "float", 17: "IMA-ADPCM" };
+    const hist = Object.keys(formatHist)
+      .sort((a, b) => a - b)
+      .map((f) => `${fmtNames[f] || `0x${Number(f).toString(16)}`}=${formatHist[f]}`)
+      .join(", ");
+    console.error(
+      `\nsounds → ${root}\n` +
+        `  wav entries in GRF (deduped): ${best.size}\n` +
+        `  written: ${written} (${transcoded} transcoded from ADPCM), skipped: ${skipped}\n` +
+        `  source formats: ${hist}\n` +
+        `  index.json: ${names.length} names`,
+    );
   } finally {
     closeGrf(grf);
   }
