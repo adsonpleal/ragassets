@@ -52,10 +52,14 @@
 // asserted at build time to resolve to a STR part.
 //
 // Usage:
-//   node tools/gen-effect-tables.mjs [--src <dir>] [--out <dir>]
+//   node tools/gen-effect-tables.mjs [--src <dir>] [--out <dir>] [--soundsIndex <file>]
 // With no --src the roBrowserLegacy sources are fetched from GitHub (master); with
 // --src <dir> they are read from that directory (files by basename).  --out defaults
-// to gateway/internal/effect/data.
+// to gateway/internal/effect/data.  --soundsIndex points at the extracted sound
+// tree's manifest (default resources/sounds/index.json, written by
+// `extract-grf.mjs --sounds`); when present, every skill_map.json entry gets a
+// `wav` array of real, servable sound names (see resolveSkillWav below) — when
+// absent, skill_map.json is written without `wav` fields (backward compatible).
 //
 // This is a manual maintenance step (like cmd/gen-resolver): re-run only when the
 // upstream roBrowserLegacy tables change.  The committed JSON is the source of truth
@@ -89,10 +93,11 @@ const CLASSIC_OVERRIDES = {
 };
 
 function parseArgs(argv) {
-  const a = { src: null, out: null };
+  const a = { src: null, out: null, soundsIndex: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--src") a.src = argv[++i];
     else if (argv[i] === "--out") a.out = argv[++i];
+    else if (argv[i] === "--soundsIndex") a.soundsIndex = argv[++i];
     else if (argv[i] === "--help" || argv[i] === "-h") a.help = true;
   }
   return a;
@@ -286,13 +291,121 @@ function orderEntry(e) {
   if (e.effectId !== undefined) o.effectId = e.effectId;
   if (e.hitEffectId !== undefined) o.hitEffectId = e.hitEffectId;
   if (e.groundEffectId !== undefined) o.groundEffectId = e.groundEffectId;
+  if (e.wav !== undefined && e.wav.length) o.wav = e.wav;
   return o;
+}
+
+// ---------------------------------------------------------------------------
+// Skill sound resolution — most 3rd/4th-class skill effects have no `wav` in
+// roBrowserLegacy's EffectTable (only ~435 of ~1127 rows do), so those skills
+// would otherwise be silent in the replay viewer. For every skill we derive
+// candidate GRF-relative sound names and keep only the ones that actually
+// exist in the extracted data/wav/ tree (resources/sounds/index.json, written
+// by `extract-grf.mjs --sounds`) — never emit a name that isn't a real file.
+//
+// Candidates, in priority order:
+//   1. the main effect's table `wav` (already correct where present)
+//   2. the main effect's STR `file` base name (old effects often share their
+//      STR and wav basename: 746 Arrow Storm file:"arrowstorm" ~ arrowstorm.wav)
+//   3. the skill's own SKID constant name(s) (SkillConst), lowercased — tried
+//      whole (WH_HAWKRUSH -> wh_hawkrush) and with the job-code prefix
+//      stripped (RA_WUGSTRIKE -> wugstrike, loosely matched against the real
+//      wug_strike; WL_JACKFROST -> jackfrost against jack_frost) since the
+//      mapping isn't purely mechanical.
+//
+// A sound at data/wav/<x>.wav is referenced as bare <x>; one at
+// data/wav/effect/<x>.wav as effect/<x> — see gateway/main.go soundPath. Exact
+// candidates (1-2, and 3's whole form) are checked in both locations; the
+// job-prefix-stripped guess (3's stem) is only accepted when it matches
+// exactly one real file after stripping underscores from both sides (the
+// tree has ~60 underscore-only basename collisions, e.g. _attack_axe vs
+// attack_axe — ambiguous guesses are dropped rather than risk the wrong file).
+
+function loadSoundIndex(indexPath) {
+  let raw;
+  try {
+    raw = readFileSync(indexPath, "utf8");
+  } catch {
+    return null;
+  }
+  const parsed = JSON.parse(raw);
+  const names = Array.isArray(parsed) ? parsed : parsed.names;
+  const exact = new Set(names.map((n) => n.toLowerCase()));
+  const normalized = new Map(); // underscore-stripped basename -> [real names]
+  for (const n of names) {
+    const base = n.split("/").pop().toLowerCase();
+    const norm = base.replace(/_/g, "");
+    if (!normalized.has(norm)) normalized.set(norm, []);
+    normalized.get(norm).push(n);
+  }
+  return { exact, normalized };
+}
+
+// Case-insensitive exact match against the tree, trying the name as-is and
+// under "effect/" — the same two locations gateway/main.go's soundPath checks.
+function resolveExact(soundIndex, name) {
+  if (!name) return null;
+  const lower = String(name).toLowerCase().replace(/\\/g, "/");
+  if (soundIndex.exact.has(lower)) return lower;
+  if (!lower.startsWith("effect/") && soundIndex.exact.has("effect/" + lower)) return "effect/" + lower;
+  return null;
+}
+
+// Underscore-insensitive fallback for a bare word guess, accepted only when
+// it resolves to exactly one real file (see collision note above).
+function resolveNormalized(soundIndex, word) {
+  const norm = String(word).toLowerCase().replace(/_/g, "");
+  const matches = soundIndex.normalized.get(norm);
+  return matches && matches.length === 1 ? matches[0] : null;
+}
+
+// The first non-empty `wav` field among an effect id's parts.
+function tableWavCandidate(effectTable, effId) {
+  const parts = effectTable[effId];
+  if (!Array.isArray(parts)) return null;
+  for (const p of parts) if (p.wav) return p.wav;
+  return null;
+}
+
+// The first STR part's `file` base name.
+function strFileCandidate(effectTable, effId) {
+  const parts = effectTable[effId];
+  if (!Array.isArray(parts)) return null;
+  const str = parts.find((p) => p.type === "STR" && p.file);
+  return str ? str.file : null;
+}
+
+// Resolve the sound(s) for a skill's main (caster) effect: table wav, STR file
+// basename, then the skill's SKID name(s) whole and prefix-stripped. The first
+// two require an effectId to look up in the effect table; the SKID guess does
+// not, since some very new skills (Windhawk's WH_HAWKRUSH, RA_WUGSTRIKE) have
+// no effectId in roBrowserLegacy's SkillEffect at all. Returns a de-duplicated,
+// order-preserving array of real, servable names.
+function resolveSkillWav(soundIndex, effectTable, effId, skidNames) {
+  const out = [];
+  const add = (name) => {
+    if (name && !out.includes(name)) out.push(name);
+  };
+  if (effId !== undefined) {
+    add(resolveExact(soundIndex, tableWavCandidate(effectTable, effId)));
+    add(resolveExact(soundIndex, strFileCandidate(effectTable, effId)));
+  }
+  for (const skid of skidNames || []) {
+    const full = skid.toLowerCase();
+    add(resolveExact(soundIndex, full) || resolveNormalized(soundIndex, full));
+    const cut = full.indexOf("_");
+    if (cut > 0) {
+      const stem = full.slice(cut + 1);
+      add(resolveExact(soundIndex, stem) || resolveNormalized(soundIndex, stem));
+    }
+  }
+  return out;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log("usage: node tools/gen-effect-tables.mjs [--src <dir>] [--out <dir>]");
+    console.log("usage: node tools/gen-effect-tables.mjs [--src <dir>] [--out <dir>] [--soundsIndex <file>]");
     return;
   }
   const here = dirname(fileURLToPath(import.meta.url));
@@ -313,6 +426,15 @@ async function main() {
     effectImports,
   );
 
+  // Reverse SK (SkillConst) so a skill id can be matched against its own
+  // constant name(s) when guessing a sound (see resolveSkillWav).
+  const skidNames = new Map();
+  for (const [name, id] of Object.entries(SK)) {
+    if (typeof id !== "number") continue;
+    if (!skidNames.has(id)) skidNames.set(id, []);
+    skidNames.get(id).push(name);
+  }
+
   // Fold every numeric-keyed skill entry; keep only skills with a contract field.
   const skillMap = {};
   for (const [id, entry] of Object.entries(skillEffect)) {
@@ -330,6 +452,31 @@ async function main() {
         throw new Error(`CLASSIC_OVERRIDES skill ${id} ${k}=${v} does not resolve to a STR in effect_table`);
     }
     skillMap[id] = merged;
+  }
+
+  // Attach a resolved `wav` array to every skill whose sound we can prove
+  // exists (see resolveSkillWav). This also synthesizes wav-only entries for
+  // skills that have no effectId/hitEffectId/groundEffectId at all — very new
+  // 3rd/4th-class skills (e.g. Windhawk's WH_HAWKRUSH) that roBrowserLegacy's
+  // SkillEffect doesn't cover yet, but whose SKID still matches a real sound.
+  const soundIndexPath = args.soundsIndex || join(here, "..", "resources", "sounds", "index.json");
+  const soundIndex = loadSoundIndex(soundIndexPath);
+  let skillsWithWav = 0;
+  if (soundIndex) {
+    const allIds = new Set([...Object.keys(skillMap).map(Number), ...skidNames.keys()]);
+    for (const id of allIds) {
+      const entry = skillMap[id] || {};
+      const wav = resolveSkillWav(soundIndex, effectTable, entry.effectId, skidNames.get(id));
+      if (wav.length) {
+        skillMap[id] = { ...entry, wav };
+        skillsWithWav++;
+      }
+    }
+  } else {
+    console.error(
+      `sounds: ${soundIndexPath} not found — skill_map.json will carry no "wav" field ` +
+        `(run extract-grf.mjs --sounds first, or pass --soundsIndex)`,
+    );
   }
 
   const skillOut = {};
@@ -364,7 +511,7 @@ async function main() {
   console.error(
     `wrote ${outDir}:\n` +
       `  skill_map.json:    ${Object.keys(skillOut).length} skills ` +
-      `(${skillsWithStr} resolve to a STR effect, ${withGround} with a groundEffectId)\n` +
+      `(${skillsWithStr} resolve to a STR effect, ${withGround} with a groundEffectId, ${skillsWithWav} with a resolved wav)\n` +
       `  effect_table.json: ${Object.keys(effectTable).length} effect ids (${strEffects} with a STR part)`
   );
 }

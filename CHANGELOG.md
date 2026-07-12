@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-07-12
+
+### Added
+- **`/effect/skill-map` entries now carry a resolved `wav` array.** Most
+  3rd/4th-class skill effects have no `wav` in roBrowserLegacy's `EffectTable`
+  (only ~435 of ~1127 rows do), so those skills were silent in the replay
+  viewer even though `/effect/sound` already served their audio under the
+  right name. `tools/gen-effect-tables.mjs` (`resolveSkillWav`) now derives
+  candidate sound names per skill — the effect's table `wav`, its STR `file`
+  base name, then the skill's own SKID constant (whole and job-prefix-stripped,
+  e.g. `RA_WUGSTRIKE` → `wug_strike`, `WL_JACKFROST` → `jack_frost`) — and keeps
+  only names verified against the extracted `data/wav/` tree
+  (`resources/sounds/index.json`), so every value is guaranteed servable and
+  never fabricated. Skills with no `effectId` at all in roBrowserLegacy's table
+  (e.g. Windhawk's `WH_HAWKRUSH`/`WH_GALESTORM`/`WH_CRESCIVE_BOLT`) now get a
+  `wav`-only entry synthesized purely from the SKID guess. 380 of 683 skills
+  now resolve a sound (up from the 179 that already had a table `wav`), with no
+  regressions — every skill whose effect already had a servable table `wav`
+  still resolves to that exact same name. Backward compatible (`wav` is
+  additive); the sibling `ragreplaystats` will read it directly and drop its
+  client-side STR-name/hardcoded-map fallback.
+
+### Investigated
+- **The reported "sound deploy gap" isn't a deploy issue.** `/effect/sound?file=wh_hawkrush`
+  404s, but that's because the client GRF only ships `data/wav/effect/wh_hawkrush.wav`
+  (confirmed via a direct GRF listing) — `effect/wh_hawkrush` already returns
+  `200` today, and the deployed `SOUNDS_DIR` tree matches `resources/sounds/`
+  exactly (2678/2678 names, byte-for-byte the same set on prod and locally).
+  The real fix is the `wav` field above, which resolves Windhawk's skills to
+  `effect/wh_hawkrush` etc. — the correctly-prefixed real path — instead of a
+  bare guessed name that was never going to exist.
+
 ## 2026-07-11
 
 ### Added

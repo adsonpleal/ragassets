@@ -459,15 +459,18 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 //   /effect/sound?file=<name>     one sound effect as browser-playable WAV audio
 //                                 (data/wav/<name>.wav; e.g. effect/ef_portal)
 //   /effect/sound/index.json      the names present in the extracted sound tree
-//   /effect/skill-map             skillId → { effectId?, hitEffectId?, groundEffectId? }
+//   /effect/skill-map             skillId → { effectId?, hitEffectId?, groundEffectId?, wav? }
 //   /effect/table                 effectId → [ { type, file, min, wav, rand, ... } ]
 //
 // str/texture parse on demand from RESOURCE_DIR/data/texture/effect (like /image
 // renders from the sprite tree); <name> is relative to that dir, may omit the
 // .str / .bmp / .tga suffix, and is resolved case-insensitively. skill-map/table
-// are embedded JSON ported verbatim from roBrowser (see internal/effect). sound
-// serves the static tree extract-grf.mjs --sounds writes (SOUNDS_DIR), the audio
-// counterpart of the table's `wav` field.
+// are embedded JSON ported verbatim from roBrowser (see internal/effect), plus a
+// skill-map `wav` array resolved and verified at generation time (see
+// tools/gen-effect-tables.mjs resolveSkillWav) — every name in it is guaranteed
+// to exist in the extracted sound tree, so it needs no fallback logic on the
+// client. sound serves that static tree (SOUNDS_DIR, written by extract-grf.mjs
+// --sounds), the audio counterpart of both wav fields.
 // ---------------------------------------------------------------------------
 
 func (s *server) handleEffectAsset(w http.ResponseWriter, r *http.Request) {

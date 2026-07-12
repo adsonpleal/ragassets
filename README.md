@@ -352,7 +352,7 @@ serve.
 | `GET /effect/texture?file=<name>` | One `.str` layer texture as an RGBA PNG: magenta (`#FF00FF`) colorkey → alpha, transparent RGB bled outward to kill bilinear fringes; 32-bit TGA keeps its real alpha. `.bmp`/`.tga` source resolves either way when the extension is omitted. |
 | `GET /effect/sound?file=<name>` | One sound effect as browser-playable WAV (`audio/wav`) — the audio behind an effect table row's `wav` field. `<name>` is relative to `data/wav/` **without** the `.wav` extension, exactly as `wav` carries it (`effect/ef_portal`, the bare `_heal_effect`). Reads the static tree `extract-grf.mjs --sounds` writes (`SOUNDS_DIR`); a name the client GRF never shipped `404`s (the viewer treats that as "no sound" and skips it). |
 | `GET /effect/sound/index.json` | `{"count", "names":[…]}` — the sound names present in the extracted tree, for coverage preflighting. |
-| `GET /effect/skill-map` | `skillId → {effectId?, hitEffectId?, groundEffectId?}` — from roBrowserLegacy's `SkillEffect` (~488 skills, all job eras). `skillId` is the AEGIS/packet id the client sends (matches rAthena). |
+| `GET /effect/skill-map` | `skillId → {effectId?, hitEffectId?, groundEffectId?, wav?}` — from roBrowserLegacy's `SkillEffect` (~683 skills, all job eras). `skillId` is the AEGIS/packet id the client sends (matches rAthena). `wav` is a de-duplicated array of sound names already verified against the extracted tree (see below) — fetch `/effect/sound?file=<name>` directly, no fallback needed. It fills in the many 3rd/4th-class skills whose effect has no `wav` in the table below, by also trying the skill's own SKID constant name. |
 | `GET /effect/table` | `effectId → [{type, file, min?, wav?, attachedEntity?, rand?, …}]` — roBrowserLegacy's `EffectTable`. `type` is `STR` for the served (`.str`) effects; `2D`/`3D`/`SPR`/`CYLINDER`/`FUNC` parts are procedural (client-only) and carry only metadata. The `wav` field is the sound name for `/effect/sound` above (both visual rows and sound-only rows carry it). |
 
 ```
@@ -370,9 +370,11 @@ serve.
 Resolve a skill to its assets client-side: `skill-map[skillId]` → the `effectId`s →
 `table[effectId]` → each part's `file` (expand a `%d` over `rand:[a,b]`) → fetch
 `/effect/str?file=<file>`, then `/effect/texture?file=<texname>` for every name the
-STR lists. For **audio**, read the same rows' `wav` field and fetch
-`/effect/sound?file=<wav>` (`%d` variants like `effect/ef_firearrow%d` expand the
-same way). A row with no `type` is a sound-only part — just a `wav`, no visual. `<name>` lookups are **case-insensitive** (GRF paths carry inconsistent
+STR lists. For **audio**, prefer `skill-map[skillId].wav` directly (already
+verified, needs no fallback); it's only absent when nothing resolved. Otherwise
+read the effect rows' own `wav` field and fetch `/effect/sound?file=<wav>` (`%d`
+variants like `effect/ef_firearrow%d` expand the same way). A row with no `type`
+is a sound-only part — just a `wav`, no visual. `<name>` lookups are **case-insensitive** (GRF paths carry inconsistent
 casing / EUC-KR); responses carry the same immutable cache headers, `ETag`/`304`
 and wildcard CORS as `/icons`. The two tables are ported from **roBrowserLegacy**
 (`SkillConst`/`SkillEffect`/`EffectTable`) by `tools/gen-effect-tables.mjs` and
