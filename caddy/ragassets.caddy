@@ -1,0 +1,10 @@
+# ragassets gateway (ragassets-gateway.service, port 8080).
+# Deployed to /etc/caddy/conf.d/ragassets.caddy — the main Caddyfile is a stub that
+# imports conf.d/*.caddy, so each project owns its own site block instead of all
+# three sharing one file in this repo.
+#
+# Both hostnames are served; each gets its own auto-provisioned Let's Encrypt cert.
+# Certificates live in /var/lib/caddy/.local/share/caddy — never delete them.
+ragassets.duckdns.org, assets.latam-tools.com.br {
+	reverse_proxy localhost:8080
+}
