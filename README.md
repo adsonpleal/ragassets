@@ -679,6 +679,11 @@ stored filename. Stored names use **backslash** separators, so escape them
   **[grf-loader](https://github.com/vthibault/grf-loader)** (MIT). The GRF reader,
   the icon pipeline and the mini Lua 5.1 VM originate from
   `adsonpleal/ragreplaystats`.
+- The monster stats in `mobs.json` (level, HP, base/job EXP, race, size, element,
+  boss/MVP flags) come from **[RagnaPlace](https://ragnaplace.com)** — thanks to
+  them for compiling and publishing per-server RO database data. That file is the
+  only part of this repo sourced from them; everything else is extracted from the
+  client GRF. If you find it useful, visit and support the site.
 - Ragnarok Online and its assets are © Gravity Co., Ltd. No game assets are
   included in or distributed by this repository.
 
