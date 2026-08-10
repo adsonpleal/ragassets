@@ -530,6 +530,8 @@ resources/maps/           # world-map bundles (extract-grf.mjs --maps), served a
 resources/bgm/            # per-map background music (extract-grf.mjs --bgm), served at /bgm/*
 resources/sounds/         # skill/effect/monster sound effects (extract-grf.mjs --sounds), served at /effect/sound
 extract-grf.mjs           # helper to extract a GRF into resources/
+mobs.json                 # monster stats (tools/scrape-mobs.mjs) — the one non-GRF data file
+tools/scrape-mobs.mjs     # rebuilds mobs.json from the RagnaPlace Public API
 ```
 
 ## Resources / GRF extraction (required)
@@ -669,6 +671,26 @@ The `--match` value is a JavaScript regex tested case-insensitively against each
 stored filename. Stored names use **backslash** separators, so escape them
 (`data\\sprite\\`).
 
+## Monster stats (`mobs.json`)
+
+`mobs.json` at the repo root is the only data file here that isn't extracted from
+the GRF — the client carries no monster HP or EXP anywhere. It is rebuilt from the
+[RagnaPlace Public API](https://ragnaplace.com/pt/api/reference), which needs a
+`RAGNAPLACE_API_KEY` in `.env` (request one at <https://ragnaplace.com/api>):
+
+```bash
+node extract-grf.mjs --mobids _scratch/mobids.json --grf path/to/data.grf
+node tools/scrape-mobs.mjs --ids _scratch/mobids.json
+```
+
+The two steps are split because neither source is sufficient alone. The API has no
+bulk mob endpoint — its search caps at 20 pages × 20 rows — so every monster needs
+its own `GET /v1/<gateway>/mob/<id>`, and the id list to walk has to come from the
+client's `datainfo/npcidentity.lub` (`--mobids`, ~4585 candidates; the ~1900 that
+aren't monsters simply 404). `--gateway` selects the server (default `laro-pt`;
+`/v1/gateways` lists all 36). The run throttles itself off the API's
+`X-RateLimit-*` headers and resumes from `mobs.json.partial.jsonl` if interrupted.
+
 ## Credits & license
 
 - **[zrenderer](https://github.com/zhad3/zrenderer)** by **[zhad3](https://github.com/zhad3)**
@@ -680,10 +702,12 @@ stored filename. Stored names use **backslash** separators, so escape them
   the icon pipeline and the mini Lua 5.1 VM originate from
   `adsonpleal/ragreplaystats`.
 - The monster stats in `mobs.json` (level, HP, base/job EXP, race, size, element,
-  boss/MVP flags) come from **[RagnaPlace](https://ragnaplace.com)** — thanks to
-  them for compiling and publishing per-server RO database data. That file is the
-  only part of this repo sourced from them; everything else is extracted from the
-  client GRF. If you find it useful, visit and support the site.
+  boss/MVP flags) come from **[RagnaPlace](https://ragnaplace.com)**, via their
+  [Public API](https://ragnaplace.com/pt/api/reference) — thanks to them for
+  compiling and publishing per-server RO database data, and for offering a proper
+  keyed API for it. That file is the only part of this repo sourced from them;
+  everything else is extracted from the client GRF. If you find it useful, visit
+  and support the site.
 - Ragnarok Online and its assets are © Gravity Co., Ltd. No game assets are
   included in or distributed by this repository.
 

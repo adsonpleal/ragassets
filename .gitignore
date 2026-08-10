@@ -8,6 +8,9 @@
 *.tar
 *.tar.gz
 
+# Resume state from an interrupted tools/scrape-mobs.mjs run
+*.partial.jsonl
+
 # Node
 node_modules/
 

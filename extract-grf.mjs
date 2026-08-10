@@ -91,6 +91,7 @@ function parseArgs(argv) {
     else if (a === "--bgm") out.bgm = argv[++i];
     else if (a === "--bgmsrc") out.bgmsrc = argv[++i];
     else if (a === "--sounds") out.sounds = argv[++i];
+    else if (a === "--mobids") out.mobids = argv[++i];
     else if (a === "--iteminfo") out.iteminfo = argv[++i];
     else if (a === "-h" || a === "--help") out.help = true;
   }
@@ -136,6 +137,10 @@ function usage() {
       "  mirroring the GRF paths (effect/ef_portal.wav, _heal_effect.wav, …). PCM",
       "  wavs are copied verbatim; MS/IMA ADPCM wavs are transcoded to 16-bit PCM so",
       "  every sound is browser-playable. Writes index.json listing the names present.",
+      "",
+      "  --mobids writes the client's monster id universe (id + AEGIS name) from",
+      "  datainfo/npcidentity.lub as JSON. It is the candidate list tools/scrape-mobs.mjs",
+      "  feeds to the RagnaPlace API, which has no bulk mob endpoint of its own.",
     ].join("\n"),
   );
 }
@@ -143,7 +148,7 @@ function usage() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects && !args.maps && !args.bgm && !args.sounds)) {
+  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects && !args.maps && !args.bgm && !args.sounds && !args.mobids)) {
     usage();
     process.exit(args.help ? 0 : 1);
   }
@@ -229,6 +234,15 @@ function main() {
       process.exit(1);
     }
     extractSounds(args.grf, args.sounds, args);
+    process.exit(0);
+  }
+
+  if (args.mobids) {
+    if (!args.grf) {
+      console.error("usage: --mobids <out.json> --grf <file.grf>");
+      process.exit(1);
+    }
+    extractMobIds(args.grf, args.mobids);
     process.exit(0);
   }
 }
@@ -3903,6 +3917,63 @@ function extractSounds(grfPath, outBase, args) {
         `  written: ${written} (${transcoded} transcoded from ADPCM), skipped: ${skipped}\n` +
         `  source formats: ${hist}\n` +
         `  index.json: ${names.length} names`,
+    );
+  } finally {
+    closeGrf(grf);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Monster id universe (--mobids)
+// ---------------------------------------------------------------------------
+
+// The client carries no monster stats, but it does carry the full id → AEGIS
+// name table, and that is the one thing the RagnaPlace API can't give us: it has
+// no bulk mob list (its search caps at 20 pages × 20 = 400 rows), only
+// /v1/<gateway>/mob/<id>. So tools/scrape-mobs.mjs walks this list and lets the
+// API 404 the ids that aren't monsters.
+//
+// Note the *datainfo* copy, not `lua files/npcidentity.lub` — the latter is a
+// stale subset that stops at id 10203 and so misses every 20000+ mob.
+const NPCIDENTITY_PATH = "data/luafiles514/lua files/datainfo/npcidentity.lub";
+// Below this the table is player jobs and NPC sprites, never monsters.
+const MOB_ID_MIN = 1000;
+
+function extractMobIds(grfPath, outFile) {
+  const grf = openGrf(grfPath);
+  try {
+    const entry = findBestEntry(grf, normalize(NPCIDENTITY_PATH));
+    if (!entry) {
+      console.error(`Not found in GRF: ${NPCIDENTITY_PATH}`);
+      process.exit(1);
+    }
+    const jobtbl = runChunk(extractFile(grf, entry)).get("jobtbl");
+    if (!(jobtbl instanceof LuaTable)) {
+      console.error(`${NPCIDENTITY_PATH} defined no jobtbl`);
+      process.exit(1);
+    }
+
+    const byId = new Map(); // id -> AEGIS name (first name wins; ids are aliased)
+    let belowMin = 0;
+    let aliases = 0;
+    for (const [key, value] of jobtbl.map) {
+      if (typeof key !== "string" || typeof value !== "number" || !Number.isInteger(value)) continue;
+      if (value < MOB_ID_MIN) { belowMin++; continue; }
+      const aegis = key.startsWith("JT_") ? key.slice(3) : key;
+      if (byId.has(value)) { aliases++; continue; }
+      byId.set(value, aegis);
+    }
+
+    const mobs = [...byId.keys()].sort((a, b) => a - b).map((id) => ({ id, aegisId: byId.get(id) }));
+    const dest = resolve(outFile);
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, `${JSON.stringify({ source: NPCIDENTITY_PATH, count: mobs.length, mobs }, null, 2)}\n`);
+
+    console.error(
+      `\nmob ids → ${dest}\n` +
+        `  jobtbl entries: ${byId.size + belowMin + aliases}\n` +
+        `  candidates (id >= ${MOB_ID_MIN}): ${mobs.length} (${mobs[0]?.id}..${mobs[mobs.length - 1]?.id})\n` +
+        `  skipped: ${belowMin} below ${MOB_ID_MIN}, ${aliases} aliased to an id already seen`,
     );
   } finally {
     closeGrf(grf);
