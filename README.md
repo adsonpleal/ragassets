@@ -674,7 +674,19 @@ stored filename. Stored names use **backslash** separators, so escape them
 ## Monster stats (`mobs.json`)
 
 `mobs.json` at the repo root is the only data file here that isn't extracted from
-the GRF — the client carries no monster HP or EXP anywhere. It is rebuilt from the
+the GRF — the client carries no monster HP or EXP anywhere. One record per monster
+(2724 of them), with the id, names, level, HP, EXP, DEF/MDEF/ATK, the six base
+stats, race/size/element and the boss/MVP flags:
+
+```json
+{ "id": 1039, "aegisId": "BAPHOMET", "name": "Bafomé", "boss": true, "mvp": true,
+  "level": 81, "baseExp": 218089, "jobExp": 167053, "mvpExp": 109044,
+  "hp": 668000, "def": 379, "mdef": 45, "attack": 2520,
+  "str": 120, "agi": 125, "vit": 30, "int": 85, "dex": 186, "luk": 85,
+  "race": "Demon", "size": "Large", "property": "Dark", "propertyLevel": 3 }
+```
+
+It is rebuilt from the
 [RagnaPlace Public API](https://ragnaplace.com/pt/api/reference), which needs a
 `RAGNAPLACE_API_KEY` in `.env` (request one at <https://ragnaplace.com/api>):
 
@@ -701,8 +713,9 @@ aren't monsters simply 404). `--gateway` selects the server (default `laro-pt`;
   **[grf-loader](https://github.com/vthibault/grf-loader)** (MIT). The GRF reader,
   the icon pipeline and the mini Lua 5.1 VM originate from
   `adsonpleal/ragreplaystats`.
-- The monster stats in `mobs.json` (level, HP, base/job EXP, race, size, element,
-  boss/MVP flags) come from **[RagnaPlace](https://ragnaplace.com)**, via their
+- The monster stats in `mobs.json` (level, HP, EXP, DEF/MDEF/ATK, base stats,
+  race, size, element, boss/MVP flags) come from
+  **[RagnaPlace](https://ragnaplace.com)**, via their
   [Public API](https://ragnaplace.com/pt/api/reference) — thanks to them for
   compiling and publishing per-server RO database data, and for offering a proper
   keyed API for it. That file is the only part of this repo sourced from them;

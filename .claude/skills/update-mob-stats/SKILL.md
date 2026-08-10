@@ -9,10 +9,16 @@ description: Rebuild the root mobs.json (monster stats — level, HP, EXP, race,
 the client GRF. It carries per-monster stats for the LATAM server:
 
 ```json
-{ "id": 1002, "aegisId": "PORING", "name": "Poring", "boss": false, "mvp": false,
-  "level": 1, "baseExp": 150, "jobExp": 40, "hp": 55,
-  "race": "Plant", "size": "Medium", "property": "Water" }
+{ "id": 1039, "aegisId": "BAPHOMET", "name": "Bafomé", "boss": true, "mvp": true,
+  "level": 81, "baseExp": 218089, "jobExp": 167053, "mvpExp": 109044,
+  "hp": 668000, "def": 379, "mdef": 45, "attack": 2520,
+  "str": 120, "agi": 125, "vit": 30, "int": 85, "dex": 186, "luk": 85,
+  "race": "Demon", "size": "Large", "property": "Dark", "propertyLevel": 3 }
 ```
+
+`property` and `propertyLevel` stay separate — a consumer that wants the combined
+`"Dark 3"` form can join them, but the split can't be recovered from the joined
+string. `res`/`mres` are not exposed by the API at all.
 
 Two sources, because neither alone is enough:
 
@@ -114,10 +120,11 @@ the id list has to come from somewhere — `datainfo/npcidentity.lub` in the GRF
   returns exactly what the old HTML scrape did, so this is RagnaPlace's own data,
   not an encoding bug on our side. Don't "fix" it silently; the client's
   `navi_mob_br.lub` packs a correct race per spawned mob if it ever matters.
-- The API exposes much more than `mobs.json` keeps — `def`, `mdef`, `attack`,
-  `stats`, `elementLevel`, `drops`, `spawns`, `skills`, `image`. `toRecord()` in
-  the scraper is deliberately the historical projection; widen it there if a
-  consumer ever needs more.
+- The API still exposes more than `mobs.json` keeps — `drops`, `spawns`, `skills`,
+  `image`, `walkSpeed`, `url`. Widen `toRecord()` if a consumer needs them. The
+  file is consumed outside this repo (the LATAM calculator fetches it straight
+  from `raw.githubusercontent.com/adsonpleal/ragassets/main/mobs.json`), so treat
+  removing or renaming a field as a breaking change.
 - **Do not scrape the website.** The old `_payload.json` + devalue-hydration
   technique against `ragnaplace.com` is obsolete and the plain HTML routes sit
   behind a Cloudflare challenge. Everything goes through `api.ragnaplace.com`.

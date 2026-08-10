@@ -173,10 +173,23 @@ function toRecord(m) {
     level: m.level,
     baseExp: m.exp?.base ?? null,
     jobExp: m.exp?.job ?? null,
+    mvpExp: m.exp?.mvp ?? null,
     hp: m.hp,
+    def: m.def ?? null,
+    mdef: m.mdef ?? null,
+    attack: m.attack ?? null,
+    str: m.stats?.str ?? null,
+    agi: m.stats?.agi ?? null,
+    vit: m.stats?.vit ?? null,
+    int: m.stats?.int ?? null,
+    dex: m.stats?.dex ?? null,
+    luk: m.stats?.luk ?? null,
     race: m.race,
     size: m.size,
     property: m.element,
+    // Kept separate rather than folded into `property` as "Dark 3" — consumers
+    // that want the combined form can join them, but not the other way round.
+    propertyLevel: m.elementLevel ?? null,
   };
 }
 
