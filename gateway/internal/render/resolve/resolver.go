@@ -250,28 +250,45 @@ func (r *Resolver) GarmentSprite(jobID, garmentID uint32, gender rotype.Gender, 
 	return join(kRobe, garmentName, gender.String(), jobname+"_"+gender.String())
 }
 
-// GarmentCandidates returns the candidate garment sprite base paths (act and spr
-// share each base, so they are a matched pair) in priority order. Garments use
-// several folder layouts: classic per-job (로브/N/<g>/<job>_<g>), nested per-job
-// (로브/N/N/<g>/<job>_<g>, used by newer costumes like c_rata_tail), and a shared
-// single sprite (로브/N/N). The caller picks the first base where both files exist.
-func (r *Resolver) GarmentCandidates(jobID, garmentID uint32, gender rotype.Gender) []string {
+// GarmentPath is one candidate garment resource: the .act holding the geometry
+// and the .spr holding the images. They usually share a base, but a garment that
+// ships one shared image bank pairs a per-job act with the folder-root spr.
+type GarmentPath struct{ Act, Spr string }
+
+// GarmentCandidates returns the candidate garment act/spr pairs in priority
+// order. Garments use several folder layouts: classic per-job
+// (로브/N/<g>/<job>_<g>), nested per-job (로브/N/N/<g>/<job>_<g>, used by newer
+// costumes like c_rata_tail), and a shared single sprite (로브/N/N). The images
+// may live only at the folder root (로브/N/N.spr) while each job keeps its own
+// act, so every per-job act is also offered paired with that shared spr.
+//
+// A per-job act always outranks the folder-root one: a handful of garments
+// (wing_of_angel_move, 천사날개, c_papilio_ulysses_feather, c_giant_white_rabbit)
+// ship a complete root act+spr pair whose offsets are wrong for player bodies —
+// they sit ~28px too high — next to the correct per-job acts. Matching the root
+// pair first would silently pick those broken offsets for every job.
+func (r *Resolver) GarmentCandidates(jobID, garmentID uint32, gender rotype.Gender) []GarmentPath {
 	if !IsPlayer(jobID) || IsWereform(jobID) {
 		return nil
 	}
 	jobname := r.JobSpriteName(jobID, rotype.MadogearRobot)
 	g := gender.String()
 
-	var out []string
-	seen := map[string]bool{}
+	var out []GarmentPath
+	seen := map[GarmentPath]bool{}
 	addName := func(name string) {
 		if name == "" {
 			return
 		}
-		for _, p := range []string{
-			join(kRobe, name, g, jobname+"_"+g),       // classic per-job
-			join(kRobe, name, name, g, jobname+"_"+g), // nested per-job
-			join(kRobe, name, name),                   // shared single sprite
+		classic := join(kRobe, name, g, jobname+"_"+g)
+		nested := join(kRobe, name, name, g, jobname+"_"+g)
+		shared := join(kRobe, name, name)
+		for _, p := range []GarmentPath{
+			{classic, classic}, // classic per-job pair
+			{classic, shared},  // classic per-job act over the shared image bank
+			{nested, nested},   // nested per-job pair
+			{nested, shared},   // nested per-job act over the shared image bank
+			{shared, shared},   // shared single sprite
 		} {
 			if !seen[p] {
 				seen[p] = true

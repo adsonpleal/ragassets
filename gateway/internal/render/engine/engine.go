@@ -257,14 +257,15 @@ func (e *Engine) resolveBody(req Request) (name string, useOutfit bool) {
 	return e.res.PlayerBodySprite(req.Job, req.Gender, req.Madogear), false
 }
 
-// loadGarment resolves the garment to the first candidate path where both the
-// .act and .spr exist (a matched pair — different garment costumes use different
-// folder layouts), and loads it. Falls back to zrenderer's split act/spr probing
-// only if no complete same-folder pair is found. Returns nil if unavailable.
+// loadGarment resolves the garment to the first candidate act/spr pair where
+// both files exist (different garment costumes use different folder layouts, and
+// some pair a per-job act with a shared image bank), and loads it. Falls back to
+// zrenderer's split act/spr probing only if no candidate pair is complete.
+// Returns nil if unavailable.
 func (e *Engine) loadGarment(req Request) *sprite.Sprite {
-	for _, base := range e.res.GarmentCandidates(req.Job, req.Garment, req.Gender) {
-		if e.mgr.ExistsAct(base) && e.mgr.ExistsSpr(base) {
-			if g, err := e.getSprite(base, base, sprite.TypeGarment); err == nil {
+	for _, c := range e.res.GarmentCandidates(req.Job, req.Garment, req.Gender) {
+		if e.mgr.ExistsAct(c.Act) && e.mgr.ExistsSpr(c.Spr) {
+			if g, err := e.getSprite(c.Act, c.Spr, sprite.TypeGarment); err == nil {
 				return g
 			}
 		}

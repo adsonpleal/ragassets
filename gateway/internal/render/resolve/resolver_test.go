@@ -92,10 +92,14 @@ func TestHeadgearAndGarmentUseTables(t *testing.T) {
 func TestGarmentCandidates(t *testing.T) {
 	r := New(fakeTables{}) // RobeSprName(200) = "testrobe"
 	got := r.GarmentCandidates(1, 200, rotype.Male)
-	want := []string{
-		"로브/testrobe/남/검사_남",          // classic per-job
-		"로브/testrobe/testrobe/남/검사_남", // nested per-job
-		"로브/testrobe/testrobe",        // shared single sprite
+	want := []GarmentPath{
+		// A per-job act outranks the folder-root one, and each per-job act is
+		// also offered over the folder-root (shared) image bank.
+		{"로브/testrobe/남/검사_남", "로브/testrobe/남/검사_남"},
+		{"로브/testrobe/남/검사_남", "로브/testrobe/testrobe"},
+		{"로브/testrobe/testrobe/남/검사_남", "로브/testrobe/testrobe/남/검사_남"},
+		{"로브/testrobe/testrobe/남/검사_남", "로브/testrobe/testrobe"},
+		{"로브/testrobe/testrobe", "로브/testrobe/testrobe"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("candidates = %v, want %v", got, want)

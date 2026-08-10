@@ -331,3 +331,45 @@ func TestParseCanvas(t *testing.T) {
 		t.Error("empty canvas should be zero/auto")
 	}
 }
+
+// TestGarmentPrefersPerJobAct guards the garment resolution order. A few
+// costumes (wing_of_angel_move / garment 61 among them) ship a complete
+// act+spr pair at the folder root whose offsets place the sprite ~28px too
+// high on a player body, alongside the correct per-job acts that share the
+// root spr as their image bank. Picking the root pair because it is the only
+// same-folder match puts the wings up by the head on every job and direction.
+func TestGarmentPrefersPerJobAct(t *testing.T) {
+	e := newEngine(t)
+
+	const (
+		garment = 61 // wing_of_angel_move
+		job     = 1  // swordman, one of the many jobs with no per-job spr
+	)
+	perJob := "로브/wing_of_angel_move/남/검사_남"
+	root := "로브/wing_of_angel_move/wing_of_angel_move"
+
+	// The layout this test is about: per-job act with no per-job spr, next to a
+	// complete root pair. Skip rather than fail if the client ever reships it.
+	if !e.mgr.ExistsAct(perJob) || e.mgr.ExistsSpr(perJob) || !e.mgr.ExistsAct(root) || !e.mgr.ExistsSpr(root) {
+		t.Skip("wing_of_angel_move no longer has a per-job act over a root-only pair")
+	}
+
+	req := baseReq()
+	req.Job = job
+	req.Garment = garment
+	g := e.loadGarment(req)
+	if g == nil {
+		t.Fatal("garment 61 did not resolve")
+	}
+
+	wantAct, err := e.mgr.Act(perJob)
+	if err != nil {
+		t.Fatalf("load per-job act: %v", err)
+	}
+	gotY := g.Act.Sprites(0, 0)[0].Y
+	if wantY := wantAct.Sprites(0, 0)[0].Y; gotY != wantY {
+		rootAct, _ := e.mgr.Act(root)
+		t.Errorf("garment act frame (0,0) Y = %d, want %d (per-job act); the root act is at Y=%d",
+			gotY, wantY, rootAct.Sprites(0, 0)[0].Y)
+	}
+}

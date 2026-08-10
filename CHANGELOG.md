@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-08-10
+
+### Fixed
+- **Garments that share one image bank no longer render ~28px too high.** Four
+  costumes (`wing_of_angel_move` / view 61, `천사날개` / 1,
+  `c_papilio_ulysses_feather` / 85, `c_giant_white_rabbit` / 98) ship a complete
+  `.act`+`.spr` pair at their folder root next to per-job `.act` files that have
+  no per-job `.spr` — the root `.spr` *is* their shared image bank. Garment
+  resolution only accepted same-folder act/spr pairs, so for any job without a
+  per-job `.spr` the per-job act was rejected and the root pair matched instead.
+  The root act is not a player-body act (frame 0 sits at `y=-62` vs `y=-34` for
+  `초보자_남`), so the wings floated up by the head on every class and every
+  rotation. `GarmentCandidates` now returns act/spr *pairs* rather than shared
+  bases and offers each per-job act over the folder-root image bank before the
+  root act is considered. Worst case was view 61, broken on 171 of 177 jobs; the
+  other three were broken only on the 4th classes that lack a per-job `.spr`.
+  No other garment changed — every other layout already matched a same-folder
+  pair or reached the equivalent split-path fallback.
+
 ## 2026-07-12
 
 ### Added
