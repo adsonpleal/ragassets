@@ -495,6 +495,49 @@ Track names are numeric slugs (`[0-9a-z_-].mp3`) — the strict filename pattern
 makes path traversal structurally impossible. Responses carry the same immutable
 cache headers, `ETag`/`304` and wildcard CORS as `/maps`.
 
+### `GET /raw/...` — client data tables (items, jobs, skills, monsters…)
+
+The client's reference data as plain JSON, so a project can consume it without
+owning a GRF reader, a Lua VM or a Ragnarok install. This is the endpoint that
+makes ragassets the single source of truth for game-file extraction: the LATAM
+calculator, the costume simulator, the replay viewer and the market catalogue all
+build their own data files from these instead of each extracting the client
+themselves.
+
+| Path | What you get |
+|---|---|
+| `GET /raw/items.json` | Every item: `id, name, slots, aegisName, resourceName, description, view, equipSlots, costume`. |
+| `GET /raw/jobs.json` | Every class: `id, jt, name, hasIcon`. |
+| `GET /raw/skills.json` | Skill `id` → `name`. |
+| `GET /raw/status.json` | Status-effect (EFST) `id` → `name`. |
+| `GET /raw/randomopt.json` | Random-option `id` → display template (`"ATQM +%d"`). |
+| `GET /raw/classes.json` | Classes with palettes, swatches and alternative outfits. |
+| `GET /raw/hair.json` | Hair styles and colour swatches per race/gender. |
+| `GET /raw/mobs.json` | Monster stats — see [Monster stats](#monster-stats-rawmobsjson). |
+
+Every table is a **flat JSON array sorted by `id`**, written compact. They are a
+deliberately *faithful* projection of the client, not a curated one: naming
+overrides, slot-suffix formatting and per-project reshaping stay in each
+consumer's own sync step, so this stays one unopinionated upstream.
+
+`name` is the **bare** identified name — the client appends the `[3]` slot suffix
+at display time, so `slots` is a separate number and a consumer that wants
+`"Espada [3]"` re-joins them. Items with no display name are kept with
+`name: null`, because ~640 of them still carry a renderable `view`.
+
+Unlike every other endpoint here these files are **mutable at a stable URL** —
+they change whenever the client does — so they are served with a short
+`Cache-Control: public, max-age=300, must-revalidate` instead of the immutable
+policy the content-addressed assets use. `ETag`/`304` and wildcard CORS work the
+same, so a sync that finds nothing new costs one `304`. Everything under `/raw`
+returns `404` until you run `extract-grf.mjs --raw` (and, for `mobs.json`,
+`tools/scrape-mobs.mjs`).
+
+These are also the only text this host serves, and the reverse proxy compresses
+them (`encode zstd gzip` on `/raw/*` in `caddy/ragassets.caddy`) — `items.json`
+is 8.2 MB raw and ~1.1 MB gzipped. Everything else ragassets serves is already
+compressed bytes, so the directive is deliberately scoped to `/raw`.
+
 ### `GET /healthz`
 
 Liveness check — returns `200 ok`.
@@ -529,9 +572,9 @@ resources/effects/        # effect-only costume bundles (extract-grf.mjs --effec
 resources/maps/           # world-map bundles (extract-grf.mjs --maps), served at /maps/*
 resources/bgm/            # per-map background music (extract-grf.mjs --bgm), served at /bgm/*
 resources/sounds/         # skill/effect/monster sound effects (extract-grf.mjs --sounds), served at /effect/sound
+resources/raw/            # client data tables (extract-grf.mjs --raw), served at /raw/*
 extract-grf.mjs           # helper to extract a GRF into resources/
-mobs.json                 # monster stats (tools/scrape-mobs.mjs) — the one non-GRF data file
-tools/scrape-mobs.mjs     # rebuilds mobs.json from the RagnaPlace Public API
+tools/scrape-mobs.mjs     # rebuilds resources/raw/mobs.json from the RagnaPlace Public API
 ```
 
 ## Resources / GRF extraction (required)
@@ -657,6 +700,23 @@ transcoded to 16-bit PCM so the whole tree is uniformly browser-playable. It wri
 2678 sounds, 6 transcoded from ADPCM, 1 corrupt GRF entry skipped.) A full run
 rebuilds the directory from scratch.
 
+### Client data tables (`/raw`)
+
+```bash
+node extract-grf.mjs --raw resources/raw --grf path/to/data.grf
+```
+
+Writes `items.json`, `jobs.json`, `skills.json`, `randomopt.json`, `status.json`,
+`classes.json` and `hair.json` into `resources/raw/`, which the gateway serves at
+[`/raw/...`](#get-raw---client-data-tables-items-jobs-skills-monsters). This is
+the step that lets every other project stop extracting the client for itself, so
+re-run it after a client update. It reads `System/iteminfo_new.lub` from next to
+the GRF (override with `--iteminfo`) plus the job, skill, status and
+random-option tables from inside it, and refuses to write an empty table.
+
+`mobs.json` is the one file in `resources/raw/` this doesn't produce — it isn't
+in the client at all, see [Monster stats](#monster-stats-rawmobsjson).
+
 Other modes:
 
 ```bash
@@ -671,9 +731,9 @@ The `--match` value is a JavaScript regex tested case-insensitively against each
 stored filename. Stored names use **backslash** separators, so escape them
 (`data\\sprite\\`).
 
-## Monster stats (`mobs.json`)
+## Monster stats (`/raw/mobs.json`)
 
-`mobs.json` at the repo root is the only data file here that isn't extracted from
+`resources/raw/mobs.json` is the only table served here that isn't extracted from
 the GRF — the client carries no monster HP or EXP anywhere. One record per monster
 (2724 of them), with the id, names, level, HP, EXP, DEF/MDEF/ATK, the six base
 stats, race/size/element and the boss/MVP flags:
@@ -703,6 +763,12 @@ aren't monsters simply 404). `--gateway` selects the server (default `laro-pt`;
 `/v1/gateways` lists all 36). The run throttles itself off the API's
 `X-RateLimit-*` headers and resumes from `mobs.json.partial.jsonl` if interrupted.
 
+This file used to be committed at the repo root and consumers fetched it from
+`raw.githubusercontent.com`. It now lives in the gitignored `resources/raw/`
+alongside the extracted tables and is served at `/raw/mobs.json`, so there is one
+delivery path for all of it. Regenerating it costs a full rate-limited walk of the
+API, so keep the deployed copy — it is not recoverable from a checkout.
+
 ## Credits & license
 
 - **[zrenderer](https://github.com/zhad3/zrenderer)** by **[zhad3](https://github.com/zhad3)**
@@ -713,14 +779,14 @@ aren't monsters simply 404). `--gateway` selects the server (default `laro-pt`;
   **[grf-loader](https://github.com/vthibault/grf-loader)** (MIT). The GRF reader,
   the icon pipeline and the mini Lua 5.1 VM originate from
   `adsonpleal/ragreplaystats`.
-- The monster stats in `mobs.json` (level, HP, EXP, DEF/MDEF/ATK, base stats,
-  race, size, element, boss/MVP flags) come from
+- The monster stats in `/raw/mobs.json` (level, HP, EXP, DEF/MDEF/ATK, base
+  stats, race, size, element, boss/MVP flags) come from
   **[RagnaPlace](https://ragnaplace.com)**, via their
   [Public API](https://ragnaplace.com/pt/api/reference) — thanks to them for
   compiling and publishing per-server RO database data, and for offering a proper
-  keyed API for it. That file is the only part of this repo sourced from them;
-  everything else is extracted from the client GRF. If you find it useful, visit
-  and support the site.
+  keyed API for it. That table is the only data here sourced from them;
+  everything else under `/raw` is extracted from the client GRF. If you find it
+  useful, visit and support the site.
 - Ragnarok Online and its assets are © Gravity Co., Ltd. No game assets are
   included in or distributed by this repository.
 

@@ -2,6 +2,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  LuaTable,
+  parseAegisMap,
+  parseLuaConstants,
+  jtIdsFromConstants,
+  jobLabelsFromConstants,
+  projectJobs,
+  projectItems,
+  projectSkills,
+  projectStatus,
+  projectRandomOpt,
+  paletteSwatches,
   parseFogTable,
   parseRsw,
   expandStrFiles,
@@ -327,4 +338,318 @@ test("decodeImaAdpcm keeps every decoded sample in int16 range", () => {
     const s = pcm.readInt16LE(i);
     assert.ok(s >= -32768 && s <= 32767, `sample ${s} out of range`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Raw data tables (--raw)
+// ---------------------------------------------------------------------------
+
+// data/itemmoveinfov5.txt puts the real item_db aegis name in a trailing
+// comment, but only on most lines — the early rows carry prose or Korean, and
+// taking those would put junk in items.json's aegisName.
+test("parseAegisMap keeps only clean aegis tokens from the trailing comment", () => {
+  const txt = [
+    "// header comment, not a record",
+    "501\t0\t0\t0\t// Red_Potion",
+    "1101\t1\t0\t0\t// Sword",
+    "999\t0\t0\t0\t// cash item, tradable", // prose (spaces) — rejected
+    "998\t0\t0\t0\t// 빨간포션", // Korean — rejected
+    "997\t0\t0\t0\t// lowercase", // no underscore and no capital — rejected
+    "996\t0\t0\t0\t// E_Illusion_Armor_A",
+  ].join("\r\n");
+
+  const map = parseAegisMap(txt);
+  assert.deepEqual([...map.entries()].sort((a, b) => a[0] - b[0]), [
+    [501, "Red_Potion"],
+    [996, "E_Illusion_Armor_A"],
+    [1101, "Sword"],
+  ]);
+});
+
+// Build a minimal but structurally complete Lua 5.1 chunk, so the constant-pool
+// walk is exercised against real offsets rather than a hand-waved buffer.
+function luaChunk({ constants = [], protos = [], codeCount = 0, lineInfo = 0, locals = [], upvalues = [] } = {}) {
+  const parts = [];
+  const u32 = (n) => {
+    const b = Buffer.alloc(4);
+    b.writeUInt32LE(n);
+    return b;
+  };
+  const str = (s) => (s === null ? u32(0) : Buffer.concat([u32(s.length + 1), Buffer.from(`${s}\0`, "latin1")]));
+
+  parts.push(str("@test.lua"));
+  parts.push(u32(0), u32(0)); // linedefined, lastlinedefined
+  parts.push(Buffer.from([0, 0, 0, 2])); // nups, numparams, is_vararg, maxstacksize
+  parts.push(u32(codeCount), Buffer.alloc(codeCount * 4)); // code
+  parts.push(u32(constants.length));
+  for (const k of constants) {
+    if (k === null) parts.push(Buffer.from([0]));
+    else if (typeof k === "boolean") parts.push(Buffer.from([1, k ? 1 : 0]));
+    else if (typeof k === "number") {
+      const b = Buffer.alloc(9);
+      b[0] = 3;
+      b.writeDoubleLE(k, 1);
+      parts.push(b);
+    } else parts.push(Buffer.concat([Buffer.from([4]), str(k)]));
+  }
+  parts.push(u32(protos.length), ...protos);
+  parts.push(u32(lineInfo), Buffer.alloc(lineInfo * 4));
+  parts.push(u32(locals.length), ...locals.map((n) => Buffer.concat([str(n), u32(0), u32(0)])));
+  parts.push(u32(upvalues.length), ...upvalues.map(str));
+
+  const body = Buffer.concat(parts);
+  const header = Buffer.from([0x1b, 0x4c, 0x75, 0x61, 0x51, 0, 1, 4, 4, 4, 8, 0]);
+  return Buffer.concat([header, body]);
+}
+
+// Regression: every section is length-prefixed, so a walker that advances by the
+// payload size but forgets the count it just read lands 4 bytes short and starts
+// reading a length as a constant tag. The non-zero code/lineinfo/local/upvalue
+// counts here are what make that failure observable.
+test("parseLuaConstants walks past code, protos and the debug sections", () => {
+  const nested = luaChunk({ constants: ["JT_NOVICE", 0], codeCount: 3 });
+  const consts = parseLuaConstants(
+    luaChunk({
+      constants: ["pcJobTbl", "JT_SWORDMAN", 1, true, null],
+      protos: [nested.subarray(12)], // a proto is a bare function body, no header
+      codeCount: 7,
+      lineInfo: 5,
+      locals: ["i", "v"],
+      upvalues: ["_ENV"],
+    }),
+  );
+
+  assert.deepEqual(consts, [
+    { type: "string", value: "pcJobTbl" },
+    { type: "string", value: "JT_SWORDMAN" },
+    { type: "number", value: 1 },
+    { type: "bool", value: true },
+    { type: "nil" },
+    // the nested proto's pool follows the parent's
+    { type: "string", value: "JT_NOVICE" },
+    { type: "number", value: 0 },
+  ]);
+});
+
+test("parseLuaConstants rejects anything that isn't a little-endian Lua 5.1 chunk", () => {
+  assert.equal(parseLuaConstants(Buffer.from("not a lua chunk at all")), null);
+  const wrongVersion = luaChunk();
+  wrongVersion[4] = 0x52; // Lua 5.2
+  assert.equal(parseLuaConstants(wrongVersion), null);
+  const bigEndian = luaChunk();
+  bigEndian[6] = 0;
+  assert.equal(parseLuaConstants(bigEndian), null);
+});
+
+// pcidentity.lub stores each JT_ name immediately followed by its id, and
+// aliases some names onto ids already taken — first one wins.
+test("jtIdsFromConstants pairs each JT_ name with the number after it, first id winning", () => {
+  const ids = jtIdsFromConstants([
+    { type: "string", value: "pcJobTbl" },
+    { type: "string", value: "JT_NOVICE" },
+    { type: "number", value: 0 },
+    { type: "string", value: "JT_SWORDMAN" },
+    { type: "number", value: 1 },
+    { type: "string", value: "JT_NOVICE" }, // alias, ignored
+    { type: "number", value: 4001 },
+    { type: "string", value: "JT_ORPHAN" }, // no number follows
+  ]);
+
+  assert.deepEqual([...ids.entries()], [
+    ["JT_NOVICE", 0],
+    ["JT_SWORDMAN", 1],
+  ]);
+});
+
+// pcjobnamegender.lub stores the label after the JT_ key, but the table names it
+// also holds as constants sit in between and must not be mistaken for labels.
+test("jobLabelsFromConstants skips the table-name constants and stops at the next JT_", () => {
+  const labels = jobLabelsFromConstants([
+    { type: "string", value: "JT_NOVICE" },
+    { type: "string", value: "PCJobNameTableMan" },
+    { type: "string", value: "Aprendiz" },
+    { type: "string", value: "JT_SWORDMAN" },
+    { type: "number", value: 99 }, // non-strings are skipped over
+    { type: "string", value: "Espadachim" },
+    { type: "string", value: "JT_UNLABELLED" },
+    { type: "string", value: "JT_MAGICIAN" }, // next key — the one before has no label
+    { type: "string", value: "Mago" },
+  ]);
+
+  assert.equal(labels.get("JT_NOVICE"), "Aprendiz");
+  assert.equal(labels.get("JT_SWORDMAN"), "Espadachim");
+  assert.equal(labels.get("JT_MAGICIAN"), "Mago");
+  assert.equal(labels.has("JT_UNLABELLED"), false);
+});
+
+// The two id universes only partly overlap: a class can be named by pcidentity
+// with no party icon (unreleased here) or ship an icon the name table misses.
+test("projectJobs unions the named classes with the icon-only ones", () => {
+  const jobs = projectJobs(
+    [
+      { type: "string", value: "JT_NOVICE" },
+      { type: "number", value: 0 },
+      { type: "string", value: "JT_SWORDMAN" },
+      { type: "number", value: 1 },
+      { type: "string", value: "JT_FUTURE" },
+      { type: "number", value: 4302 },
+    ],
+    [
+      { type: "string", value: "JT_NOVICE" },
+      { type: "string", value: "Aprendiz" },
+      { type: "string", value: "JT_SWORDMAN" },
+      { type: "string", value: "Espadachim" },
+    ],
+    new Set([0, 1, 99]),
+  );
+
+  assert.deepEqual(jobs, [
+    { id: 0, jt: "JT_NOVICE", name: "Aprendiz", hasIcon: true },
+    { id: 1, jt: "JT_SWORDMAN", name: "Espadachim", hasIcon: true },
+    // named but unreleased — no icon ships for it
+    { id: 4302, jt: "JT_FUTURE", name: null, hasIcon: false },
+    // icon-only: nothing names it, but /icons/job/99.png exists
+    { id: 99, jt: null, name: null, hasIcon: true },
+  ].sort((a, b) => a.id - b.id));
+});
+
+// Build a Lua table from a plain object/array, the way the client's chunks come
+// out of the VM (numeric keys for the id-keyed tables).
+function luaTable(entries) {
+  const t = new LuaTable();
+  for (const [k, v] of entries) t.set(k, v);
+  return t;
+}
+function luaRecord(obj) {
+  return luaTable(Object.entries(obj));
+}
+
+test("projectItems keeps the bare name and slot count apart, sorted by id", () => {
+  const items = projectItems(
+    luaTable([
+      [1101, luaRecord({ identifiedDisplayName: "Espada", slotCount: 3, ClassNum: 2, identifiedResourceName: "sword" })],
+      [501, luaRecord({ identifiedDisplayName: "Poção Vermelha", identifiedResourceName: "red_potion" })],
+    ]),
+    new Map([[1101, "Sword"]]),
+  );
+
+  assert.deepEqual(items.map((i) => i.id), [501, 1101]);
+  // the "[3]" suffix is the client's display convention, not part of the name
+  assert.equal(items[1].name, "Espada");
+  assert.equal(items[1].slots, 3);
+  assert.equal(items[1].view, 2);
+  assert.equal(items[1].aegisName, "Sword");
+  // no move-info row for 501 — aegisName stays null and the consumer falls back
+  assert.equal(items[0].aegisName, null);
+  assert.equal(items[0].resourceName, "red_potion");
+  assert.equal(items[0].slots, 0);
+  assert.equal(items[0].view, 0);
+});
+
+// item-views.json covers ~640 more items than any named table does, so dropping
+// unnamed rows here would lose sprite ids the paper-doll needs.
+test("projectItems keeps rows with no display name so their view survives", () => {
+  const items = projectItems(
+    luaTable([[2000, luaRecord({ ClassNum: 7, identifiedResourceName: "mystery" })]]),
+  );
+  assert.equal(items.length, 1);
+  assert.equal(items[0].name, null);
+  assert.equal(items[0].view, 7);
+});
+
+test("projectItems reads the equip slots and costume flag off the description", () => {
+  const desc = luaTable([[1, "Equipa em: ^777777Topo, Meio e Baixo^000000"]]);
+  const [item] = projectItems(
+    luaTable([[5000, luaRecord({ identifiedDisplayName: "Capuz", identifiedDescriptionName: desc, costume: true })]]),
+  );
+  assert.deepEqual(item.equipSlots, ["top", "mid", "low"]);
+  assert.equal(item.costume, true);
+  assert.equal(item.description, "Equipa em: ^777777Topo, Meio e Baixo^000000");
+});
+
+test("projectSkills and projectRandomOpt key by numeric id and drop nameless rows", () => {
+  const skills = projectSkills(
+    luaTable([
+      [2, luaRecord({ SkillName: "Cura" })],
+      [1, luaRecord({ SkillName: "Habilidades Básicas" })],
+      [3, luaRecord({})], // no SkillName — skipped
+    ]),
+  );
+  assert.deepEqual(skills, [
+    { id: 1, name: "Habilidades Básicas" },
+    { id: 2, name: "Cura" },
+  ]);
+
+  assert.deepEqual(projectRandomOpt(luaTable([[1, "HP máx. +%d"], ["VAR_MAXHP", "ignored"]])), [
+    { id: 1, name: "HP máx. +%d" },
+  ]);
+});
+
+// descript[1] is the tooltip title: sometimes a bare string, sometimes a
+// { text, colour } pair — both have to yield the same name.
+test("projectStatus reads the title whether it is a string or a text/colour pair", () => {
+  const status = projectStatus(
+    luaTable([
+      [0, luaRecord({ descript: luaTable([[1, "Provocar"]]) })],
+      [1, luaRecord({ descript: luaTable([[1, luaTable([[1, "Impacto"], [2, "0xffff00"]])]]) })],
+      [2, luaRecord({})], // no descript — skipped
+    ]),
+  );
+  assert.deepEqual(status, [
+    { id: 0, name: "Provocar" },
+    { id: 1, name: "Impacto" },
+  ]);
+});
+
+// A .pal is 256 RGBA entries covering the whole sprite, so the dye region has to
+// be inferred from what CHANGES between a class's numbered palettes. These build
+// palettes that share a fixed "skin"/outline block and differ only in a known
+// slice, so the sampled swatch is predictable.
+function palette({ dye, dyeFrom = 1, dyeCount = 8 }) {
+  const p = Buffer.alloc(1024);
+  // index 0 is the transparency key; the client stores it magenta
+  p[0] = 255; p[1] = 0; p[2] = 255;
+  // a fixed block every palette shares — skin and outlines, never the dye
+  for (let i = 1; i < 256; i++) {
+    p[i * 4] = 60; p[i * 4 + 1] = 60; p[i * 4 + 2] = 60; p[i * 4 + 3] = 255;
+  }
+  for (let i = dyeFrom; i < dyeFrom + dyeCount; i++) {
+    p[i * 4] = dye[0]; p[i * 4 + 1] = dye[1]; p[i * 4 + 2] = dye[2]; p[i * 4 + 3] = 255;
+  }
+  return p;
+}
+
+test("paletteSwatches samples the region that varies between a class's palettes", () => {
+  const swatches = paletteSwatches([
+    palette({ dye: [60, 60, 60] }), // identical to the shared block — the reference
+    palette({ dye: [200, 30, 30] }), // red
+    palette({ dye: [30, 30, 200] }), // blue
+  ]);
+
+  assert.equal(swatches.length, 3);
+  assert.equal(swatches[1], "#c81e1e");
+  assert.equal(swatches[2], "#1e1ec8");
+  // The reference has no region of its own, so it samples the union of the
+  // others' — i.e. the undyed colour of the area everyone else retints.
+  assert.equal(swatches[0], "#3c3c3c");
+});
+
+test("paletteSwatches returns null per palette rather than shifting the array", () => {
+  // index-alignment with the palette ids the renderer takes is the contract
+  const swatches = paletteSwatches([
+    palette({ dye: [60, 60, 60] }),
+    null,
+    Buffer.alloc(16), // present but too short to be a palette
+    palette({ dye: [200, 30, 30] }),
+  ]);
+  assert.equal(swatches.length, 4);
+  assert.equal(swatches[1], null);
+  assert.equal(swatches[2], null);
+  assert.equal(swatches[3], "#c81e1e");
+});
+
+test("paletteSwatches gives up when there is nothing to diff against", () => {
+  assert.deepEqual(paletteSwatches([palette({ dye: [200, 30, 30] })]), [null]);
+  // every palette identical — no dye region exists, so no swatch can be inferred
+  assert.deepEqual(paletteSwatches([palette({ dye: [60, 60, 60] }), palette({ dye: [60, 60, 60] })]), [null, null]);
 });

@@ -92,6 +92,7 @@ function parseArgs(argv) {
     else if (a === "--bgmsrc") out.bgmsrc = argv[++i];
     else if (a === "--sounds") out.sounds = argv[++i];
     else if (a === "--mobids") out.mobids = argv[++i];
+    else if (a === "--raw") out.raw = argv[++i];
     else if (a === "--iteminfo") out.iteminfo = argv[++i];
     else if (a === "-h" || a === "--help") out.help = true;
   }
@@ -141,6 +142,14 @@ function usage() {
       "  --mobids writes the client's monster id universe (id + AEGIS name) from",
       "  datainfo/npcidentity.lub as JSON. It is the candidate list tools/scrape-mobs.mjs",
       "  feeds to the RagnaPlace API, which has no bulk mob endpoint of its own.",
+      "",
+      "  --raw writes the client data tables the other projects consume — items.json,",
+      "  jobs.json, skills.json, randomopt.json, status.json, classes.json (the",
+      "  playable classes with their clothes-color palettes, alternative outfits and",
+      "  render ids) and hair.json (hair styles + dye swatches per race/gender) —",
+      "  into <out-dir> (normally resources/raw, served at /raw/<name>.json).",
+      "  They are a faithful projection of the client: per-project naming overrides",
+      "  and reshaping stay in each consumer's own sync step.",
     ].join("\n"),
   );
 }
@@ -148,7 +157,7 @@ function usage() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects && !args.maps && !args.bgm && !args.sounds && !args.mobids)) {
+  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects && !args.maps && !args.bgm && !args.sounds && !args.mobids && !args.raw)) {
     usage();
     process.exit(args.help ? 0 : 1);
   }
@@ -243,6 +252,15 @@ function main() {
       process.exit(1);
     }
     extractMobIds(args.grf, args.mobids);
+    process.exit(0);
+  }
+
+  if (args.raw) {
+    if (!args.grf) {
+      console.error("usage: --raw <out-dir> --grf <file.grf> [--iteminfo <path>]");
+      process.exit(1);
+    }
+    extractRawTables(args.grf, args.raw, args);
     process.exit(0);
   }
 }
@@ -678,7 +696,9 @@ const OP = {
 const FIELDS_PER_FLUSH = 50;
 const BITRK = 1 << 8;
 
-class LuaTable {
+// Exported so the --raw projections can be unit-tested against a hand-built
+// table instead of needing a 4.3 GB GRF.
+export class LuaTable {
   constructor() {
     this.map = new Map();
   }
@@ -3980,5 +4000,868 @@ function extractMobIds(grfPath, outFile) {
   }
 }
 
-// Run the CLI only when executed directly (not when imported by a test).
-if (import.meta.url === pathToFileURL(process.argv[1]).href) main();
+// ---------------------------------------------------------------------------
+// Raw data tables (--raw)
+// ---------------------------------------------------------------------------
+
+// The client data tables other projects used to extract for themselves. Each of
+// latam-ro-calc, latamvisuais and ragreplaystats carried its own fork of the GRF
+// reader and the Lua VM to build these; now they download the JSON from
+// /raw/<name>.json and reshape it locally.
+//
+// These files are a *faithful projection of the client*, deliberately not a
+// curated one. Consumer-specific overrides (ragreplaystats' JOB_NAME_OVERRIDE
+// and FOOD_STATUS_NAMES, its `[3]` slot suffix, latam-ro-calc's slot bitmask)
+// stay in each consumer's transform, so this stays a single unopinionated
+// upstream and each project keeps its exact existing output.
+//
+// Everything is written compact: unlike mobs.json these are never committed, so
+// there is no diff to keep readable and the bytes go over the wire on every
+// consumer sync.
+
+const RAW_ITEMMOVE_PATH = "data/itemmoveinfov5.txt";
+const RAW_MSGSTRING_PATH = "data/msgstringtable_ml.csv";
+const RAW_LUB_PATHS = {
+  pcidentity: "data/luafiles514/lua files/admin/pcidentity.lub",
+  pcjobnamegender: "data/luafiles514/lua files/datainfo/pcjobnamegender.lub",
+  skillid: "data/luafiles514/lua files/skillinfoz/skillid.lub",
+  skillinfolist: "data/luafiles514/lua files/skillinfoz/skillinfolist_ptbr.lub",
+  enumvar: "data/luafiles514/lua files/datainfo/enumvar.lub",
+  randomopt: "data/luafiles514/lua files/datainfo/addrandomoptionnametable_ptbr.lub",
+  efstids: "data/luafiles514/lua files/stateicon/efstids.lub",
+  stateiconinfo: "data/luafiles514/lua files/stateicon/stateiconinfo.lub",
+};
+
+// data/itemmoveinfov5.txt lists every item as `<id>\t<move flags...>\t// <AegisName>`;
+// the trailing comment is the real item_db aegis name. A few early lines carry a
+// generic comment instead (cashitem, Korean text, names with spaces), so keep
+// only clean aegis tokens — a bare identifier that looks like a name, not prose.
+export function parseAegisMap(text) {
+  const map = new Map();
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*(\d+)\t.*?\/\/\s*(.+?)\s*$/);
+    if (!m) continue;
+    const aegis = m[2];
+    if (/^[A-Za-z0-9][A-Za-z0-9_]*$/.test(aegis) && (aegis.includes("_") || /[A-Z]/.test(aegis))) {
+      map.set(Number(m[1]), aegis);
+    }
+  }
+  return map;
+}
+
+// Flatten a compiled Lua 5.1 chunk's constant pool, outermost proto first, without
+// executing it. Used only for the two job tables: pcidentity/pcjobnamegender encode
+// their mapping as adjacent constants, and reading them positionally is what has
+// always produced the consumers' job names — running them through the VM would build
+// differently shaped globals and silently change the output.
+//
+// The bytecode reader is loadChunk's, so there is one Lua loader in this file rather
+// than a second one that would have to be fixed twice when a client fork shifts the
+// format. Returns null for anything that isn't a chunk we can read.
+export function parseLuaConstants(bytes) {
+  // loadChunk trusts the endianness byte; these tables are only ever little-endian.
+  if (bytes.length < 12 || bytes[6] !== 1) return null;
+  let proto;
+  try {
+    proto = loadChunk(bytes);
+  } catch {
+    return null;
+  }
+
+  const out = [];
+  const walk = (p) => {
+    for (const k of p.k) {
+      if (k === undefined) out.push({ type: "nil" });
+      else if (typeof k === "boolean") out.push({ type: "bool", value: k });
+      else if (typeof k === "number") out.push({ type: "number", value: k });
+      // readString returns null for the empty string; keep it a string either way.
+      else out.push({ type: "string", value: k ?? "" });
+    }
+    for (const nested of p.protos) walk(nested);
+  };
+  walk(proto);
+  return out;
+}
+
+// pcidentity.lub: each `JT_<NAME>` string constant is immediately followed by its
+// numeric id. First id wins — the table aliases some names.
+export function jtIdsFromConstants(consts) {
+  const ids = new Map();
+  if (!consts) return ids;
+  for (let i = 0; i + 1 < consts.length; i++) {
+    const a = consts[i];
+    const b = consts[i + 1];
+    if (a.type === "string" && /^JT_/.test(a.value) && b.type === "number" && !ids.has(a.value)) {
+      ids.set(a.value, b.value);
+    }
+  }
+  return ids;
+}
+
+// pcjobnamegender.lub: a `JT_<NAME>` constant is followed by its display label —
+// the next string that isn't itself a JT_ key or one of the table names the
+// chunk also stores as constants.
+const JOB_TABLE_CONSTS = new Set(["PCJobNameTableMan", "PCJobNameTableWoman", "pcJobTbl2"]);
+
+export function jobLabelsFromConstants(consts) {
+  const labels = new Map();
+  if (!consts) return labels;
+  for (let i = 0; i < consts.length; i++) {
+    const c = consts[i];
+    if (c.type !== "string" || !c.value.startsWith("JT_")) continue;
+    for (let j = i + 1; j < consts.length; j++) {
+      const cc = consts[j];
+      if (cc.type !== "string") continue;
+      if (cc.value.startsWith("JT_")) break;
+      if (JOB_TABLE_CONSTS.has(cc.value)) continue;
+      labels.set(c.value, cc.value);
+      break;
+    }
+  }
+  return labels;
+}
+
+// One record per item. `name` is the bare identified name — the client appends
+// the "[3]" slot suffix at display time, and consumers disagree about whether
+// they want it, so `slots` stays a separate number. `aegisName` and
+// `resourceName` are both kept: consumers that want the item_db name prefer the
+// former and fall back to the latter, and folding them here would erase which
+// one a row actually came from.
+//
+// Rows with no display name are kept, with `name: null`. They are ~640 entries
+// that still carry a renderable `view`, and dropping them here would lose the
+// sprite ids the calculator's paper-doll needs; every consumer that wants named
+// items filters on `name` anyway.
+export function projectItems(tbl, aegisMap = new Map()) {
+  const out = [];
+  if (!(tbl instanceof LuaTable)) return out;
+  for (const [id, entry] of tbl.map) {
+    if (typeof id !== "number" || !(entry instanceof LuaTable)) continue;
+    const name = decodeClientString(entry.get("identifiedDisplayName")) || null;
+    const view = entry.get("ClassNum");
+    out.push({
+      id,
+      name,
+      slots: Number(entry.get("slotCount") || 0),
+      aegisName: aegisMap.get(id) ?? null,
+      resourceName: decodeClientString(entry.get("identifiedResourceName")) || null,
+      description: joinDescriptionLines(entry.get("identifiedDescriptionName")),
+      view: typeof view === "number" && view > 0 ? Math.round(view) : 0,
+      equipSlots: parseSlots(entry.get("identifiedDescriptionName")),
+      costume: entry.get("costume") === true,
+    });
+  }
+  return out.sort((a, b) => a.id - b.id);
+}
+
+// The description is stored as an array of lines; join them and keep the ^RRGGBB
+// colour codes, which the consumers' own formats preserve.
+function joinDescriptionLines(desc) {
+  if (!(desc instanceof LuaTable)) return "";
+  const lines = [];
+  for (const line of desc.map.values()) {
+    if (typeof line === "string") lines.push(decodeClientString(line));
+  }
+  return lines.join("\n");
+}
+
+// The three name tables are the same shape — numeric id -> a value the name has
+// to be dug out of — so they share one walk and differ only in how deep the name
+// is buried. Rows without a name are dropped rather than emitted as null: unlike
+// items, an unnamed skill/status/option has nothing else worth publishing.
+function projectNamed(tbl, nameOf) {
+  const out = [];
+  if (!(tbl instanceof LuaTable)) return out;
+  for (const [id, value] of tbl.map) {
+    if (typeof id !== "number") continue;
+    const name = nameOf(value);
+    if (name) out.push({ id: Math.round(id), name });
+  }
+  return out.sort((a, b) => a.id - b.id);
+}
+
+export function projectSkills(list) {
+  return projectNamed(list, (e) => (e instanceof LuaTable ? decodeClientString(e.get("SkillName")) : null));
+}
+
+// StateIconList entries hold the tooltip under `descript`; descript[1] is the
+// title line — either a bare string or a { text, colour } pair.
+export function projectStatus(list) {
+  return projectNamed(list, (entry) => {
+    if (!(entry instanceof LuaTable)) return null;
+    const descript = entry.get("descript");
+    if (!(descript instanceof LuaTable)) return null;
+    const first = descript.get(1);
+    return decodeClientString(first instanceof LuaTable ? first.get(1) : first);
+  });
+}
+
+// NameTable_VAR maps a random-option id to a printf-style display template
+// ("ATQM +%d"); the value is filled in from the item's rolled option at runtime.
+export function projectRandomOpt(tbl) {
+  return projectNamed(tbl, decodeClientString);
+}
+
+// A class is "present on this server" when its party icon ships in the GRF —
+// unreleased classes have no icon, which is the same signal /icons/job serves
+// from. Only the file table is read; the icon bytes never are.
+function jobIconIds(grf) {
+  const ids = new Set();
+  const re = /\/renewalparty\/icon_jobs_(\d+)\.bmp$/;
+  for (const f of grf.files) {
+    const m = normalize(f.filename).match(re);
+    if (m) ids.add(Number(m[1]));
+  }
+  return ids;
+}
+
+// Jobs are the union of the two id universes: every class pcidentity names, plus
+// every class that only shows up as a party icon. `name` is null when the client
+// ships no label for that JT (consumers fill those from their own tables).
+export function projectJobs(idConsts, labelConsts, iconIds) {
+  const jtIds = jtIdsFromConstants(idConsts);
+  const labels = jobLabelsFromConstants(labelConsts);
+  const byId = new Map();
+  for (const [jt, id] of jtIds) {
+    if (byId.has(id)) continue;
+    byId.set(id, { id, jt, name: labels.get(jt) ?? null, hasIcon: iconIds.has(id) });
+  }
+  for (const id of iconIds) {
+    if (!byId.has(id)) byId.set(id, { id, jt: null, name: null, hasIcon: true });
+  }
+  return [...byId.values()].sort((a, b) => a.id - b.id);
+}
+
+// ---------------------------------------------------------------------------
+// Playable classes and hair (--raw classes.json / hair.json)
+// ---------------------------------------------------------------------------
+
+// Everything below is a client fact — which sprite/palette files a class is
+// drawn from, and what the client itself calls it. What a consumer does with
+// that (grouping the classes into a dropdown, renaming them to match a wiki,
+// hiding the ones it doesn't want) stays in the consumer, exactly like the
+// naming overrides that stay out of items.json/jobs.json.
+
+// The playable classes: JT constant -> [ client job id, clothes-palette basename ].
+// This table IS the class universe — one record per key, emitted in this order
+// (novice, 1st, 2nd, transcendent, 3rd, 4th, expanded, doram).
+//
+// Both halves are hardcoded in the client EXE. pcidentity.lub only names a
+// little over half of these — it stops before the 4th classes and misses the
+// whole expanded branch — and the palette basenames are nowhere in the lua at
+// all (jobname.lub covers only NPCs and mobs), so the pairing is maintained
+// here. Ids are still read from pcidentity when it has them; the value below is
+// the fallback and the cross-check (a disagreement is reported).
+//
+// Palette basenames were verified against the LATAM data.grf palette listing,
+// quirks and all: Crusader's palettes are "크루" (not 크루세이더) and Elemental
+// Master's files really are misspelled "elemetal_master". Gender-locked classes
+// simply ship no files for the other gender, which the per-gender lookup
+// reflects naturally. (The gateway renderer's job_pal_names.txt is the same data
+// indexed by job id, extended to mounts/baby/madogear; it differs for the one
+// class whose palettes exist under two names — Dancer is 댄서 there, female-only,
+// where the character creator's set is 무희, which ships both genders.)
+const CLASS_TABLE = {
+  JT_NOVICE: [0, "초보자"],
+
+  JT_SWORDMAN: [1, "검사"],
+  JT_MAGICIAN: [2, "마법사"],
+  JT_ARCHER: [3, "궁수"],
+  JT_ACOLYTE: [4, "성직자"],
+  JT_MERCHANT: [5, "상인"],
+  JT_THIEF: [6, "도둑"],
+
+  JT_KNIGHT: [7, "기사"],
+  JT_CRUSADER: [14, "크루"],
+  JT_PRIEST: [8, "프리스트"],
+  JT_MONK: [15, "몽크"],
+  JT_WIZARD: [9, "위저드"],
+  JT_SAGE: [16, "세이지"],
+  JT_HUNTER: [11, "헌터"],
+  JT_BARD: [19, "바드"],
+  JT_DANCER: [20, "무희"],
+  JT_BLACKSMITH: [10, "제철공"],
+  JT_ALCHEMIST: [18, "연금술사"],
+  JT_ASSASSIN: [12, "어세신"],
+  JT_ROGUE: [17, "로그"],
+
+  JT_NOVICE_H: [4001, "초보자"],
+  JT_SWORDMAN_H: [4002, "검사"],
+  JT_MAGICIAN_H: [4003, "마법사"],
+  JT_ARCHER_H: [4004, "궁수"],
+  JT_ACOLYTE_H: [4005, "성직자"],
+  JT_MERCHANT_H: [4006, "상인"],
+  JT_THIEF_H: [4007, "도둑"],
+  JT_KNIGHT_H: [4008, "로드나이트"],
+  JT_CRUSADER_H: [4015, "팔라딘"],
+  JT_PRIEST_H: [4009, "하이프리스트"],
+  JT_MONK_H: [4016, "챔피온"],
+  JT_WIZARD_H: [4010, "하이위저드"],
+  JT_SAGE_H: [4017, "프로페서"],
+  JT_HUNTER_H: [4012, "스나이퍼"],
+  JT_BARD_H: [4020, "크라운"],
+  JT_DANCER_H: [4021, "집시"],
+  JT_BLACKSMITH_H: [4011, "화이트스미스"],
+  JT_ALCHEMIST_H: [4019, "크리에이터"],
+  JT_ASSASSIN_H: [4013, "어세신크로스"],
+  JT_ROGUE_H: [4018, "스토커"],
+
+  JT_RUNE_KNIGHT: [4054, "룬나이트"],
+  JT_ROYAL_GUARD: [4066, "로얄가드"],
+  JT_ARCH_BISHOP: [4057, "아크비숍"],
+  JT_SURA: [4070, "슈라"],
+  JT_WARLOCK: [4055, "워록"],
+  JT_SORCERER: [4067, "소서러"],
+  JT_RANGER: [4056, "레인저"],
+  JT_MINSTREL: [4068, "민스트럴"],
+  JT_WANDERER: [4069, "원더러"],
+  JT_MECHANIC: [4058, "미케닉"],
+  JT_GENETIC: [4071, "제네릭"],
+  JT_GUILLOTINE_CROSS: [4059, "길로틴크로스"],
+  JT_SHADOW_CHASER: [4072, "쉐도우체이서"],
+
+  JT_DRAGON_KNIGHT: [4252, "dragon_knight"],
+  JT_IMPERIAL_GUARD: [4258, "imperial_guard"],
+  JT_CARDINAL: [4256, "cardinal"],
+  JT_INQUISITOR: [4262, "inquisitor"],
+  JT_ARCH_MAGE: [4255, "arch_mage"],
+  JT_ELEMENTAL_MASTER: [4261, "elemetal_master"],
+  JT_WINDHAWK: [4257, "windhawk"],
+  JT_TROUBADOUR: [4263, "troubadour"],
+  JT_TROUVERE: [4264, "trouvere"],
+  JT_MEISTER: [4253, "meister"],
+  JT_BIOLO: [4259, "biolo"],
+  JT_SHADOW_CROSS: [4254, "shadow_cross"],
+  JT_ABYSS_CHASER: [4260, "abyss_chaser"],
+  JT_HYPER_NOVICE: [4314, "hyper_novice"],
+
+  JT_SUPERNOVICE: [23, "슈퍼노비스"],
+  JT_GUNSLINGER: [24, "건너"],
+  JT_REBELLION: [4215, "리벨리온"],
+  JT_NINJA: [25, "닌자"],
+  JT_KAGEROU: [4211, "kagerou"],
+  JT_OBORO: [4212, "oboro"],
+  JT_SHINKIRO: [4311, "shinkiro"],
+  JT_SHIRANUI: [4312, "shiranui"],
+  JT_TAEKWON: [4046, "태권소년"],
+  JT_STAR_GLADIATOR: [4047, "권성"],
+  JT_STAR_EMPEROR: [4239, "성제"],
+  JT_SKY_EMPEROR: [4309, "sky_emperor"],
+  JT_SOUL_LINKER: [4049, "소울링커"],
+  JT_SOUL_REAPER: [4240, "소울리퍼"],
+  JT_SOUL_ASCETIC: [4310, "soul_ascetic"],
+  JT_NIGHT_WATCH: [4313, "night_watch"],
+
+  JT_SUMMONER: [4218, "묘족"],
+  JT_SPIRIT_HANDLER: [4315, "spirit_handler"],
+};
+
+// Body SPRITE basename per class, for the classes where it differs from the
+// palette basename above (data/sprite/<race>/몸통/<남|여>/<name>_<남|여>.spr).
+// Gravity spells a handful of jobs differently in the two folders — Royal Guard
+// is 가드 as a sprite but 로얄가드 as a palette, Ranger is 레인져/레인저 (ㅕ vs ㅓ),
+// Crusader the reverse of the palette's abbreviation — so only the exceptions
+// are listed; everything else reuses the palette basename. Used to find each class's
+// alternative-outfit ("costume_N") sprites; a wrong entry surfaces as a warning
+// when the name resolves to no sprite in the GRF.
+const CLASS_SPR_NAMES = {
+  JT_CRUSADER: "크루세이더", JT_DANCER: "무희", JT_PRIEST_H: "하이프리",
+  JT_BARD_H: "클라운", JT_ASSASSIN_H: "어쌔신크로스", JT_ROYAL_GUARD: "가드",
+  JT_RANGER: "레인져", JT_REBELLION: "rebellion", JT_SUMMONER: "summoner",
+};
+
+// The two doram classes: their sprites and palettes live under the 도람족 tree
+// instead of 인간족/몸, so the palette lookup has to know which tree to read.
+const DORAM_CLASSES = new Set(["JT_SUMMONER", "JT_SPIRIT_HANDLER"]);
+
+// ragassets indexes the newest expanded 4th classes in its OWN id space (the
+// renderer's resolver tables), offset from the client's kRO job ids: the
+// STANDING sprite sits at 4302-4308 and the *_RIDING (always-mounted) sprite at
+// the client's own 4309-4315. `renderId` is what /render must be asked for, so
+// it is the standing id; `id` stays the client's. Everything else renders at its
+// client id, where the two are equal.
+const RENDER_ID = {
+  JT_SKY_EMPEROR: 4302,
+  JT_SOUL_ASCETIC: 4303,
+  JT_SHINKIRO: 4304,
+  JT_SHIRANUI: 4305,
+  JT_NIGHT_WATCH: 4306,
+  JT_HYPER_NOVICE: 4307,
+  JT_SPIRIT_HANDLER: 4308,
+};
+
+// (An override list used to sit here, forcing the expanded-branch 4th jobs to be
+// reported as released. It was keyed off the client id — 4309+, which ships no
+// party icon — and became dead once `unreleased` started asking about the
+// renderId instead: LATAM does ship icon_jobs_4302..4308. Don't reintroduce it
+// without checking the icon ids first.)
+
+// A few JT constants are spelled differently in the client's two name tables
+// (msgstringtable drops the underscore, or keeps the legacy constant), so the
+// lookups need the other spelling to resolve.
+const CLASS_NAME_ALIAS = {
+  JT_ARCH_BISHOP: "ARCHBISHOP",
+  JT_SUMMONER: "DO_SUMMONER",
+  JT_STAR_GLADIATOR: "STAR",
+  JT_SOUL_LINKER: "LINKER",
+};
+
+// data/msgstringtable_ml.csv is the multi-language string table the client
+// renders from. Each row is comma-separated base64 fields:
+// [key, ko, en, …, ptBR(7), …]. Index MSI_JOB_<SUFFIX> by <SUFFIX>, taking the
+// pt-BR column and falling back to English when a row is untranslated. It is the
+// most current of the client's job-name sources (pcjobnamegender.lub predates
+// several renames) but it omits most of the 4th classes, hence the pairing in
+// classDisplayName.
+export function parseJobMsgNames(text) {
+  const out = new Map();
+  const b64 = (s) => {
+    try {
+      return Buffer.from(s || "", "base64").toString("utf-8");
+    } catch {
+      return "";
+    }
+  };
+  for (const line of text.split(/\r?\n/)) {
+    if (!line) continue;
+    const cols = line.split(","); // base64 has no commas, so this is safe
+    const m = b64(cols[0]).match(/^MSI_JOB_(.+)$/);
+    if (!m) continue;
+    const pt = b64(cols[7]).trim();
+    const en = b64(cols[2]).trim();
+    if (pt || en) out.set(m[1], pt || en);
+  }
+  return out;
+}
+
+// The client's own label for a class: msgstringtable first, pcjobnamegender.lub
+// second (the only source for the deeper 4th classes), null when the client
+// ships neither. Trans classes reuse the base class's label — the lua table has
+// no _H rows. Consumers that want prettier or newer names layer their own table
+// on top; nothing is invented here.
+export function classDisplayName(jt, msgNames, jtLabels) {
+  const suffix = CLASS_NAME_ALIAS[jt] ?? jt.replace(/^JT_/, "");
+  const lua = (key) => {
+    if (jtLabels.has(key)) return decodeClientString(jtLabels.get(key));
+    if (key.endsWith("_H") && jtLabels.has(key.slice(0, -2))) {
+      return decodeClientString(jtLabels.get(key.slice(0, -2)));
+    }
+    return null;
+  };
+  return msgNames.get(suffix) ?? lua(`JT_${suffix}`) ?? lua(jt) ?? null;
+}
+
+// One pass over the GRF file table indexing everything the class and hair
+// projections need. Palette records keep the GRF entries themselves so the
+// swatch sampler can extract the bytes for exactly the palettes it samples.
+// Korean path segments: 몸 body, 머리 hair, 몸통 body sprites, 머리통 head
+// sprites, 인간족 human race, 도람족 doram race, 남/여 male/female.
+function scanPlayerAssets(grf) {
+  const bodyPal = new Map(); //     "<palette>|<m|f>"            -> { max, entries: Map<idx, entry> }
+  const hairPal = new Map(); //     "<style>|<m|f>"              -> same
+  const doramBodyPal = new Map(); //                                same, 도람족 tree
+  const doramHairPal = new Map();
+  const altBodyPal = new Map(); //  "<palette>|<m|f>|<outfit>"   -> same
+  const humanHair = new Map(); //   "m"|"f"                      -> Set<style number>
+  const doramHair = new Map();
+  const body = new Map(); //        "<sprite>|<m|f>|<race>"      -> the base .spr entry
+  const altBody = new Map(); //     "<sprite>|<m|f>|<race>|<n>"  -> { spr, act } entries
+
+  const record = (map, key, idx, f) => {
+    let rec = map.get(key);
+    if (!rec) map.set(key, (rec = { max: -1, entries: new Map() }));
+    rec.max = Math.max(rec.max, idx);
+    const prev = rec.entries.get(idx);
+    // Same tie-break as findBestEntry: the biggest copy is the complete one.
+    if (!prev || f.uncompSize > prev.uncompSize) rec.entries.set(idx, f);
+  };
+  const g2 = (g) => (g === "남" ? "m" : "f");
+
+  for (const f of grf.files) {
+    if (!(f.flags & 0x01)) continue;
+    const n = normalize(f.filename);
+
+    if (n.startsWith("data/palette/")) {
+      const rel = n.slice("data/palette/".length);
+      let m = rel.match(/^몸\/([^/]+)_(남|여)_(\d+)\.pal$/);
+      if (m) { record(bodyPal, `${m[1]}|${g2(m[2])}`, +m[3], f); continue; }
+      m = rel.match(/^머리\/머리(\d+)_(남|여)_(\d+)\.pal$/);
+      if (m) { record(hairPal, `${m[1]}|${g2(m[2])}`, +m[3], f); continue; }
+      m = rel.match(/^도람족\/(?:body|몸)\/([^/]+)_(남|여)_(\d+)\.pal$/);
+      if (m) { record(doramBodyPal, `${m[1]}|${g2(m[2])}`, +m[3], f); continue; }
+      m = rel.match(/^도람족\/(?:hair|머리)\/(?:머리)?(\d+)_(남|여)_(\d+)\.pal$/);
+      if (m) { record(doramHairPal, `${m[1]}|${g2(m[2])}`, +m[3], f); continue; }
+      // Alternative-outfit clothes palettes, a parallel set per outfit:
+      // 몸/costume_1/<palette>_<남|여>_<idx>_1.pal (doram under 도람족/body/).
+      m = rel.match(/^(?:몸|도람족\/body)\/costume_(\d+)\/(.+)_(남|여)_(\d+)_(\d+)\.pal$/);
+      if (m && m[1] === m[5]) record(altBodyPal, `${m[2]}|${g2(m[3])}|${m[1]}`, +m[4], f);
+      continue;
+    }
+
+    // Body sprites, base and alternative-outfit. The renderer needs both the
+    // .act and the .spr before it will draw an outfit, so each extension is
+    // recorded separately and altOutfits requires the pair.
+    {
+      const m = n.match(
+        /^data\/sprite\/(인간족|도람족)\/몸통\/(남|여)\/(?:costume_(\d+)\/)?(.+?)_(남|여)(?:_(\d+))?\.(spr|act)$/,
+      );
+      if (m) {
+        const race = m[1] === "인간족" ? "human" : "doram";
+        const key = `${m[4]}|${g2(m[2])}|${race}`;
+        if (!m[3]) {
+          if (m[7] === "spr" && !m[6]) body.set(key, f);
+        } else if (m[6] === m[3]) {
+          if (!altBody.has(`${key}|${m[3]}`)) altBody.set(`${key}|${m[3]}`, {});
+          altBody.get(`${key}|${m[3]}`)[m[7]] = f;
+        }
+        continue;
+      }
+    }
+
+    if (n.endsWith(".spr")) {
+      const m = n.match(/^data\/sprite\/(인간족|도람족)\/머리통\/(남|여)\/(\d+)_(남|여)\.spr$/);
+      if (!m) continue;
+      const styles = m[1] === "인간족" ? humanHair : doramHair;
+      const g = g2(m[2]);
+      if (!styles.has(g)) styles.set(g, new Set());
+      styles.get(g).add(+m[3]);
+    }
+  }
+
+  return { bodyPal, hairPal, doramBodyPal, doramHairPal, altBodyPal, humanHair, doramHair, body, altBody };
+}
+
+// A .pal is 256 RGBA entries covering the WHOLE sprite (skin, outlines, the
+// magenta transparency key…), so a single palette cannot say which entries are
+// the dye. The dye region is whatever CHANGES between the numbered palettes of
+// one class/style: diff each against a reference, keep the indices that vary and
+// average that palette's colors over them (chroma-weighted hue mode, so
+// outlines and highlights don't wash the hue out). The result is one "#rrggbb"
+// per palette — a swatch a picker can render without downloading the palettes.
+// Palettes that are missing or too short come back null, so the array stays
+// index-aligned with the palette ids the renderer takes.
+export function paletteSwatches(pals) {
+  const ok = (p) => p && p.length >= 1024;
+  if (pals.filter(ok).length < 2) return pals.map(() => null);
+  const refIdx = pals.findIndex(ok);
+  const ref = pals[refIdx];
+
+  const isMagenta = (r, g, b) => r > 200 && b > 200 && g < 80;
+  // Per-palette dye region: the entries where THIS palette differs from the
+  // reference. Computing it per palette (rather than across all of them at once)
+  // keeps outliers — an all-black "dark outfit" palette that retints everything
+  // — from widening the normal ones' region to the whole sprite.
+  const diffRegion = (p) => {
+    const out = [];
+    for (let i = 1; i < 256; i++) {
+      const r0 = ref[i * 4], g0 = ref[i * 4 + 1], b0 = ref[i * 4 + 2];
+      const r = p[i * 4], g = p[i * 4 + 1], b = p[i * 4 + 2];
+      if (isMagenta(r0, g0, b0) || isMagenta(r, g, b)) continue;
+      if (Math.abs(r - r0) + Math.abs(g - g0) + Math.abs(b - b0) > 48) out.push(i);
+    }
+    return out;
+  };
+  const regions = pals.map((p, n) => (ok(p) && n !== refIdx ? diffRegion(p) : []));
+  // The reference palette (and any palette identical to it) samples the union of
+  // everyone else's regions — the original colors of the dyed area.
+  const union = [...new Set(regions.flat())].sort((a, b) => a - b);
+  if (!union.length) return pals.map(() => null);
+
+  return pals.map((p, n) => {
+    if (!ok(p)) return null;
+    const region = regions[n].length ? regions[n] : union;
+    const colors = region.map((i) => {
+      const r = p[i * 4], g = p[i * 4 + 1], b = p[i * 4 + 2];
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      return { r, g, b, lum: r + g + b, chroma: max - min, hue: hueOf(r, g, b, max, min) };
+    });
+    // The dye hue is the chroma-weighted mode over 30° hue bins; averaging only
+    // that bin keeps the swatch vivid. All-neutral palettes (white/gray dyes)
+    // have no colorful bin and fall back to a mid-luminance average.
+    const bins = new Map();
+    for (const c of colors) {
+      if (c.chroma < 25) continue;
+      const bin = Math.floor(c.hue / 30);
+      bins.set(bin, (bins.get(bin) ?? 0) + c.chroma);
+    }
+    let band;
+    if (bins.size) {
+      const top = [...bins.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      band = colors.filter((c) => c.chroma >= 25 && Math.floor(c.hue / 30) === top);
+      band.sort((a, b) => a.lum - b.lum);
+      band = band.slice(Math.floor(band.length * 0.3), Math.max(1, Math.ceil(band.length * 0.85)));
+    } else {
+      colors.sort((a, b) => a.lum - b.lum);
+      band = colors.slice(Math.floor(colors.length * 0.35), Math.max(1, Math.ceil(colors.length * 0.8)));
+    }
+    const avg = band.reduce((acc, c) => ({ r: acc.r + c.r, g: acc.g + c.g, b: acc.b + c.b }), { r: 0, g: 0, b: 0 });
+    const hex = (v) => Math.round(v / band.length).toString(16).padStart(2, "0");
+    return `#${hex(avg.r)}${hex(avg.g)}${hex(avg.b)}`;
+  });
+}
+
+function hueOf(r, g, b, max, min) {
+  if (max === min) return 0;
+  const d = max - min;
+  let h;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return (h * 60 + 360) % 360;
+}
+
+// { count, swatches } for one palette record — count is the highest palette id
+// plus one, so it stays the range /render accepts even when the middle of the
+// range is missing (those swatches are null).
+function paletteSet(rec, read) {
+  if (!rec) return null;
+  const count = rec.max + 1;
+  const pals = [];
+  for (let i = 0; i < count; i++) {
+    const entry = rec.entries.get(i);
+    pals.push(entry ? read(entry) : null);
+  }
+  return { count, swatches: paletteSwatches(pals) };
+}
+
+// Alternative outfits ("estilo de roupa" / body style): a parallel set of body
+// sprites the client ships under 몸통/<gender>/costume_<N>/, which the renderer
+// draws instead of the normal body when asked for outfit N. The 3rd classes are
+// the well-known ones, but the client has them for a few others too (Novice,
+// Cardinal, Inquisitor, Arch Mage, Kagerou/Oboro) — so the set is read from the
+// GRF rather than hardcoded. An outfit counts only when both its .act and .spr
+// exist (the renderer's own test) AND the .spr differs from the normal body's:
+// Gravity ships stub costume_1 folders for a few jobs whose sprite is a
+// byte-for-byte copy of the base one, so the "alternative" outfit would render
+// exactly the same character. Its clothes-color palettes live in a matching
+// palette/몸/costume_<N>/ folder and are a DIFFERENT set from the normal body's
+// (sometimes fewer, sometimes none), so each outfit carries its own.
+function altOutfits(scan, jt, palette, race, palettes, read) {
+  const sprite = (CLASS_SPR_NAMES[jt] ?? palette).toLowerCase();
+  const key = (g) => `${sprite}|${g}|${race}`;
+  if (!scan.body.has(key("m")) && !scan.body.has(key("f"))) {
+    console.error(`  ! ${jt} (${sprite}): no body sprite under that name — outfits not checked`);
+    return [];
+  }
+  const digest = (entry) => createHash("md5").update(read(entry)).digest("hex");
+  const out = [];
+  for (let n = 1; n <= 8; n++) {
+    const outfitPalettes = {};
+    // Gender-locked classes ship an outfit sprite for the gender they can't be
+    // (Kagerou has a female costume_1 body), so follow the base palettes — the
+    // same signal the gender lock itself is read from.
+    for (const g of Object.keys(palettes)) {
+      const files = scan.altBody.get(`${key(g)}|${n}`);
+      const base = scan.body.get(key(g));
+      if (!files?.spr || !files.act || !base) continue;
+      if (base.uncompSize === files.spr.uncompSize && digest(base) === digest(files.spr)) continue;
+      // The palette name can differ from the sprite name (Royal Guard is 가드 as
+      // a sprite, 로얄가드 as a palette); no palettes at all means the outfit
+      // only ever renders in its own colors.
+      const pal = scan.altBodyPal.get(`${palette.toLowerCase()}|${g}|${n}`);
+      outfitPalettes[g] = paletteSet(pal, read) ?? { count: 0, swatches: [] };
+    }
+    if (Object.keys(outfitPalettes).length) out.push({ n, palettes: outfitPalettes });
+  }
+  return out;
+}
+
+// One record per playable class: who it is (client id, JT constant, client
+// label), how ragassets draws it (renderId, sprite/palette basenames, race) and
+// every clothes-color palette the client ships for it, per gender and per
+// alternative outfit. `unreleased` is true when the server has no party icon for
+// the class — the same file /icons/job serves from, and the only client-side
+// signal that a class exists as data but isn't playable yet.
+//
+// `read(entry)` extracts a GRF entry's bytes; injected so the projection can be
+// exercised without a GRF.
+export function projectClasses(scan, { jtIds, jtLabels, msgNames, iconIds }, read) {
+  const out = [];
+  for (const [jt, [tableId, palette]] of Object.entries(CLASS_TABLE)) {
+    // pcidentity spells a few classes without the underscore (JT_ARCHBISHOP),
+    // hence the same alias the name lookup uses.
+    const clientId = jtIds.get(jt) ?? jtIds.get(`JT_${CLASS_NAME_ALIAS[jt] ?? ""}`);
+    if (clientId != null && clientId !== tableId) {
+      console.error(`  ! ${jt}: pcidentity says ${clientId}, table says ${tableId} — using the client's`);
+    }
+    const id = clientId ?? tableId;
+    const renderId = RENDER_ID[jt] ?? id;
+    const race = DORAM_CLASSES.has(jt) ? "doram" : "human";
+
+    const byName = race === "doram" ? scan.doramBodyPal : scan.bodyPal;
+    const palettes = {};
+    for (const g of ["m", "f"]) {
+      const set = paletteSet(byName.get(`${palette}|${g}`), read);
+      if (set) palettes[g] = set;
+    }
+    if (!Object.keys(palettes).length) console.error(`  ! ${jt} (${palette}): no clothes palettes found`);
+
+    out.push({
+      id,
+      renderId,
+      jt,
+      name: classDisplayName(jt, msgNames, jtLabels),
+      race,
+      sprite: CLASS_SPR_NAMES[jt] ?? palette,
+      palette,
+      palettes,
+      outfits: altOutfits(scan, jt, palette, race, palettes, read),
+      unreleased: !iconIds.has(renderId),
+    });
+  }
+  return out;
+}
+
+// One record per race+gender. Styles come from the hair sprites
+// (data/sprite/<race>/머리통/<g>/<n>_<g>.spr); `colors` is how many recolor
+// palettes that style has (data/palette/머리/머리<n>_<g>_<i>.pal, doram under
+// 도람족/). Styles above the palette range simply have no recolors (colors: 0) —
+// only the sprite's own coloring. The hair dyes are the same hues across styles,
+// so one representative `swatches` row is sampled from the richest style rather
+// than repeating it for each.
+export function projectHair(scan, read) {
+  const build = (race, styleSet, palMap, gender) => {
+    const styles = [...(styleSet.get(gender) ?? [])]
+      .sort((a, b) => a - b)
+      .map((n) => ({ n, colors: (palMap.get(`${n}|${gender}`)?.max ?? -1) + 1 }));
+    const richest = styles.reduce((a, b) => (b.colors > (a?.colors ?? 0) ? b : a), null);
+    const set = richest?.colors ? paletteSet(palMap.get(`${richest.n}|${gender}`), read) : null;
+    return { race, gender, styles, swatches: set?.swatches ?? [] };
+  };
+  return [
+    build("human", scan.humanHair, scan.hairPal, "m"),
+    build("human", scan.humanHair, scan.hairPal, "f"),
+    build("doram", scan.doramHair, scan.doramHairPal, "m"),
+    build("doram", scan.doramHair, scan.doramHairPal, "f"),
+  ];
+}
+
+function extractRawTables(grfPath, outDir, args) {
+  const dest = resolve(outDir);
+  mkdirSync(dest, { recursive: true });
+
+  const lubPath = resolveItemInfoPath(args);
+  if (!lubPath) {
+    console.error("iteminfo_new.lub not found next to the GRF (System/) — pass --iteminfo <path>");
+    process.exit(1);
+  }
+
+  const grf = openGrf(grfPath);
+
+  // Tables are collected in memory and only written once every one of them has
+  // been built. A half-regenerated resources/raw is worse than a stale one: the
+  // deploy skill tars this directory as-is onto a live /raw, with no PR in
+  // between to catch it. Throwing (rather than exiting) also lets the `finally`
+  // below close the GRF.
+  const tables = new Map();
+  const write = (name, records) => {
+    if (!records.length) throw new Error(`${name}: no records — refusing to write an empty table`);
+    tables.set(name, records);
+  };
+
+  try {
+    const lubs = collectGrfFiles(grf, Object.values(RAW_LUB_PATHS).map(normalize));
+    const lub = (key) => lubs.get(normalize(RAW_LUB_PATHS[key]));
+
+    // Items — iteminfo_new.lub lives next to the GRF, not inside it; the aegis
+    // names come from a plain-text table that does.
+    const moveInfo = findBestEntry(grf, normalize(RAW_ITEMMOVE_PATH));
+    const aegisMap = moveInfo
+      ? parseAegisMap(Buffer.from(extractFile(grf, moveInfo)).toString("latin1"))
+      : new Map();
+    console.error(`items from ${lubPath} (${aegisMap.size} aegis names)`);
+    write("items.json", projectItems(runChunk(readFileSync(lubPath)).get("tbl"), aegisMap));
+
+    // Jobs — read positionally out of the constant pools, see parseLuaConstants.
+    // classes.json below pairs the same two pools against the palette scan.
+    const idConsts = lub("pcidentity") ? parseLuaConstants(lub("pcidentity")) : [];
+    const labelConsts = lub("pcjobnamegender") ? parseLuaConstants(lub("pcjobnamegender")) : [];
+    const iconIds = jobIconIds(grf);
+    write("jobs.json", projectJobs(idConsts, labelConsts, iconIds));
+
+    // Each of the three name tables is keyed by consts a companion chunk defines,
+    // so the pair runs over one shared globals table, seed chunk first.
+    const globalsOf = (...keys) => {
+      const g = new LuaTable();
+      for (const key of keys) {
+        if (!lub(key)) {
+          console.error(`! ${RAW_LUB_PATHS[key]} not found in the GRF`);
+          process.exit(1);
+        }
+        runChunkInto(lub(key), g);
+      }
+      return g;
+    };
+
+    // skillid.lub defines SKID, which skillinfolist keys itself by.
+    const skillGlobals = globalsOf("skillid", "skillinfolist");
+    write("skills.json", projectSkills(namedTable(skillGlobals, "SkillInfoList_string", "SKID")));
+
+    // enumvar defines the consts the random-option name table may key by.
+    write("randomopt.json", projectRandomOpt(globalsOf("enumvar", "randomopt").get("NameTable_VAR")));
+
+    // efstids defines the EFST_* consts StateIconList keys by.
+    const statusGlobals = globalsOf("efstids", "stateiconinfo");
+    write("status.json", projectStatus(namedTable(statusGlobals, "StateIconList")));
+
+    // Classes and hair — one pass over the file table indexes every player
+    // palette and body/hair sprite, then the projections sample the swatches.
+    const scan = scanPlayerAssets(grf);
+    const read = (entry) => extractFile(grf, entry);
+    const msgEntry = findBestEntry(grf, normalize(RAW_MSGSTRING_PATH));
+    if (!msgEntry) console.error("  ! msgstringtable_ml.csv missing — class names fall back to lua");
+    write(
+      "classes.json",
+      projectClasses(
+        scan,
+        {
+          jtIds: jtIdsFromConstants(idConsts),
+          jtLabels: jobLabelsFromConstants(labelConsts),
+          msgNames: msgEntry ? parseJobMsgNames(Buffer.from(read(msgEntry)).toString("latin1")) : new Map(),
+          iconIds,
+        },
+        read,
+      ),
+    );
+    write("hair.json", projectHair(scan, read));
+
+  } finally {
+    closeGrf(grf);
+  }
+
+  // Warn when a table collapses — the realistic failure after a client update is
+  // a .lub moving and a table losing most of its rows, not losing all of them.
+  const summary = [];
+  for (const [name, records] of tables) {
+    const path = join(dest, name);
+    const before = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")).length : null;
+    writeFileSync(path, JSON.stringify(records));
+    const delta = before === null ? "new" : `was ${before}`;
+    summary.push(`  ${name} — ${records.length} (${delta})`);
+    if (before !== null && records.length < before * 0.9) {
+      console.error(`! ${name} lost ${before - records.length} of ${before} rows — check the client tables before deploying`);
+    }
+  }
+  console.error(`\nraw tables → ${dest}\n${summary.join("\n")}`);
+}
+
+// Take the named global, falling back to the biggest table the chunk defined
+// (skipping the const table that seeded it). The fallback is a safety net, not
+// the plan: "biggest table" would silently republish the wrong data under a name
+// every consumer trusts if a client update added a larger one, so a miss is loud.
+function namedTable(globals, name, skipKey) {
+  const byName = globals.get(name);
+  if (byName instanceof LuaTable) return byName;
+
+  let best = null;
+  for (const [k, v] of globals.map) {
+    if (k === skipKey) continue;
+    if (v instanceof LuaTable && (!best || v.map.size > best.map.size)) best = v;
+  }
+  console.error(`! ${name} not defined by the chunk — falling back to its largest table (${best?.map.size ?? 0} rows)`);
+  return best;
+}
+
+// Run the CLI only when executed directly (not when imported by a test, or from
+// a context with no script path at all such as `node -e`).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

@@ -190,10 +190,10 @@ func TestEffectEndpoint(t *testing.T) {
 		{"/effects/c_spot_light/sub/effect.json", http.StatusNotFound, ""}, // too many segments
 		{"/effects/sprites/torch_01/sprite.json", http.StatusOK, "application/json"},
 		{"/effects/sprites/torch_01/0.png", http.StatusOK, "image/png"},
-		{"/effects/sprites/torch_01/9.png", http.StatusNotFound, ""},        // valid pattern, no such frame
-		{"/effects/sprites/torch_01/effect.json", http.StatusNotFound, ""},  // wrong file for a sprite bundle
-		{"/effects/sprites/torch_01", http.StatusNotFound, ""},              // missing file segment
-		{"/effects/sprites/torch_01/sub/0.png", http.StatusNotFound, ""},    // too many segments
+		{"/effects/sprites/torch_01/9.png", http.StatusNotFound, ""},       // valid pattern, no such frame
+		{"/effects/sprites/torch_01/effect.json", http.StatusNotFound, ""}, // wrong file for a sprite bundle
+		{"/effects/sprites/torch_01", http.StatusNotFound, ""},             // missing file segment
+		{"/effects/sprites/torch_01/sub/0.png", http.StatusNotFound, ""},   // too many segments
 	}
 	for _, c := range cases {
 		rec := get(t, s, s.handleEffect, c.path)
@@ -252,18 +252,18 @@ func TestResolveMapPath(t *testing.T) {
 	}
 
 	bad := []string{
-		"prontera/secret.txt",            // disallowed filename
-		"prontera/iz_int.gat",            // geometry name must match the map dir
-		"prontera",                       // missing file segment
-		"prontera/sub/manifest.json",     // too many segments
-		"prontera/../_t/x.png",           // traversal
-		"Prontera/manifest.json",         // uppercase slug
-		"_t/0123456789abcdef.rsm",        // right store, wrong extension
-		"_m/0123456789abcdef.png",        // wrong extension for store
-		"_x/0123456789abcdef.png",        // unknown store
-		"_t/notahexhash.png",             // bad hash
-		"_t/0123456789abcdef0.png",       // 17-char hash
-		"index.json/../../etc/passwd",    // traversal off the catalogue
+		"prontera/secret.txt",         // disallowed filename
+		"prontera/iz_int.gat",         // geometry name must match the map dir
+		"prontera",                    // missing file segment
+		"prontera/sub/manifest.json",  // too many segments
+		"prontera/../_t/x.png",        // traversal
+		"Prontera/manifest.json",      // uppercase slug
+		"_t/0123456789abcdef.rsm",     // right store, wrong extension
+		"_m/0123456789abcdef.png",     // wrong extension for store
+		"_x/0123456789abcdef.png",     // unknown store
+		"_t/notahexhash.png",          // bad hash
+		"_t/0123456789abcdef0.png",    // 17-char hash
+		"index.json/../../etc/passwd", // traversal off the catalogue
 	}
 	for _, in := range bad {
 		if got, valid := resolveMapPath(in); valid {
@@ -370,8 +370,8 @@ func TestBgmEndpoint(t *testing.T) {
 	}{
 		{"/bgm/index.json", http.StatusOK, "application/json"},
 		{"/bgm/210.mp3", http.StatusOK, "audio/mpeg"},
-		{"/bgm/999.mp3", http.StatusNotFound, ""},   // valid pattern, no such track
-		{"/bgm/secret.txt", http.StatusNotFound, ""}, // disallowed extension
+		{"/bgm/999.mp3", http.StatusNotFound, ""},     // valid pattern, no such track
+		{"/bgm/secret.txt", http.StatusNotFound, ""},  // disallowed extension
 		{"/bgm/sub/210.mp3", http.StatusNotFound, ""}, // nested path
 		{"/bgm/", http.StatusNotFound, ""},            // empty
 	}
@@ -403,6 +403,124 @@ func TestBgmTraversal(t *testing.T) {
 		rec := get(t, s, s.handleBgm, p)
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s: status = %d, want 404", p, rec.Code)
+		}
+	}
+}
+
+func rawServer(t *testing.T) *server {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("mobs.json", `{"1002":{"name":"Poring"}}`)
+	write("items.json", `{"501":{"name":"Red Potion"}}`)
+	write("secret.txt", "not json, not served")
+	return &server{cfg: config{rawDir: dir, port: "0"}, flight: newFlightGroup()}
+}
+
+func TestRawEndpoint(t *testing.T) {
+	s := rawServer(t)
+	cases := []struct {
+		path string
+		code int
+		ct   string
+	}{
+		{"/raw/mobs.json", http.StatusOK, "application/json"},
+		{"/raw/items.json", http.StatusOK, "application/json"},
+		{"/raw/skills.json", http.StatusNotFound, ""},   // valid pattern, no such table
+		{"/raw/secret.txt", http.StatusNotFound, ""},    // disallowed extension
+		{"/raw/sub/mobs.json", http.StatusNotFound, ""}, // nested path
+		{"/raw/", http.StatusNotFound, ""},              // empty
+		{"/raw/Mobs.json", http.StatusNotFound, ""},     // uppercase
+		{"/raw/_mobs.json", http.StatusNotFound, ""},    // leading underscore
+	}
+	for _, c := range cases {
+		rec := get(t, s, s.handleRaw, c.path)
+		if rec.Code != c.code {
+			t.Errorf("%s: status = %d, want %d", c.path, rec.Code, c.code)
+		}
+		if c.code == http.StatusOK {
+			if ct := rec.Header().Get("Content-Type"); ct != c.ct {
+				t.Errorf("%s: content-type = %q, want %q", c.path, ct, c.ct)
+			}
+			if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+				t.Errorf("%s: missing CORS header", c.path)
+			}
+		}
+	}
+}
+
+// TestRawTraversal confirms the strict table-name pattern rejects path traversal
+// even when the raw request path contains "..".
+func TestRawTraversal(t *testing.T) {
+	s := rawServer(t)
+	for _, p := range []string{
+		"/raw/../main.go",
+		"/raw/..%2f..%2fmain.go",
+		"/raw/%2e%2e/mobs.json",
+	} {
+		rec := get(t, s, s.handleRaw, p)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", p, rec.Code)
+		}
+	}
+}
+
+// TestRawCacheHeaders pins the one thing /raw must not inherit from the other
+// asset handlers: these files are regenerated in place after a client update, so
+// they must revalidate rather than be pinned as immutable for a year.
+func TestRawCacheHeaders(t *testing.T) {
+	s := rawServer(t)
+	rec := get(t, s, s.handleRaw, "/raw/mobs.json")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	cc := rec.Header().Get("Cache-Control")
+	if strings.Contains(cc, "immutable") {
+		t.Errorf("cache-control = %q, must not be immutable", cc)
+	}
+	if !strings.Contains(cc, "must-revalidate") {
+		t.Errorf("cache-control = %q, want must-revalidate", cc)
+	}
+	etag := rec.Header().Get("Etag")
+	if etag == "" {
+		t.Error("missing ETag")
+	}
+	if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Error("missing CORS header")
+	}
+
+	// A conditional revalidation must answer 304 and repeat the same short-lived
+	// policy — a 304 carrying "immutable" would defeat the point.
+	req := httptest.NewRequest(http.MethodGet, "/raw/mobs.json", nil)
+	req.Header.Set("If-None-Match", etag)
+	cond := httptest.NewRecorder()
+	s.handleRaw(cond, req)
+	if cond.Code != http.StatusNotModified {
+		t.Fatalf("conditional status = %d, want 304", cond.Code)
+	}
+	if got := cond.Header().Get("Cache-Control"); got != cc {
+		t.Errorf("304 cache-control = %q, want %q", got, cc)
+	}
+	if cond.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Error("304: missing CORS header")
+	}
+}
+
+// TestImmutableAssetsUnchanged guards the /raw cache-policy refactor: the
+// content-addressed handlers must still emit the long-lived immutable policy.
+func TestImmutableAssetsUnchanged(t *testing.T) {
+	s := bgmServer(t)
+	for _, p := range []string{"/bgm/index.json", "/bgm/210.mp3"} {
+		rec := get(t, s, s.handleBgm, p)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", p, rec.Code)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=31536000, immutable" {
+			t.Errorf("%s: cache-control = %q, want the immutable policy", p, cc)
 		}
 	}
 }

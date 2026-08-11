@@ -49,6 +49,7 @@ type config struct {
 	mapsDir     string
 	bgmDir      string
 	soundsDir   string
+	rawDir      string
 	port        string
 }
 
@@ -60,6 +61,7 @@ func loadConfig() config {
 		mapsDir:     env("MAPS_DIR", "/maps"),
 		bgmDir:      env("BGM_DIR", "/bgm"),
 		soundsDir:   env("SOUNDS_DIR", "/sounds"),
+		rawDir:      env("RAW_DIR", "/raw"),
 		port:        env("GATEWAY_PORT", "8080"),
 	}
 }
@@ -138,6 +140,12 @@ func main() {
 		log.Printf("sounds: serving %s at /effect/sound?file=<name> and /effect/sound/index.json", cfg.soundsDir)
 	}
 
+	if fi, err := os.Stat(cfg.rawDir); err != nil || !fi.IsDir() {
+		log.Printf("raw: %s not found — /raw/* will return 404 (run extract-grf.mjs --raw)", cfg.rawDir)
+	} else {
+		log.Printf("raw: serving %s at /raw/{name}.json", cfg.rawDir)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/image", s.handleImage)
 	mux.HandleFunc("/gif", s.handleGif)
@@ -146,6 +154,7 @@ func main() {
 	mux.HandleFunc("/effect/", s.handleEffectAsset)
 	mux.HandleFunc("/maps/", s.handleMap)
 	mux.HandleFunc("/bgm/", s.handleBgm)
+	mux.HandleFunc("/raw/", s.handleRaw)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		io.WriteString(w, "ok")
@@ -186,7 +195,8 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"     /maps/index.json           (world-map catalogue for the map simulator)\n"+
 		"     /maps/prontera/manifest.json  (one map's geometry + shared asset manifest)\n"+
 		"     /bgm/index.json            (per-map background-music catalogue)\n"+
-		"     /bgm/210.mp3               (one background-music track)\n\n"+
+		"     /bgm/210.mp3               (one background-music track)\n"+
+		"     /raw/mobs.json             (a prebuilt JSON data table)\n\n"+
 		"See the README for every supported parameter.\n")
 }
 
@@ -285,21 +295,38 @@ func (s *server) serveBytes(w http.ResponseWriter, r *http.Request, data []byte,
 	s.serveReader(w, r, bytes.NewReader(data), time.Time{}, etag, contentType)
 }
 
+// The two cache policies the gateway serves under. Renders, icons, effects, maps
+// and BGM are content-addressed by their ETag (a new build means a new URL or a
+// new validator), so they may be pinned forever. The /raw JSON tables are the
+// exception: they are mutable at a stable URL — regenerated after a Ragnarok
+// client update — so they get a short TTL plus mandatory revalidation, which
+// keeps the ETag doing the real work without pinning stale data for a year.
+const (
+	cacheImmutable  = "public, max-age=31536000, immutable"
+	cacheRevalidate = "public, max-age=300, must-revalidate"
+)
+
 // serveReader is the shared response path for renders (a bytes.Reader) and icons
-// (an open *os.File). It sets the asset cache/CORS headers and lets
+// (an open *os.File). It sets the immutable asset cache/CORS headers and lets
 // http.ServeContent handle If-None-Match against our ETag plus range requests.
 func (s *server) serveReader(w http.ResponseWriter, r *http.Request, content io.ReadSeeker, modTime time.Time, etag, contentType string) {
+	s.serveReaderCache(w, r, content, modTime, etag, contentType, cacheImmutable)
+}
+
+// serveReaderCache is serveReader with an explicit Cache-Control policy, for the
+// handlers whose bytes change under a stable URL. Because the headers are set
+// before http.ServeContent runs, a 304 it generates carries this same policy.
+func (s *server) serveReaderCache(w http.ResponseWriter, r *http.Request, content io.ReadSeeker, modTime time.Time, etag, contentType, cacheControl string) {
 	w.Header().Set("Content-Type", contentType)
-	setAssetHeaders(w, etag)
+	setAssetHeaders(w, etag, cacheControl)
 	http.ServeContent(w, r, "", modTime, content)
 }
 
-// setAssetHeaders applies the long-lived immutable cache policy and the wildcard
-// CORS header shared by every served asset (renders and icons). The bytes are
-// public, read-only, and content-addressed by their ETag, so any origin may read
-// them and a simple GET needs no preflight.
-func setAssetHeaders(w http.ResponseWriter, etag string) {
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+// setAssetHeaders applies the caller's cache policy and the wildcard CORS header
+// shared by every served asset. The bytes are public and read-only, so any origin
+// may read them and a simple GET needs no preflight.
+func setAssetHeaders(w http.ResponseWriter, etag, cacheControl string) {
+	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("Etag", `"`+etag+`"`)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 }
@@ -313,8 +340,10 @@ func fileETag(fi os.FileInfo) string {
 
 // notModified answers a conditional request whose validator already matches: it
 // sends the cache/CORS headers (so intermediaries keep caching) and a bare 304.
+// Only the immutable handlers take this path — /raw's 304 comes out of
+// http.ServeContent, which reuses the headers serveReaderCache already set.
 func notModified(w http.ResponseWriter, etag string) {
-	setAssetHeaders(w, etag)
+	setAssetHeaders(w, etag, cacheImmutable)
 	w.WriteHeader(http.StatusNotModified)
 }
 
@@ -828,6 +857,50 @@ func (s *server) handleBgm(w http.ResponseWriter, r *http.Request) {
 		ct = "application/json"
 	}
 	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), ct)
+}
+
+// ---------------------------------------------------------------------------
+// /raw handler — prebuilt JSON data tables (mobs.json, items.json, …) sitting in
+// RAW_DIR.
+//
+//	/raw/{name}.json  one data table, served as-is
+//
+// The name set is open-ended (new tables get dropped into the dir), so the
+// basename whitelist below is what keeps the lookup inside RAW_DIR: one flat
+// lowercase name, a .json extension, no dots and no slashes, hence no traversal.
+//
+// These go out under cacheRevalidate rather than the immutable policy every other
+// handler uses; the reason is on that constant.
+// ---------------------------------------------------------------------------
+
+var rawFilePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*\.json$`)
+
+func (s *server) handleRaw(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rest := strings.TrimPrefix(r.URL.Path, "/raw/")
+	if !rawFilePattern.MatchString(rest) {
+		http.NotFound(w, r)
+		return
+	}
+
+	f, err := os.Open(filepath.Join(s.cfg.rawDir, rest))
+	if err != nil {
+		http.NotFound(w, r) // unknown table, or raw data not generated yet
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+
+	s.serveReaderCache(w, r, f, fi.ModTime(), fileETag(fi), "application/json", cacheRevalidate)
 }
 
 // ---------------------------------------------------------------------------

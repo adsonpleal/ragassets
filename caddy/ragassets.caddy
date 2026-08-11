@@ -6,5 +6,13 @@
 # Both hostnames are served; each gets its own auto-provisioned Let's Encrypt cert.
 # Certificates live in /var/lib/caddy/.local/share/caddy — never delete them.
 ragassets.duckdns.org, assets.latam-tools.com.br {
+	# Compress the /raw data tables. They are the only text this host serves —
+	# everything else is PNG/APNG/GIF/MP3/WAV or already-deflated map blobs, which
+	# re-compress to nothing and would just burn CPU. items.json is 8.2 MB of
+	# highly repetitive JSON and gzips to ~1.1 MB, and three projects fetch it on
+	# every client update, so this is the single biggest byte saving available.
+	@raw path /raw/*
+	encode @raw zstd gzip
+
 	reverse_proxy localhost:8080
 }
