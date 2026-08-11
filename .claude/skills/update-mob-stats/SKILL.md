@@ -1,12 +1,12 @@
 ---
 name: update-mob-stats
-description: Rebuild the root mobs.json (monster stats — level, HP, EXP, race, size, element, boss/MVP) from the RagnaPlace Public API, using the client GRF for the monster id list. Use after a client update, when mobs.json is stale, or when a monster is missing from it.
+description: Rebuild resources/raw/mobs.json (monster stats — level, HP, EXP, race, size, element, boss/MVP) from the RagnaPlace Public API, using the client GRF for the monster id list. Use after a client update, when mobs.json is stale, or when a monster is missing from it.
 ---
 
 # Rebuild mobs.json from the RagnaPlace API
 
-`mobs.json` at the repo root is the one file here that is **not** extracted from
-the client GRF. It carries per-monster stats for the LATAM server:
+`resources/raw/mobs.json` is the one table served at `/raw` that is **not**
+extracted from the client GRF. It carries per-monster stats for the LATAM server:
 
 ```json
 { "id": 1039, "aegisId": "BAPHOMET", "name": "Bafomé", "boss": true, "mvp": true,
@@ -68,22 +68,29 @@ the id list has to come from somewhere — `datainfo/npcidentity.lub` in the GRF
    node tools/scrape-mobs.mjs --ids _scratch/mobids.json
    ```
 
-   Defaults to gateway `laro-pt` and the repo-root `mobs.json`; override with
+   Defaults to gateway `laro-pt` and `resources/raw/mobs.json`; override with
    `--gateway` / `--out` (e.g. `laro-es`, `laro-en` — `/v1/gateways` lists all 36).
    Ids that aren't monsters 404 and are skipped (~1900 of them are NPC/job
    sprites). Ids already in the existing `mobs.json` are folded into the
    candidate set, so a monster the client stops shipping doesn't silently vanish.
 
-3. Verify before committing:
+   **Back the current file up first** — it is no longer in git, so a bad run has
+   nothing to revert to, and refetching costs the whole API quota:
 
    ```bash
-   git diff --stat mobs.json
-   node -e "const m=require('./mobs.json');console.log(m.length,'mobs,',m.filter(x=>x.mvp).length,'MVP,',m.filter(x=>x.boss).length,'boss')"
+   cp resources/raw/mobs.json _scratch/mobs.prev.json
+   ```
+
+3. Verify before deploying:
+
+   ```bash
+   node -e "const a=require('./_scratch/mobs.prev.json'),b=require('./resources/raw/mobs.json');const f=m=>[m.length,m.filter(x=>x.mvp).length,m.filter(x=>x.boss).length].join('/');console.log('was',f(a),'now',f(b),'(mobs/MVP/boss)')"
    ```
 
    Expect the count to grow slightly after a client update and never to collapse.
    The tool refuses to write an empty result, but a big *drop* is still worth
-   investigating before committing.
+   investigating before shipping. Deploy with the `deploy` skill, which ships
+   `resources/raw` to the server that serves `/raw/mobs.json`.
 
 ## Notes and gotchas
 
@@ -122,9 +129,11 @@ the id list has to come from somewhere — `datainfo/npcidentity.lub` in the GRF
   `navi_mob_br.lub` packs a correct race per spawned mob if it ever matters.
 - The API still exposes more than `mobs.json` keeps — `drops`, `spawns`, `skills`,
   `image`, `walkSpeed`, `url`. Widen `toRecord()` if a consumer needs them. The
-  file is consumed outside this repo (the LATAM calculator fetches it straight
-  from `raw.githubusercontent.com/adsonpleal/ragassets/main/mobs.json`), so treat
-  removing or renaming a field as a breaking change.
+  file is consumed outside this repo (the LATAM calculator and the replay viewer
+  both fetch `https://assets.latam-tools.com.br/raw/mobs.json`), so treat removing
+  or renaming a field as a breaking change. It is served, not committed, so the
+  change goes live the moment `resources/raw` is deployed — there is no PR
+  reviewing it.
 - **Do not scrape the website.** The old `_payload.json` + devalue-hydration
   technique against `ragnaplace.com` is obsolete and the plain HTML routes sit
   behind a Cloudflare challenge. Everything goes through `api.ragnaplace.com`.

@@ -3,6 +3,56 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-08-11
+
+### Added
+- **`/raw/*` serves the client's data tables, making this the single source of
+  truth for game-file extraction.** `extract-grf.mjs --raw resources/raw` writes
+  `items.json`, `jobs.json`, `skills.json`, `randomopt.json`, `status.json`,
+  `classes.json` and `hair.json`, and the gateway serves them at
+  `/raw/<name>.json`. Until now latam-ro-calc, latamvisuais and ragreplaystats
+  each carried their own fork of the GRF reader and the Lua 5.1 VM and extracted
+  the client separately — four passes over a 4.3 GB GRF after every client
+  update, four things to fix when a `.lub` shifts. They now download these tables
+  and reshape them locally.
+
+  The tables are a deliberately *faithful* projection of the client rather than a
+  curated one: per-consumer naming overrides, the `[3]` slot-suffix formatting
+  and slot bitmasks stay in each consumer's own sync step. Two consequences worth
+  knowing: item `name` is the **bare** identified name with `slots` kept
+  separate, and items with no display name are kept with `name: null` because
+  ~640 of them still carry a renderable `view`. Each consumer's existing data
+  files were verified to rebuild byte-identically from these.
+
+  Items also carry **`spriteView`** and **`viewKind`** alongside the raw
+  `ClassNum` in `view`. Newer costumes ship `ClassNum: 0` and keep their real
+  view only in the client's accessory/robe name tables — 228 items in the current
+  client — so a costume catalogue built on `view` alone silently drops them, and
+  a few items' sprite lives in the *other* table from the one their equip slot
+  implies. `--effects` already resolved both to decide what it could render;
+  `items.json` now publishes them instead of leaving every consumer to pin the
+  exceptions by hand.
+
+### Changed
+- **`mobs.json` moved out of the repo to `/raw/mobs.json`.** It was the one
+  committed data file here; it now lives in the gitignored `resources/raw/`
+  alongside the extracted tables, so all published data has one delivery path.
+  Consumers that fetched it from `raw.githubusercontent.com` should switch to
+  `https://assets.latam-tools.com.br/raw/mobs.json`. `tools/scrape-mobs.mjs`
+  writes to the new location by default. Regenerating it costs a full
+  rate-limited walk of the RagnaPlace API, so the deployed copy is the one to
+  keep — a checkout no longer carries it.
+- **`/raw` is the one endpoint that is not immutably cached.** Everything else
+  here is content-addressed by its `ETag`, but these tables change at a stable
+  URL whenever the client does, so they are served with
+  `public, max-age=300, must-revalidate` instead of the year-long immutable
+  policy. `ETag`/`304` and wildcard CORS are unchanged.
+- **Caddy now compresses `/raw/*`.** These tables are the only text this host
+  serves — `items.json` is 8.2 MB raw and ~1.1 MB gzipped, fetched by three
+  projects on every client update. The `encode` directive is scoped to `/raw` on
+  purpose: every other response is already-compressed image, audio or map bytes.
+  Requires redeploying `caddy/ragassets.caddy`.
+
 ## 2026-08-10
 
 ### Fixed

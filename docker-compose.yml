@@ -15,6 +15,7 @@ services:
       MAPS_DIR: "/maps"
       BGM_DIR: "/bgm"
       SOUNDS_DIR: "/sounds"
+      RAW_DIR: "/raw"
       GATEWAY_PORT: "8080"
       GOMEMLIMIT: "500MiB"                  # keep GC honest on small hosts (prod uses the same value)
     mem_limit: 600m
@@ -25,6 +26,7 @@ services:
       - ./resources/maps:/maps:ro          # world-map bundles from extract-grf.mjs --maps (optional)
       - ./resources/bgm:/bgm:ro            # per-map background music from extract-grf.mjs --bgm (optional)
       - ./resources/sounds:/sounds:ro      # skill/effect/monster sound effects from extract-grf.mjs --sounds (optional)
+      - ./resources/raw:/raw:ro            # client data tables from extract-grf.mjs --raw (optional)
     ports:
       - "${GATEWAY_PORT:-8080}:8080"        # the only public-facing port
     restart: unless-stopped

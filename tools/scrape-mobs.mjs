@@ -1,8 +1,12 @@
 #!/usr/bin/env node
-// Rebuild the root mobs.json (monster stats) from the RagnaPlace Public API.
+// Rebuild resources/raw/mobs.json (monster stats) from the RagnaPlace Public API.
 //
 //   node tools/scrape-mobs.mjs --ids mobids.json
 //   node tools/scrape-mobs.mjs --ids mobids.json --gateway laro-es --out mobs-es.json
+//
+// The output lands in resources/raw/ (gitignored, like every other extracted
+// asset) and the gateway serves it at /raw/mobs.json. It used to be committed at
+// the repo root; consumers now fetch it over HTTP instead of from GitHub raw.
 //
 // The API (https://api.ragnaplace.com, spec at https://ro.ragnaplace.com/v1/openapi.json)
 // has no bulk mob endpoint — its /v1/<gateway>/search caps at 20 pages × 20 rows —
@@ -24,7 +28,7 @@
 // run resumes instead of re-spending the whole quota; it is removed on success, so
 // every completed run is fresh data rather than a replay of an old cache.
 
-import { readFileSync, writeFileSync, appendFileSync, existsSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,13 +57,13 @@ function parseArgs(argv) {
 function usage() {
   console.error(
     [
-      "Rebuild mobs.json from the RagnaPlace Public API.",
+      "Rebuild resources/raw/mobs.json from the RagnaPlace Public API.",
       "",
       "  node tools/scrape-mobs.mjs --ids <mobids.json> [--out mobs.json]",
       "                             [--gateway laro-pt] [--concurrency 8] [--fresh]",
       "",
       "  --ids     candidate id list from `extract-grf.mjs --mobids` (required)",
-      "  --out     output file (default: mobs.json at the repo root)",
+      "  --out     output file (default: resources/raw/mobs.json)",
       "  --gateway RagnaPlace gateway slug (default: laro-pt)",
       "  --fresh   discard a leftover <out>.partial.jsonl and re-fetch every id",
       "",
@@ -208,8 +212,9 @@ async function main() {
   }
 
   const gateway = args.gateway || DEFAULT_GATEWAY;
-  const outPath = resolve(args.out ? args.out : resolve(REPO_ROOT, "mobs.json"));
+  const outPath = resolve(args.out ? args.out : resolve(REPO_ROOT, "resources/raw/mobs.json"));
   const partialPath = `${outPath}.partial.jsonl`;
+  mkdirSync(dirname(outPath), { recursive: true });
   const concurrency = Number.isFinite(args.concurrency) && args.concurrency > 0 ? args.concurrency : 8;
 
   // Candidate ids: the client's list, plus whatever the current output already
