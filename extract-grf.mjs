@@ -1586,11 +1586,30 @@ function buildViewResolver(grf) {
   const robeG = tablesFrom("spriterobeid", "spriterobename");
   const acc = reverse(accG.get("AccNameTable"));
   const robe = reverse(robeG.get("RobeNameTable"), robeG.get("RobeNameTable_Eng"));
-  return (slots, resourceName) => {
+
+  // The view a costume renders with when iteminfo's ClassNum is 0 — common on
+  // newer costumes — recovered from the item's sprite resource name.
+  const resolveView = (slots, resourceName) => {
     const key = normRes(decodeClientString(resourceName));
     if (!key) return undefined;
     return (slots.includes("garment") ? robe : acc).get(key);
   };
+
+  // Which sprite table the view actually lives in. Normally that follows the
+  // equip slot (robe for Capa, accessory for the head slots), but a handful of
+  // items' description slot disagrees with where their sprite really is, and
+  // rendering them from the wrong table draws the wrong thing. Undefined when
+  // both tables (or neither) claim the id, i.e. when there is nothing to say.
+  const spriteKind = (view, resourceName) => {
+    const key = normRes(decodeClientString(resourceName));
+    if (!key || view == null) return undefined;
+    const isAcc = acc.get(key) === view;
+    const isRobe = robe.get(key) === view;
+    if (isAcc === isRobe) return undefined;
+    return isAcc ? "headgear" : "garment";
+  };
+
+  return { resolveView, spriteKind };
 }
 
 // Enumerate the effect-only costumes from System/iteminfo_new.lub: costume==true,
@@ -1604,7 +1623,7 @@ function buildEffectCostumes(grf, args) {
   }
   const tbl = runChunk(readFileSync(lubPath)).get("tbl");
   if (!(tbl instanceof LuaTable)) throw new Error("iteminfo: no `tbl` global");
-  const resolveView = buildViewResolver(grf);
+  const { resolveView } = buildViewResolver(grf);
 
   const effects = [];
   const excluded = [];
@@ -4132,22 +4151,35 @@ export function jobLabelsFromConstants(consts) {
 // that still carry a renderable `view`, and dropping them here would lose the
 // sprite ids the calculator's paper-doll needs; every consumer that wants named
 // items filters on `name` anyway.
-export function projectItems(tbl, aegisMap = new Map()) {
+//
+// `view` is the raw ClassNum. `spriteView` is the view the renderer actually
+// draws with: newer costumes ship ClassNum 0 and keep their real view only in
+// the client's accessory/robe name tables, so without the recovery a costume
+// simulator silently loses them (28 of them in the current client). The two stay
+// separate because a consumer that wants the literal client field should not
+// have to guess whether a value was recovered.
+export function projectItems(tbl, aegisMap = new Map(), views = null) {
   const out = [];
   if (!(tbl instanceof LuaTable)) return out;
   for (const [id, entry] of tbl.map) {
     if (typeof id !== "number" || !(entry instanceof LuaTable)) continue;
     const name = decodeClientString(entry.get("identifiedDisplayName")) || null;
-    const view = entry.get("ClassNum");
+    const classNum = entry.get("ClassNum");
+    const view = typeof classNum === "number" && classNum > 0 ? Math.round(classNum) : 0;
+    const equipSlots = parseSlots(entry.get("identifiedDescriptionName"));
+    const resourceName = entry.get("identifiedResourceName");
+    const spriteView = view || (views?.resolveView(equipSlots, resourceName) ?? 0);
     out.push({
       id,
       name,
       slots: Number(entry.get("slotCount") || 0),
       aegisName: aegisMap.get(id) ?? null,
-      resourceName: decodeClientString(entry.get("identifiedResourceName")) || null,
+      resourceName: decodeClientString(resourceName) || null,
       description: joinDescriptionLines(entry.get("identifiedDescriptionName")),
-      view: typeof view === "number" && view > 0 ? Math.round(view) : 0,
-      equipSlots: parseSlots(entry.get("identifiedDescriptionName")),
+      view,
+      spriteView,
+      viewKind: (spriteView && views?.spriteKind(spriteView, resourceName)) || null,
+      equipSlots,
       costume: entry.get("costume") === true,
     });
   }
@@ -4770,7 +4802,10 @@ function extractRawTables(grfPath, outDir, args) {
       ? parseAegisMap(Buffer.from(extractFile(grf, moveInfo)).toString("latin1"))
       : new Map();
     console.error(`items from ${lubPath} (${aegisMap.size} aegis names)`);
-    write("items.json", projectItems(runChunk(readFileSync(lubPath)).get("tbl"), aegisMap));
+    const items = projectItems(runChunk(readFileSync(lubPath)).get("tbl"), aegisMap, buildViewResolver(grf));
+    write("items.json", items);
+    const recovered = items.filter((i) => !i.view && i.spriteView).length;
+    console.error(`  ${recovered} views recovered from resource names (ClassNum 0)`);
 
     // Jobs — read positionally out of the constant pools, see parseLuaConstants.
     // classes.json below pairs the same two pools against the palette scan.

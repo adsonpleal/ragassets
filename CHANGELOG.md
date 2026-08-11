@@ -24,6 +24,15 @@ continuously (no version tags), so entries are grouped by date.
   ~640 of them still carry a renderable `view`. Each consumer's existing data
   files were verified to rebuild byte-identically from these.
 
+  Items also carry **`spriteView`** and **`viewKind`** alongside the raw
+  `ClassNum` in `view`. Newer costumes ship `ClassNum: 0` and keep their real
+  view only in the client's accessory/robe name tables — 228 items in the current
+  client — so a costume catalogue built on `view` alone silently drops them, and
+  a few items' sprite lives in the *other* table from the one their equip slot
+  implies. `--effects` already resolved both to decide what it could render;
+  `items.json` now publishes them instead of leaving every consumer to pin the
+  exceptions by hand.
+
 ### Changed
 - **`mobs.json` moved out of the repo to `/raw/mobs.json`.** It was the one
   committed data file here; it now lives in the gitignored `resources/raw/`

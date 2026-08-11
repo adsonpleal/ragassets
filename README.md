@@ -506,7 +506,7 @@ themselves.
 
 | Path | What you get |
 |---|---|
-| `GET /raw/items.json` | Every item: `id, name, slots, aegisName, resourceName, description, view, equipSlots, costume`. |
+| `GET /raw/items.json` | Every item: `id, name, slots, aegisName, resourceName, description, view, spriteView, viewKind, equipSlots, costume`. |
 | `GET /raw/jobs.json` | Every class: `id, jt, name, hasIcon`. |
 | `GET /raw/skills.json` | Skill `id` → `name`. |
 | `GET /raw/status.json` | Status-effect (EFST) `id` → `name`. |
@@ -524,6 +524,14 @@ consumer's own sync step, so this stays one unopinionated upstream.
 at display time, so `slots` is a separate number and a consumer that wants
 `"Espada [3]"` re-joins them. Items with no display name are kept with
 `name: null`, because ~640 of them still carry a renderable `view`.
+
+`view` is the literal client `ClassNum`; **`spriteView` is the one to render
+with**. Newer costumes ship `ClassNum: 0` and keep their real view only in the
+client's accessory/robe name tables, so `spriteView` falls back to that lookup
+(228 items in the current client) — a costume catalogue built on `view` alone
+silently loses them. `viewKind` (`"headgear"`/`"garment"`/`null`) says which of
+the two sprite tables the view lives in, which usually follows the equip slot but
+not always; rendering those few from the slot-implied table draws the wrong item.
 
 Unlike every other endpoint here these files are **mutable at a stable URL** —
 they change whenever the client does — so they are served with a short

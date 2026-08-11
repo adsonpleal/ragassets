@@ -653,3 +653,42 @@ test("paletteSwatches gives up when there is nothing to diff against", () => {
   // every palette identical — no dye region exists, so no swatch can be inferred
   assert.deepEqual(paletteSwatches([palette({ dye: [60, 60, 60] }), palette({ dye: [60, 60, 60] })]), [null, null]);
 });
+
+// Newer costumes ship ClassNum 0 and keep their real view only in the client's
+// accessory/robe name tables. `view` stays the literal client field so consumers
+// that want it aren't guessing; `spriteView` is what the renderer draws with.
+test("projectItems recovers spriteView when ClassNum is 0, leaving view alone", () => {
+  const views = {
+    resolveView: (slots, res) => (res === "recovered_hat" && slots.includes("top") ? 199 : undefined),
+    spriteKind: (view) => (view === 199 ? "headgear" : undefined),
+  };
+  const desc = luaTable([[1, "Equipa em: Topo"]]);
+  const items = projectItems(
+    luaTable([
+      [1, luaRecord({ identifiedDisplayName: "Chapéu", ClassNum: 42, identifiedResourceName: "plain_hat", identifiedDescriptionName: desc })],
+      [2, luaRecord({ identifiedDisplayName: "Orelhas", identifiedResourceName: "recovered_hat", identifiedDescriptionName: desc })],
+      [3, luaRecord({ identifiedDisplayName: "Nada", identifiedResourceName: "unknown", identifiedDescriptionName: desc })],
+    ]),
+    new Map(),
+    views,
+  );
+
+  // ClassNum present: view and spriteView agree, nothing was recovered
+  assert.equal(items[0].view, 42);
+  assert.equal(items[0].spriteView, 42);
+  // ClassNum 0 but the name tables know it — this is the row that would
+  // otherwise vanish from a costume catalogue
+  assert.equal(items[1].view, 0);
+  assert.equal(items[1].spriteView, 199);
+  assert.equal(items[1].viewKind, "headgear");
+  // nothing knows it: both stay 0 rather than becoming null/undefined
+  assert.equal(items[2].view, 0);
+  assert.equal(items[2].spriteView, 0);
+  assert.equal(items[2].viewKind, null);
+});
+
+test("projectItems works without a view resolver", () => {
+  const [item] = projectItems(luaTable([[1, luaRecord({ identifiedDisplayName: "X", ClassNum: 7 })]]));
+  assert.equal(item.spriteView, 7);
+  assert.equal(item.viewKind, null);
+});
