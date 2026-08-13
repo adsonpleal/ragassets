@@ -6,6 +6,61 @@ continuously (no version tags), so entries are grouped by date.
 ## 2026-08-13
 
 ### Added
+- **`/raw/skills.json` now carries each skill's `maxLevel`.** It is what makes
+  the `delay` arrays below readable — the client's window prints one row per
+  level, and the arrays themselves don't reliably say how many that is.
+
+  The value is the client's `MaxLv`, read from `SkillInfoz/SkillInfoList_data.lub`.
+  That file is the trap: the GRF also ships an un-suffixed `SkillInfoList.lub`
+  that parses cleanly, holds the same field and agrees on every `MaxLv` — while
+  being a **stale copy of the merged table**, one skill short (5383 Invocação do
+  Abismo). The live client builds `SkillInfoList_data` and folds the localized
+  `SkillInfoList_ptBR` names into it at load time, which is why the numbers now
+  come from the former and the names still come from the latter.
+
+  Reading it needed the Lua VM to grow real control flow: `_data.lub` ends with a
+  guarded `for k,v in pairs(…)` merge, the only branching in any data chunk the
+  extractor runs, and `JMP` had until now been a deliberate no-op. `JMP` moves
+  the pc, `TEST` follows Lua truthiness (`0` and `""` are true), and `TFORLOOP`
+  ends its loop immediately because the iterator would come from a call and calls
+  stay no-ops — so the chunk's *own* table is what gets read, never the
+  `SKILL_INFO_LIST` its unrun merge targets. Three VM tests pin that down, and
+  every other `/raw` table came out byte-identical afterwards.
+
+  1,558 of 1,558 skills carry a max level. Six unreleased ones carry the client's
+  own `MaxLv: 0` (`null` would mean no row at all), and the tooltips corroborate
+  the rest: of the 1,179 that spell out a *Nível máximo*, 1,178 match, the lone
+  exception (2535 Loja de Compras, `2` against a tooltip saying `1`) being the
+  same wording drift between client tables the descriptions already showed.
+
+- **`/raw/skills.json` now carries each skill's cast and delay times (`delay`).**
+  The client grew a *Conjuração e Espera* window — Fixa, Variável, Pós and
+  Recarga, one row per skill level — and the numbers behind it ship in
+  `SkillInfoz/SkillDelayList.lub`, a table nothing extracted until now. It is the
+  only automated source for them that is LATAM's own: the tooltip text says what
+  a skill does but never how long it takes, and external databases are keyed to
+  their own server's balance, not this one's.
+
+  `delay` is `{castFixed, castVariable, afterCast, cooldown}` in **milliseconds**
+  (the client's `SkillCastFixedDelay`, `SkillCastStatDelay`,
+  `SkillGlobalPostDelay` and `SkillSinglePostDelay`), each a per-level array
+  published **verbatim** — index `N-1` is level `N`, trailing zeros kept, nothing
+  padded. Array length is deliberately *not* normalised to `maxLevel`: it usually
+  matches (2,733 of the 3,044 columns), but 258 are padded past it and 53 stop
+  short — 52 of those a single value meaning "same at every level", one (399
+  Ataque Vital) five values for ten levels — so normalising would bake a guess
+  about that last case into every consumer. 939 of the 1,558 skills carry timings; the rest (passives, and
+  entries whose row the client left empty) keep `delay: null`, and a single
+  missing column stays `null` rather than `[0]` so it can't be read as an actual
+  zero delay. The id universe and every existing field are unchanged.
+
+  Spot-checked against the client: Grito de Guerra (155) comes out
+  300/1000/1000/30000 ms, exactly the 0.3s / 1s / 1s / 30s the window prints, and
+  Nevasca's variable cast climbs 4.5s → 6.3s across its ten levels. The run now
+  also fails outright if fewer than a quarter of the skills come back timed, the
+  same guard the descriptions have. `SkillFlag` (8 skills) is dropped: its values
+  are `SKFLAG_*` constants no shipped lua file defines.
+
 - **`/raw/skills.json` now carries each skill's pt-BR `description`.** The table
   was `{id, name}` only, so the one place the client spells out what a skill
   actually does — its in-game tooltip — had no automated path out of the GRF at

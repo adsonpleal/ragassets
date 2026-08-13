@@ -508,7 +508,7 @@ themselves.
 |---|---|
 | `GET /raw/items.json` | Every item: `id, name, slots, aegisName, resourceName, description, view, spriteView, viewKind, equipSlots, costume`. |
 | `GET /raw/jobs.json` | Every class: `id, jt, name, hasIcon`. |
-| `GET /raw/skills.json` | Every skill: `id, name, description`. |
+| `GET /raw/skills.json` | Every skill: `id, name, maxLevel, description, delay`. |
 | `GET /raw/status.json` | Status-effect (EFST) `id` → `name`. |
 | `GET /raw/randomopt.json` | Random-option `id` → display template (`"ATQM +%d"`). |
 | `GET /raw/classes.json` | Classes with palettes, swatches and alternative outfits. |
@@ -543,6 +543,36 @@ client. The tooltips come from `SkillInfoz/SkillDescript.lub` at its **full**
 `data/luafiles514/…` path: the GRF also carries a `data/spanish/` copy of that
 same file, and it is the *largest* of the three, so a suffix-only lookup quietly
 publishes Spanish.
+
+`delay` on `skills.json` is the client's *Conjuração e Espera* window — the four
+columns it prints, **in milliseconds**, one entry per skill level:
+
+```json
+"delay": {
+  "castFixed":    [1500, 1500, 1500, …],   // Fixa — cast time nothing reduces
+  "castVariable": [4500, 4700, 4900, …],   // Variável — the DEX/INT-reducible part
+  "afterCast":    [1000, 1000, 1000, …],   // Pós — blocks every skill afterwards
+  "cooldown":     [6000, 6000, 6000, …]    // Recarga — blocks only this skill
+}
+```
+
+The arrays are **verbatim**: index `N-1` is level `N`, trailing zeros are kept
+and nothing is padded out. Their length is *usually* `maxLevel` (2,733 of the
+3,044 columns) but not reliably — 258 are padded past it and 53 stop short, 52 of
+those holding the single value that plainly means "same at every level" — so
+clamp on `maxLevel` and repeat the last entry rather than trusting the length. A
+skill the client gives no timings — every passive, and 619 of the 1,558 in total
+— has `delay: null`, and a single column the client omits is `null` rather than
+`[0]`, so "says nothing" never reads as "says zero". 939 skills carry timings in
+the current client.
+
+`maxLevel` is the client's `MaxLv`, and it comes from `SkillInfoList_data.lub`
+— **not** from the `SkillInfoList.lub` sitting next to it, which is a stale copy
+of the same table, one skill short (5383 Invocação do Abismo). Six skills the
+client never released carry `MaxLv: 0`; that zero is the client's own, while a
+skill with no row at all would be `null`. The tooltips corroborate the numbers:
+of the 1,179 that spell out a *Nível máximo*, 1,178 match, the one exception
+(2535 Loja de Compras) being wording drift between the two client tables.
 
 Unlike every other endpoint here these files are **mutable at a stable URL** —
 they change whenever the client does — so they are served with a short
@@ -732,8 +762,9 @@ the step that lets every other project stop extracting the client for itself, so
 re-run it after a client update. It reads `System/iteminfo_new.lub` from next to
 the GRF (override with `--iteminfo`) plus the job, skill, status and
 random-option tables from inside it, and refuses to write an empty table — or a
-`skills.json` where fewer than half the skills kept their description, which is
-what reading the tooltips from the wrong chunk looks like.
+`skills.json` where fewer than half the skills kept their description (or fewer
+than a quarter their cast/delay times), which is what reading the tooltips or the
+timings from the wrong chunk looks like.
 
 `mobs.json` is the one file in `resources/raw/` this doesn't produce — it isn't
 in the client at all, see [Monster stats](#monster-stats-rawmobsjson).

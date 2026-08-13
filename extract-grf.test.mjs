@@ -11,6 +11,7 @@ import {
   projectItems,
   projectSkills,
   projectStatus,
+  runChunk,
   projectRandomOpt,
   paletteSwatches,
   parseFogTable,
@@ -368,7 +369,7 @@ test("parseAegisMap keeps only clean aegis tokens from the trailing comment", ()
 
 // Build a minimal but structurally complete Lua 5.1 chunk, so the constant-pool
 // walk is exercised against real offsets rather than a hand-waved buffer.
-function luaChunk({ constants = [], protos = [], codeCount = 0, lineInfo = 0, locals = [], upvalues = [] } = {}) {
+function luaChunk({ constants = [], protos = [], code = [], codeCount = code.length, lineInfo = 0, locals = [], upvalues = [] } = {}) {
   const parts = [];
   const u32 = (n) => {
     const b = Buffer.alloc(4);
@@ -380,7 +381,9 @@ function luaChunk({ constants = [], protos = [], codeCount = 0, lineInfo = 0, lo
   parts.push(str("@test.lua"));
   parts.push(u32(0), u32(0)); // linedefined, lastlinedefined
   parts.push(Buffer.from([0, 0, 0, 2])); // nups, numparams, is_vararg, maxstacksize
-  parts.push(u32(codeCount), Buffer.alloc(codeCount * 4)); // code
+  const codeBuf = Buffer.alloc(codeCount * 4);
+  code.forEach((word, i) => codeBuf.writeUInt32LE(word >>> 0, i * 4));
+  parts.push(u32(codeCount), codeBuf); // code
   parts.push(u32(constants.length));
   for (const k of constants) {
     if (k === null) parts.push(Buffer.from([0]));
@@ -401,6 +404,82 @@ function luaChunk({ constants = [], protos = [], codeCount = 0, lineInfo = 0, lo
   const header = Buffer.from([0x1b, 0x4c, 0x75, 0x61, 0x51, 0, 1, 4, 4, 4, 8, 0]);
   return Buffer.concat([header, body]);
 }
+
+// Lua 5.1 instruction encoders, so the branch tests below read as the ops they
+// assemble rather than as magic numbers.
+const iABC = (op, a, b, c) => (op | (a << 6) | (c << 14) | (b << 23)) >>> 0;
+const iABx = (op, a, bx) => (op | (a << 6) | (bx << 14)) >>> 0;
+const iAsBx = (op, a, sbx) => iABx(op, a, sbx + 131071);
+const OP = { LOADK: 1, GETGLOBAL: 5, SETGLOBAL: 7, NEWTABLE: 10, JMP: 22, TEST: 26, RETURN: 30, TFORLOOP: 33 };
+
+// SkillInfoList_data.lub ends with `if <table> then for k,v in pairs(<table>) do
+// … end end`, the only data chunk with real control flow — and the one the skill
+// max levels come from. TEST has to fall *into* the body for a table that
+// exists, and the generic for has to end (its iterator comes from a call, and
+// calls are no-ops here) instead of jumping back into itself forever.
+test("the VM follows a guarded pairs() loop: enters the body, ends the loop", () => {
+  const globals = runChunk(
+    luaChunk({
+      constants: ["SkillInfoList_data", "entered", "pairs"],
+      code: [
+        iABC(OP.NEWTABLE, 0, 0, 0),
+        iABx(OP.SETGLOBAL, 0, 0), // SkillInfoList_data = {}
+        iABx(OP.GETGLOBAL, 1, 0), // R1 = SkillInfoList_data — a table, so true
+        iABC(OP.TEST, 1, 0, 0), //   if it: step over the jump that skips the body
+        iAsBx(OP.JMP, 0, 2), //      (skipped) past the loop
+        iABC(OP.NEWTABLE, 2, 0, 0),
+        iABx(OP.SETGLOBAL, 2, 1), // entered = {} — only reached inside the body
+        iABx(OP.GETGLOBAL, 3, 2), // R3 = pairs — nothing this VM can call
+        iABC(OP.TFORLOOP, 3, 0, 1),
+        iAsBx(OP.JMP, 0, -5), //     (skipped) back into the loop body
+        iABC(OP.RETURN, 0, 1, 0),
+      ],
+    }),
+  );
+
+  assert.ok(globals.get("SkillInfoList_data") instanceof LuaTable);
+  assert.ok(globals.get("entered") instanceof LuaTable);
+});
+
+// The mirror case: a nil condition must take the jump and skip the body. Lua
+// truthiness is the point — only nil and false are false, so a JS `if (R[a])`
+// would wrongly skip a body guarded by 0 or "".
+test("the VM jumps over a guarded body when the condition is nil", () => {
+  const globals = runChunk(
+    luaChunk({
+      constants: ["missing", "entered"],
+      code: [
+        iABx(OP.GETGLOBAL, 0, 0), // R0 = missing — nil
+        iABC(OP.TEST, 0, 0, 0),
+        iAsBx(OP.JMP, 0, 2), //      taken: past the body
+        iABC(OP.NEWTABLE, 1, 0, 0),
+        iABx(OP.SETGLOBAL, 1, 1), // entered = {} — must not run
+        iABC(OP.RETURN, 0, 1, 0),
+      ],
+    }),
+  );
+
+  assert.equal(globals.get("entered"), undefined);
+});
+
+test("the VM treats 0 and \"\" as true, the way Lua does", () => {
+  for (const zero of [0, ""]) {
+    const globals = runChunk(
+      luaChunk({
+        constants: [zero, "entered"],
+        code: [
+          iABx(OP.LOADK, 0, 0), // R0 = 0 / "" — false in JS, true in Lua
+          iABC(OP.TEST, 0, 0, 0),
+          iAsBx(OP.JMP, 0, 2),
+          iABC(OP.NEWTABLE, 1, 0, 0),
+          iABx(OP.SETGLOBAL, 1, 1),
+          iABC(OP.RETURN, 0, 1, 0),
+        ],
+      }),
+    );
+    assert.ok(globals.get("entered") instanceof LuaTable, `${JSON.stringify(zero)} should be truthy`);
+  }
+});
 
 // Regression: every section is length-prefixed, so a walker that advances by the
 // payload size but forgets the count it just read lands 4 bytes short and starts
@@ -576,8 +655,8 @@ test("projectSkills and projectRandomOpt key by numeric id and drop nameless row
     ]),
   );
   assert.deepEqual(skills, [
-    { id: 1, name: "Habilidades Básicas", description: null },
-    { id: 2, name: "Cura", description: null },
+    { id: 1, name: "Habilidades Básicas", maxLevel: null, description: null, delay: null },
+    { id: 2, name: "Cura", maxLevel: null, description: null, delay: null },
   ]);
 
   assert.deepEqual(projectRandomOpt(luaTable([[1, "HP máx. +%d"], ["VAR_MAXHP", "ignored"]])), [
@@ -599,9 +678,77 @@ test("projectSkills joins the SKILL_DESCRIPT lines and keeps undescribed skills"
     ]),
   );
   assert.deepEqual(skills, [
-    { id: 1, name: "Habilidades Básicas", description: null },
-    { id: 28, name: "Cura", description: "Cura\nTipo: ^777777Ativa^000000\n" },
+    { id: 1, name: "Habilidades Básicas", maxLevel: null, description: null, delay: null },
+    { id: 28, name: "Cura", maxLevel: null, description: "Cura\nTipo: ^777777Ativa^000000\n", delay: null },
   ]);
+});
+
+// SKILL_DELAY_LIST is the third table keyed by the same ids — the client's
+// "Conjuração e Espera" window. Its per-level arrays go out verbatim (trailing
+// zeros kept, nothing padded to a max level), and a column the client omits
+// stays null so it can't be read as a zero delay.
+test("projectSkills publishes the cast/delay arrays verbatim, per column", () => {
+  const skills = projectSkills(
+    luaTable([
+      [155, luaRecord({ SkillName: "Grito de Guerra" })],
+      [28, luaRecord({ SkillName: "Cura" })],
+      [1, luaRecord({ SkillName: "Habilidades Básicas" })],
+    ]),
+    null,
+    luaTable([
+      [
+        155,
+        luaRecord({
+          SkillCastFixedDelay: luaTable([[1, 300], [2, 0], [3, 0]]),
+          SkillCastStatDelay: luaTable([[1, 1000], [2, 0], [3, 0]]),
+          SkillGlobalPostDelay: luaTable([[1, 1000], [2, 0], [3, 0]]),
+          SkillSinglePostDelay: luaTable([[1, 30000], [2, 0], [3, 0]]),
+        }),
+      ],
+      // only one column, and a flag list this VM can't resolve
+      [28, luaRecord({ SkillFlag: luaTable([]), SkillGlobalPostDelay: luaTable([[1, 500], [2, 500]]) })],
+      // a row the client left empty is the same as no row at all
+      [1, luaRecord({ SkillFlag: luaTable([]) })],
+    ]),
+  );
+
+  assert.deepEqual(skills[2].delay, {
+    castFixed: [300, 0, 0],
+    castVariable: [1000, 0, 0],
+    afterCast: [1000, 0, 0],
+    cooldown: [30000, 0, 0],
+  });
+  assert.deepEqual(skills[1].delay, {
+    castFixed: null,
+    castVariable: null,
+    afterCast: [500, 500],
+    cooldown: null,
+  });
+  assert.equal(skills[0].delay, null);
+});
+
+// maxLevel comes from a fourth table (SkillInfoList_data), and the arrays above
+// are not a substitute for it: the client pads and truncates them freely, so a
+// skill can carry ten entries for one level.
+test("projectSkills reads maxLevel off the info table, not off the delay arrays", () => {
+  const skills = projectSkills(
+    luaTable([
+      [155, luaRecord({ SkillName: "Grito de Guerra" })],
+      [89, luaRecord({ SkillName: "Nevasca" })],
+      [700, luaRecord({ SkillName: "Grito Ameaçador" })],
+    ]),
+    null,
+    luaTable([[155, luaRecord({ SkillCastFixedDelay: luaTable([[1, 300], [2, 0], [3, 0]]) })]]),
+    luaTable([
+      [155, luaRecord({ MaxLv: 1, SpAmount: luaTable([[1, 8]]) })],
+      [89, luaRecord({ MaxLv: 10 })],
+      // a row with no MaxLv is the same as no row: null, never 0
+      [700, luaRecord({})],
+    ]),
+  );
+
+  assert.deepEqual(skills.map((s) => [s.id, s.maxLevel]), [[89, 10], [155, 1], [700, null]]);
+  assert.equal(skills[1].delay.castFixed.length, 3); // padded past its one level
 });
 
 // descript[1] is the tooltip title: sometimes a bare string, sometimes a

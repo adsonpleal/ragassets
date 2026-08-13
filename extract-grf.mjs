@@ -841,7 +841,25 @@ function execute(proto, globals) {
       case OP.CALL: break; // ignore calls — data chunks build tables, not effects
       case OP.TAILCALL: break;
       case OP.RETURN: return; // end of chunk
-      case OP.JMP: break; // no real branching in data chunks
+      // Every data table but one is straight-line code. SkillInfoList_data.lub
+      // ends with a guarded `for k,v in pairs(...)` that folds the localized
+      // names in, so the three ops that shape it are real here: the jump moves
+      // the pc (sBx is biased by MAXARG_sBx), and TEST/TFORLOOP each decide
+      // whether the jump that follows them runs at all.
+      case OP.JMP: pc += bx - 131071; break;
+      case OP.TEST: {
+        // lvm.c: jump when `l_isfalse(RA) != C`; otherwise step over the jump.
+        // Lua truthiness, not JS — 0 and "" are true, only nil and false are not.
+        const isFalse = R[a] === undefined || R[a] === false;
+        if ((isFalse ? 1 : 0) === c) pc++;
+        break;
+      }
+      // A generic for is driven by calling its iterator, and CALL is a no-op
+      // here, so there is never a first value to loop over: skip the jump back
+      // into the body and let the loop end. This is why running that chunk
+      // leaves the copies those loops would have made unmade — read the table
+      // the chunk *builds*, not the one it merges into.
+      case OP.TFORLOOP: pc++; break;
       default:
         throw new Error(`unimplemented opcode ${op} at pc ${pc - 1}`);
     }
@@ -855,7 +873,9 @@ function runChunkInto(bytes, globals) {
   return globals;
 }
 
-function runChunk(bytes) {
+// Exported for the VM's own tests: the branch ops above are the one part of it
+// whose behaviour can't be read off a projected table.
+export function runChunk(bytes) {
   return runChunkInto(bytes, new LuaTable());
 }
 
@@ -4045,11 +4065,17 @@ const RAW_LUB_PATHS = {
   pcjobnamegender: "data/luafiles514/lua files/datainfo/pcjobnamegender.lub",
   skillid: "data/luafiles514/lua files/skillinfoz/skillid.lub",
   skillinfolist: "data/luafiles514/lua files/skillinfoz/skillinfolist_ptbr.lub",
+  // The client splits this table in two: _data.lub holds every skill's numbers
+  // and _ptBR.lub above only its names. The un-suffixed SkillInfoList.lub is
+  // still shipped and still parses, but it is a stale copy of the merge — it is
+  // one skill (5383) short of both of these, so the numbers come from _data.
+  skillinfodata: "data/luafiles514/lua files/skillinfoz/skillinfolist_data.lub",
   // Full path, deliberately: the GRF also ships this file under data/spanish/
   // and data/english/, and the Spanish copy is the LARGEST of the three — so a
   // suffix-only want ("luafiles514/lua files/…") would make findBestEntry hand
   // back Spanish tooltips that look perfectly valid until someone reads them.
   skilldescript: "data/luafiles514/lua files/skillinfoz/skilldescript.lub",
+  skilldelay: "data/luafiles514/lua files/skillinfoz/skilldelaylist.lub",
   enumvar: "data/luafiles514/lua files/datainfo/enumvar.lub",
   randomopt: "data/luafiles514/lua files/datainfo/addrandomoptionnametable_ptbr.lub",
   efstids: "data/luafiles514/lua files/stateicon/efstids.lub",
@@ -4226,8 +4252,8 @@ function projectNamed(tbl, nameOf) {
 //
 // A skill with no description block keeps `description: null` rather than being
 // dropped or emptied: consumers index skills.json by id and expect every named
-// skill to stay listed.
-export function projectSkills(list, descriptions = null) {
+// skill to stay listed. `delay` and `maxLevel` follow the same rule.
+export function projectSkills(list, descriptions = null, delays = null, info = null) {
   const out = [];
   if (!(list instanceof LuaTable)) return out;
   for (const [key, entry] of list.map) {
@@ -4235,9 +4261,60 @@ export function projectSkills(list, descriptions = null) {
     const name = entry instanceof LuaTable ? decodeClientString(entry.get("SkillName")) : null;
     if (!name) continue;
     const id = Math.round(key);
-    out.push({ id, name, description: joinDescriptionLines(descriptions?.get(id)) || null });
+    const maxLv = info?.get(id) instanceof LuaTable ? info.get(id).get("MaxLv") : null;
+    out.push({
+      id,
+      name,
+      maxLevel: typeof maxLv === "number" ? Math.round(maxLv) : null,
+      description: joinDescriptionLines(descriptions?.get(id)) || null,
+      delay: skillDelay(delays?.get(id)),
+    });
   }
   return out.sort((a, b) => a.id - b.id);
+}
+
+// SKILL_DELAY_LIST is what the client's "Conjuração e Espera" window prints: one
+// row per skill level, in milliseconds. The client's field names say how each
+// number behaves rather than what the window calls it, so both are kept here —
+// the window's columns are Fixa, Variável, Pós and Recarga, in this order.
+const SKILL_DELAY_FIELDS = {
+  castFixed: "SkillCastFixedDelay", // Fixa — cast time no stat/gear reduces
+  castVariable: "SkillCastStatDelay", // Variável — the DEX/INT-reducible part
+  afterCast: "SkillGlobalPostDelay", // Pós — blocks *every* skill afterwards
+  cooldown: "SkillSinglePostDelay", // Recarga — blocks only this skill
+};
+
+// The per-level arrays are published exactly as the client stores them: no
+// padding invented, no trailing zeros trimmed, index N-1 = level N. Their length
+// is *usually* the skill's `maxLevel` (2,733 of the 3,044 columns in the current
+// client) but not reliably: 258 are padded past it, and 53 stop short — 52 of
+// those holding a single value that plainly means "same at every level", one
+// (399 Ataque Vital) five values for ten levels. Normalising them here would
+// bake a guess about that last case into every consumer, so the raw shape goes
+// out next to `maxLevel` and each consumer clamps and fills as it prefers.
+//
+// A skill the client gives no timings at all — no row, or a row holding only the
+// `SkillFlag` list — gets `delay: null`, not an object of nulls; likewise a
+// single missing column stays null rather than becoming `[0]`, so "the client
+// says nothing" never reads as "the client says zero". `SkillFlag` itself is
+// dropped: its entries are `SKFLAG_*` constants no shipped lua file defines
+// (8 skills carry one), so they arrive as nothing this VM can resolve.
+function skillDelay(row) {
+  if (!(row instanceof LuaTable)) return null;
+  const out = {};
+  let any = false;
+  for (const [key, field] of Object.entries(SKILL_DELAY_FIELDS)) {
+    const arr = row.get(field);
+    const levels = [];
+    if (arr instanceof LuaTable) {
+      // Read by index rather than iterating the map: the arrays are contiguous
+      // 1..n, and indexing keeps level order independent of insertion order.
+      for (let lv = 1; typeof arr.get(lv) === "number"; lv++) levels.push(Math.round(arr.get(lv)));
+    }
+    out[key] = levels.length ? levels : null;
+    if (levels.length) any = true;
+  }
+  return any ? out : null;
 }
 
 // StateIconList entries hold the tooltip under `descript`; descript[1] is the
@@ -4861,13 +4938,43 @@ function extractRawTables(grfPath, outDir, args) {
     if (!(skillDescript instanceof LuaTable)) {
       throw new Error(`${RAW_LUB_PATHS.skilldescript}: no SKILL_DESCRIPT table`);
     }
-    const skills = projectSkills(skillNames, skillDescript);
+    // The cast/delay table is keyed by the same SKID consts again, and again
+    // runs into its own globals so no fallback can confuse the three.
+    const skillDelayList = globalsOf("skillid", "skilldelay").get("SKILL_DELAY_LIST");
+    if (!(skillDelayList instanceof LuaTable)) {
+      throw new Error(`${RAW_LUB_PATHS.skilldelay}: no SKILL_DELAY_LIST table`);
+    }
+    // Max levels come from the chunk that *builds* SkillInfoList_data, not from
+    // the SKILL_INFO_LIST it then merges the names into: that merge is a
+    // `pairs()` loop this VM deliberately doesn't run, so the global it targets
+    // is left empty (see OP.TFORLOOP) and only looks like the table to read.
+    const skillInfo = globalsOf("skillid", "skillinfodata").get("SkillInfoList_data");
+    if (!(skillInfo instanceof LuaTable)) {
+      throw new Error(`${RAW_LUB_PATHS.skillinfodata}: no SkillInfoList_data table`);
+    }
+    const skills = projectSkills(skillNames, skillDescript, skillDelayList, skillInfo);
     const described = skills.filter((s) => s.description).length;
-    console.error(`skills: ${described}/${skills.length} carry a description`);
+    const timed = skills.filter((s) => s.delay).length;
+    const levelled = skills.filter((s) => s.maxLevel !== null).length;
+    console.error(
+      `skills: ${described}/${skills.length} carry a description, ${timed} carry cast/delay times, ${levelled} a max level`,
+    );
+    // Every named skill has a max level in the current client, so anything short
+    // of all of them means the two tables have drifted apart, not that the
+    // client stopped shipping one.
+    if (levelled < skills.length) {
+      console.error(`  ! ${skills.length - levelled} skills have no MaxLv in ${RAW_LUB_PATHS.skillinfodata}`);
+    }
     // A wholesale miss means the tooltips came from the wrong chunk (or a
     // re-keyed one), which reads downstream as "the client dropped them".
     if (described < skills.length * 0.5) {
       throw new Error(`skills.json: only ${described}/${skills.length} descriptions — check ${RAW_LUB_PATHS.skilldescript}`);
+    }
+    // Same trap for the timings, at a lower bar: only ~60% of the named skills
+    // have a delay row at all (passives never do), so the failure to catch is
+    // the table going empty, not it being partial.
+    if (timed < skills.length * 0.25) {
+      throw new Error(`skills.json: only ${timed}/${skills.length} with cast/delay times — check ${RAW_LUB_PATHS.skilldelay}`);
     }
     write("skills.json", skills);
 
