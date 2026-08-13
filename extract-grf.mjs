@@ -4045,6 +4045,11 @@ const RAW_LUB_PATHS = {
   pcjobnamegender: "data/luafiles514/lua files/datainfo/pcjobnamegender.lub",
   skillid: "data/luafiles514/lua files/skillinfoz/skillid.lub",
   skillinfolist: "data/luafiles514/lua files/skillinfoz/skillinfolist_ptbr.lub",
+  // Full path, deliberately: the GRF also ships this file under data/spanish/
+  // and data/english/, and the Spanish copy is the LARGEST of the three — so a
+  // suffix-only want ("luafiles514/lua files/…") would make findBestEntry hand
+  // back Spanish tooltips that look perfectly valid until someone reads them.
+  skilldescript: "data/luafiles514/lua files/skillinfoz/skilldescript.lub",
   enumvar: "data/luafiles514/lua files/datainfo/enumvar.lub",
   randomopt: "data/luafiles514/lua files/datainfo/addrandomoptionnametable_ptbr.lub",
   efstids: "data/luafiles514/lua files/stateicon/efstids.lub",
@@ -4197,10 +4202,11 @@ function joinDescriptionLines(desc) {
   return lines.join("\n");
 }
 
-// The three name tables are the same shape — numeric id -> a value the name has
-// to be dug out of — so they share one walk and differ only in how deep the name
-// is buried. Rows without a name are dropped rather than emitted as null: unlike
-// items, an unnamed skill/status/option has nothing else worth publishing.
+// The name tables are the same shape — numeric id -> a value the name has to be
+// dug out of — so they share one walk and differ only in how deep the name is
+// buried. Rows without a name are dropped rather than emitted as null: unlike
+// items, an unnamed status/option has nothing else worth publishing. (Skills
+// have the same rule but a second column, so they walk this shape themselves.)
 function projectNamed(tbl, nameOf) {
   const out = [];
   if (!(tbl instanceof LuaTable)) return out;
@@ -4212,8 +4218,26 @@ function projectNamed(tbl, nameOf) {
   return out.sort((a, b) => a.id - b.id);
 }
 
-export function projectSkills(list) {
-  return projectNamed(list, (e) => (e instanceof LuaTable ? decodeClientString(e.get("SkillName")) : null));
+// Skills carry their tooltip in a second table (SKILL_DESCRIPT), keyed by the
+// same SKID consts: id -> the array of lines the client stacks in the tooltip.
+// It is joined exactly like an item's description — ^RRGGBB colour codes and
+// line breaks kept, nothing reflowed — because the pt-BR client text is what
+// consumers treat as the source of truth for what a skill actually does.
+//
+// A skill with no description block keeps `description: null` rather than being
+// dropped or emptied: consumers index skills.json by id and expect every named
+// skill to stay listed.
+export function projectSkills(list, descriptions = null) {
+  const out = [];
+  if (!(list instanceof LuaTable)) return out;
+  for (const [key, entry] of list.map) {
+    if (typeof key !== "number") continue;
+    const name = entry instanceof LuaTable ? decodeClientString(entry.get("SkillName")) : null;
+    if (!name) continue;
+    const id = Math.round(key);
+    out.push({ id, name, description: joinDescriptionLines(descriptions?.get(id)) || null });
+  }
+  return out.sort((a, b) => a.id - b.id);
 }
 
 // StateIconList entries hold the tooltip under `descript`; descript[1] is the
@@ -4828,9 +4852,24 @@ function extractRawTables(grfPath, outDir, args) {
       return g;
     };
 
-    // skillid.lub defines SKID, which skillinfolist keys itself by.
-    const skillGlobals = globalsOf("skillid", "skillinfolist");
-    write("skills.json", projectSkills(namedTable(skillGlobals, "SkillInfoList_string", "SKID")));
+    // skillid.lub defines SKID, which skillinfolist and skilldescript both key
+    // themselves by; the names come from the former, the tooltips the latter.
+    // They run into separate globals so that namedTable's "biggest table"
+    // fallback can never mistake SKILL_DESCRIPT for the skill name table.
+    const skillNames = namedTable(globalsOf("skillid", "skillinfolist"), "SkillInfoList_string", "SKID");
+    const skillDescript = globalsOf("skillid", "skilldescript").get("SKILL_DESCRIPT");
+    if (!(skillDescript instanceof LuaTable)) {
+      throw new Error(`${RAW_LUB_PATHS.skilldescript}: no SKILL_DESCRIPT table`);
+    }
+    const skills = projectSkills(skillNames, skillDescript);
+    const described = skills.filter((s) => s.description).length;
+    console.error(`skills: ${described}/${skills.length} carry a description`);
+    // A wholesale miss means the tooltips came from the wrong chunk (or a
+    // re-keyed one), which reads downstream as "the client dropped them".
+    if (described < skills.length * 0.5) {
+      throw new Error(`skills.json: only ${described}/${skills.length} descriptions — check ${RAW_LUB_PATHS.skilldescript}`);
+    }
+    write("skills.json", skills);
 
     // enumvar defines the consts the random-option name table may key by.
     write("randomopt.json", projectRandomOpt(globalsOf("enumvar", "randomopt").get("NameTable_VAR")));

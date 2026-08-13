@@ -3,6 +3,36 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-08-13
+
+### Added
+- **`/raw/skills.json` now carries each skill's pt-BR `description`.** The table
+  was `{id, name}` only, so the one place the client spells out what a skill
+  actually does — its in-game tooltip — had no automated path out of the GRF at
+  all. latam-ro-calc's `skill-meta.generated.ts` came from a single hand-run
+  extraction in July 2026 and has been maintained by hand since, which meant any
+  skill it never catalogued (Fúria Solar 435 and Fúria Lunar 436, the two that
+  prompted this) simply had no text to write a formula from. The usual external
+  references answer 403/402 to anything automated, and divine-pride and the Sigma
+  blog disagree with each other and with LATAM, so the client's own pt-BR text is
+  the source of truth here.
+
+  The text is **raw**, exactly like `items.json`: `^RRGGBB` colour codes and line
+  breaks preserved, nothing reflowed. Skills whose tooltip the client ships empty
+  or doesn't ship at all keep `description: null` and stay listed — 283 of the
+  1,558 (149 empty blocks, 134 with no entry), so the id universe is unchanged.
+
+  Two traps are pinned down in code, both of which produce plausible-looking
+  wrong output: the tooltips are read from `SkillDescript.lub` at its **full**
+  `data/luafiles514/…` path, because the GRF's `data/spanish/` copy of that same
+  file is the largest of the three and a suffix-only lookup returns Spanish; and
+  the run now fails outright if fewer than half the skills come back described.
+  `name` is untouched, and the descriptions corroborate it: each tooltip opens
+  with the skill's own name, and 1,255 of the 1,275 match the published `name`
+  exactly — the 20 that differ are wording drift between the two client tables
+  ("Passos de Salamandra" / "Passos da Salamandra"), not a mispairing. The
+  contested 5471/5473 pair agrees.
+
 ## 2026-08-11
 
 ### Added

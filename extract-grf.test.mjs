@@ -576,12 +576,31 @@ test("projectSkills and projectRandomOpt key by numeric id and drop nameless row
     ]),
   );
   assert.deepEqual(skills, [
-    { id: 1, name: "Habilidades Básicas" },
-    { id: 2, name: "Cura" },
+    { id: 1, name: "Habilidades Básicas", description: null },
+    { id: 2, name: "Cura", description: null },
   ]);
 
   assert.deepEqual(projectRandomOpt(luaTable([[1, "HP máx. +%d"], ["VAR_MAXHP", "ignored"]])), [
     { id: 1, name: "HP máx. +%d" },
+  ]);
+});
+
+// SKILL_DESCRIPT is a second table keyed by the same ids; its lines are joined
+// verbatim (colour codes and breaks kept), and a skill it has no entry for stays
+// listed with a null description rather than dropping out of skills.json.
+test("projectSkills joins the SKILL_DESCRIPT lines and keeps undescribed skills", () => {
+  const skills = projectSkills(
+    luaTable([
+      [28, luaRecord({ SkillName: "Cura" })],
+      [1, luaRecord({ SkillName: "Habilidades Básicas" })],
+    ]),
+    luaTable([
+      [28, luaTable([[1, "Cura"], [2, "Tipo: ^777777Ativa^000000"], [3, ""]])],
+    ]),
+  );
+  assert.deepEqual(skills, [
+    { id: 1, name: "Habilidades Básicas", description: null },
+    { id: 28, name: "Cura", description: "Cura\nTipo: ^777777Ativa^000000\n" },
   ]);
 });
 

@@ -508,7 +508,7 @@ themselves.
 |---|---|
 | `GET /raw/items.json` | Every item: `id, name, slots, aegisName, resourceName, description, view, spriteView, viewKind, equipSlots, costume`. |
 | `GET /raw/jobs.json` | Every class: `id, jt, name, hasIcon`. |
-| `GET /raw/skills.json` | Skill `id` → `name`. |
+| `GET /raw/skills.json` | Every skill: `id, name, description`. |
 | `GET /raw/status.json` | Status-effect (EFST) `id` → `name`. |
 | `GET /raw/randomopt.json` | Random-option `id` → display template (`"ATQM +%d"`). |
 | `GET /raw/classes.json` | Classes with palettes, swatches and alternative outfits. |
@@ -532,6 +532,17 @@ client's accessory/robe name tables, so `spriteView` falls back to that lookup
 silently loses them. `viewKind` (`"headgear"`/`"garment"`/`null`) says which of
 the two sprite tables the view lives in, which usually follows the equip slot but
 not always; rendering those few from the slot-implied table draws the wrong item.
+
+`description` — on both `items.json` and `skills.json` — is the client's own
+pt-BR tooltip, **raw**: the `^RRGGBB` colour codes and the line breaks are kept
+and nothing is reflowed, because consumers treat that text as the source of truth
+for what an item or skill actually does and each formats it its own way. Skills
+whose tooltip the client ships empty (or doesn't ship at all) keep
+`description: null` rather than dropping out — 283 of the 1,558 in the current
+client. The tooltips come from `SkillInfoz/SkillDescript.lub` at its **full**
+`data/luafiles514/…` path: the GRF also carries a `data/spanish/` copy of that
+same file, and it is the *largest* of the three, so a suffix-only lookup quietly
+publishes Spanish.
 
 Unlike every other endpoint here these files are **mutable at a stable URL** —
 they change whenever the client does — so they are served with a short
@@ -720,7 +731,9 @@ Writes `items.json`, `jobs.json`, `skills.json`, `randomopt.json`, `status.json`
 the step that lets every other project stop extracting the client for itself, so
 re-run it after a client update. It reads `System/iteminfo_new.lub` from next to
 the GRF (override with `--iteminfo`) plus the job, skill, status and
-random-option tables from inside it, and refuses to write an empty table.
+random-option tables from inside it, and refuses to write an empty table — or a
+`skills.json` where fewer than half the skills kept their description, which is
+what reading the tooltips from the wrong chunk looks like.
 
 `mobs.json` is the one file in `resources/raw/` this doesn't produce — it isn't
 in the client at all, see [Monster stats](#monster-stats-rawmobsjson).
