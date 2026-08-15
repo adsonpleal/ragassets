@@ -3,6 +3,132 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-08-15
+
+### Added
+- **`/raw/mobs.json` now carries `res` and `mres`** — the 4th-job resistances,
+  which the RagnaPlace API exposes on no monster at all (confirmed by dumping a
+  full raw record for 21360). They come from a new second source,
+  `tools/crawl-divine-pride.mjs`, which is the only public database that
+  publishes them per server.
+
+  The gap was not cosmetic. Downstream, latam-ro-calc's monster importer
+  correctly refuses to invent a value it has no source for, so every monster
+  added since the RagnaPlace migration landed at `res 0` / `mres 0` — 368 of the
+  459 in that database. A level 224 MVP therefore simulated as having *no*
+  resistance: measured against a recording, non-critical damage came out at
+  **~3.3×** what the server actually dealt, dropping to 1.23× once the real
+  values were filled in by hand.
+
+  Both fields are **nullable, and `null` is not `0`**. Of the 2,724 records,
+  2,570 publish a real `0` — correct for any pre-4th-job monster, Baphomet
+  included — 136 a non-zero value, and 18 `null` for "no usable divine-pride
+  data". Every one of the 136 belongs to a level 200+ monster, which is the
+  shape you would expect and a decent sanity check on the whole run.
+
+  Conflating zero with unknown is the bug, so the pipeline keeps them apart end
+  to end: a stat block that parses but carries no Res row is a hard error, not a
+  null, precisely because it would otherwise be indistinguishable downstream from
+  a monster nobody has data for.
+
+  divine-pride has three separate ways of saying "no data", and each had to be
+  told apart from a genuinely broken page. An unknown id answers **HTTP 200**
+  with a "Monster not found" page rather than a 404. A monster it lists but has
+  no numbers for renders every cell as `?` titled "We don't have this yet" and
+  ships no per-server blocks at all — 25239 `C4_SASQUATCH`, which stopped the
+  first full crawl 33 pages from the end. And ten monsters get a stat block that
+  is simply blank: level 0, 0 HP, every stat 0. Six of those ten (2504-2509, the
+  Byalan mobs) have perfectly good RagnaPlace records, so taking the zeros at
+  face value would have asserted "no resistance" on the strength of an empty
+  page. 0 HP alone is not the test, either: 1210 and the twelve
+  Agni/Varuna/Vayu/Chandra spirits carry 0 HP with a real level and RagnaPlace
+  independently agrees, so the test is level 0 *and* 0 HP.
+
+  Authority is split rather than shared. RagnaPlace stays the source of the
+  record's identity and its **pt-BR name** — it is the LATAM client's own
+  vocabulary, and divine-pride serves the Korean one (21360's page title is
+  `슐랑`). divine-pride is the source of the resistances and nothing textual.
+
+  **The detail that would have silently ruined this**: a monster page renders one
+  stat table per server/episode, each in a
+  `<div class="alternatestats" id="alternatestats_<SOURCE>">`. LATAM is
+  `alternatestats_default`, and it is *not* the first in the DOM — Poring's page
+  runs iRO, kRO, twRO, vnRO, then default. The blocks genuinely disagree (iRO's
+  Poring: 60 HP and 13–16 attack; LATAM's: 55 and 7–8), so a positional selector
+  yields another server's monster with no visible symptom. The parser selects by
+  id and raises rather than falling back, and a test asserts both that the LATAM
+  block is picked *and* that renaming the first block changes the answer.
+
+  Everything both sources publish — level, HP, DEF/MDEF, the six base stats,
+  race, size, element and element level — is cross-checked, and a disagreement
+  **fails the run without writing the file**, reporting both values. Neither is
+  silently preferred: a divergence means either the crawler broke or the
+  databases genuinely differ, and only a human can tell those apart. Across the
+  catalogue this surfaced **82 disagreements on 39 of 2,710 monsters**, each now
+  reviewed and recorded in `tools/dp-divergences.json` with its evidence. An
+  entry matches only while both recorded values still hold, so a re-review is
+  forced the moment either source moves.
+
+  The largest cluster is worth stating outright, because it is a correction to
+  data this repo has been publishing all along: RagnaPlace reports
+  `propertyLevel: 1` for **all 20** `E_*`/`EVENT_*` event-clone MVPs. On the 13
+  whose base monster can be identified, divine-pride's value is exactly the
+  base's — and the two sources already agree on the base (2100 E_BAPHOMET2 → 1039
+  Baphomet, Dark 3 on both; 2104 E_DARK_SNAKE_LORD → 1418, Ghost 3 on both; and
+  so on). A uniform `1` across clones whose bases span levels 1–4 is a default,
+  not data, so those 20 rows now publish divine-pride's element level. That is
+  the **only** pre-existing field this change touched; every other value in
+  `mobs.json` is byte-identical to before, and `res`/`mres` are appended so no
+  existing key moved.
+
+  A ledger entry can also carry `"resistances": "unknown"`, which publishes
+  `res`/`mres` as null for that monster instead of divine-pride's number. Four
+  records need it (2501 CORNUTUS_H, 2502 DEVIACE_H, 2503 HYDRA_H, 3819
+  E_MAGIC_PLANT): divine-pride's page for each is a dummy — level 1, 10 HP,
+  novice-tier stats — describing something other than the monster RagnaPlace has
+  real data for, so its `0` is not a measurement of anything. Their true
+  resistance is almost certainly 0 given their level, which is exactly why the
+  distinction is worth keeping: the file should say what it knows, not what it
+  can guess.
+
+  `attack` is deliberately excluded from that check: RagnaPlace returns the
+  database's raw attack and divine-pride the computed renewal range (Baphomet
+  `2520` against `2,721 - 3,981`), so they are different quantities and comparing
+  them fires on ~95% of the catalogue, burying the real findings. Race is
+  normalised before comparing for the same reason — kRO renamed Demi-Human to
+  `Human` and laro-pt leaks `fantasma` for `Formless` on 449 rows. divine-pride
+  independently confirms both are label drift, not data drift.
+
+  The crawl is a full pass over a third party's site, so it is serialised with a
+  delay, walks the ids in `mobs.json` rather than the client's ~4600 sprite ids
+  (sparing ~1900 pointless requests), and caches every parsed record for 30 days
+  in `_scratch/dp-cache.jsonl` — an interrupted run resumes and a re-run is
+  nearly free. `tools/scrape-mobs.mjs --merge-only` re-folds a fresh crawl into
+  the existing `mobs.json` without touching the RagnaPlace API, so refreshing the
+  resistances no longer costs that key's whole quota.
+
+  divine-pride served the LATAM block anonymously throughout, so no login is
+  needed; the old `.dp-cookies.json` path is still supported and now fails with
+  an actionable message on an expired session or a 401/403 instead of producing
+  a silently empty scrape.
+
+  21360 Schulang (res 205, mres 368) and 21361 Twisted God Freyja (res 249, mres
+  499) are the regression cases, and both now carry exactly those values in the
+  published file. 21361 is the control: its def/mdef/res/mres match, to the
+  number, the record an older divine-pride scraper produced before the migration
+  removed it.
+
+  The test fixtures are **written rather than scraped**: checking in copies of
+  divine-pride's page source would redistribute their markup under this repo's
+  MIT licence, so the tests build the minimum structure the parser keys on. The
+  numbers are game facts; their expression of those facts is theirs. Synthetic
+  fixtures cannot notice the site changing underneath them, so the same file
+  carries four **opt-in live checks** — `DP_LIVE=1 node --test
+  tools/crawl-divine-pride.test.mjs` — that fetch four real pages and assert the
+  written fixtures still describe reality, including that the LATAM block is
+  still neither first nor identical to the first. Plain `node --test` stays
+  hermetic and skips them.
+
 ## 2026-08-13
 
 ### Added

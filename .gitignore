@@ -17,6 +17,11 @@ node_modules/
 # Local env overrides (commit .env.example instead)
 .env
 
+# Exported divine-pride session, if one is ever needed again. The LATAM stat
+# block is served anonymously, so tools/crawl-divine-pride.mjs only reads this
+# file when it exists — but it is a live login, so it must never be committed.
+.dp-cookies.json
+
 # Go build artifacts (the gateway is normally built inside Docker)
 /gateway/ragassets-gateway
 /gateway/*.exe

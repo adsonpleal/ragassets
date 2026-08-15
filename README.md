@@ -624,6 +624,7 @@ resources/sounds/         # skill/effect/monster sound effects (extract-grf.mjs 
 resources/raw/            # client data tables (extract-grf.mjs --raw), served at /raw/*
 extract-grf.mjs           # helper to extract a GRF into resources/
 tools/scrape-mobs.mjs     # rebuilds resources/raw/mobs.json from the RagnaPlace Public API
+tools/crawl-divine-pride.mjs  # second source for that file: the res/mres RagnaPlace omits
 ```
 
 ## Resources / GRF extraction (required)
@@ -788,32 +789,128 @@ stored filename. Stored names use **backslash** separators, so escape them
 `resources/raw/mobs.json` is the only table served here that isn't extracted from
 the GRF — the client carries no monster HP or EXP anywhere. One record per monster
 (2724 of them), with the id, names, level, HP, EXP, DEF/MDEF/ATK, the six base
-stats, race/size/element and the boss/MVP flags:
+stats, race/size/element, the boss/MVP flags and the 4th-job resistances:
 
 ```json
 { "id": 1039, "aegisId": "BAPHOMET", "name": "Bafomé", "boss": true, "mvp": true,
   "level": 81, "baseExp": 218089, "jobExp": 167053, "mvpExp": 109044,
   "hp": 668000, "def": 379, "mdef": 45, "attack": 2520,
   "str": 120, "agi": 125, "vit": 30, "int": 85, "dex": 186, "luk": 85,
-  "race": "Demon", "size": "Large", "property": "Dark", "propertyLevel": 3 }
+  "race": "Demon", "size": "Large", "property": "Dark", "propertyLevel": 3,
+  "res": 0, "mres": 0 }
 ```
 
-It is rebuilt from the
-[RagnaPlace Public API](https://ragnaplace.com/pt/api/reference), which needs a
-`RAGNAPLACE_API_KEY` in `.env` (request one at <https://ragnaplace.com/api>):
+**`res` / `mres` are nullable, and `null` is not `0`.** `0` means the monster
+genuinely has no resistance — true of 2,570 of the 2,724 records, Baphomet above
+included. `null` (18 records) means *unknown*: divine-pride has no usable data for
+that monster. Consumers must keep the two apart. Treating an unknown resistance as
+0 puts a level 224 MVP's simulated damage at roughly **3.3×** what the server
+actually deals. All 136 non-zero resistances belong to level 200+ monsters.
+
+It is rebuilt from two sources, split by which one is authoritative for what:
+
+| | authority for |
+| --- | --- |
+| [RagnaPlace Public API](https://ragnaplace.com/pt/api/reference) | identity (`id`, `aegisId`) and the pt-BR `name`, plus the whole stat block |
+| [divine-pride.net](https://www.divine-pride.net) | `res` / `mres`, which exist in no other source |
+
+RagnaPlace needs a `RAGNAPLACE_API_KEY` in `.env` (request one at
+<https://ragnaplace.com/api>); divine-pride is crawled anonymously.
 
 ```bash
 node extract-grf.mjs --mobids _scratch/mobids.json --grf path/to/data.grf
-node tools/scrape-mobs.mjs --ids _scratch/mobids.json
+node tools/scrape-mobs.mjs --ids _scratch/mobids.json --no-dp   # first run only
+node tools/crawl-divine-pride.mjs                               # ~1 h, resumable
+node tools/scrape-mobs.mjs --merge-only                         # no API quota
 ```
 
-The two steps are split because neither source is sufficient alone. The API has no
-bulk mob endpoint — its search caps at 20 pages × 20 rows — so every monster needs
-its own `GET /v1/<gateway>/mob/<id>`, and the id list to walk has to come from the
-client's `datainfo/npcidentity.lub` (`--mobids`, ~4585 candidates; the ~1900 that
-aren't monsters simply 404). `--gateway` selects the server (default `laro-pt`;
-`/v1/gateways` lists all 36). The run throttles itself off the API's
+The first two steps are split because neither source is sufficient alone. The API
+has no bulk mob endpoint — its search caps at 20 pages × 20 rows — so every monster
+needs its own `GET /v1/<gateway>/mob/<id>`, and the id list to walk has to come from
+the client's `datainfo/npcidentity.lub` (`--mobids`, ~4585 candidates; the ~1900
+that aren't monsters simply 404). `--gateway` selects the server (default
+`laro-pt`; `/v1/gateways` lists all 36). The run throttles itself off the API's
 `X-RateLimit-*` headers and resumes from `mobs.json.partial.jsonl` if interrupted.
+
+Once `mobs.json` exists, the crawler walks *it* rather than the client's id list,
+sparing divine-pride ~1900 requests for ids that aren't monsters. It is serialised
+with a delay, caches every parsed record in `_scratch/dp-cache.jsonl` and reuses
+anything younger than 30 days, so re-runs are nearly free and an interrupted crawl
+resumes. `--merge-only` then folds the result into the existing `mobs.json` without
+touching the RagnaPlace API at all, so refreshing the resistances doesn't cost the
+key's whole quota.
+
+### Cross-validation
+
+Everything **both** sources publish — level, HP, DEF/MDEF, the six base stats,
+race, size, element and element level — is compared, and any disagreement
+**fails the run without writing `mobs.json`**, reporting both values and a link
+to the monster's page. Neither source is silently preferred: a divergence means
+either the crawler broke or the two databases genuinely differ, and only a human
+can tell those apart. Acknowledge one by adding it to
+[`tools/dp-divergences.json`](tools/dp-divergences.json); the entry matches only
+while both recorded values still hold, so a re-review is forced the moment either
+source moves. `attack` is deliberately *not* compared — RagnaPlace returns the
+database's raw attack and divine-pride renders the computed renewal range
+(Baphomet: `2520` vs `2,721 - 3,981`), so they are different quantities.
+
+Across the full catalogue this found **82 disagreements on 39 of 2,710 monsters**,
+all reviewed and recorded. The largest cluster is instructive: RagnaPlace reports
+`propertyLevel: 1` for all 20 `E_*`/`EVENT_*` event-clone MVPs, while divine-pride
+reports a varied value that — on the 13 clones whose base monster can be
+identified — is exactly the base's, on which the two sources already agree. A
+uniform `1` across clones whose bases span levels 1–4 is a default, not data, so
+those 20 now publish divine-pride's value. That is the only pre-existing field the
+second source changed.
+
+A ledger entry may also carry `"resistances": "unknown"`, which makes that monster
+publish `res`/`mres` as **null** rather than divine-pride's number. It exists for
+the four records where divine-pride's page is a dummy (level 1, 10 HP) describing
+something other than the monster RagnaPlace has real data for: its `0` there is
+not a measurement, and publishing it would be the very mistake this source fixes.
+
+### The one detail that will silently ruin a divine-pride scrape
+
+A monster page renders one stat table per server/episode, each in a
+`<div class="alternatestats" id="alternatestats_<SOURCE>">`. LATAM is
+`alternatestats_default`, and it is **not the first** — on Poring the order is
+iRO, kRO, twRO, vnRO, *then* default. The blocks disagree (iRO's Poring has 60 HP
+and 13–16 attack; LATAM's has 55 and 7–8), so a positional selector yields another
+server's monster, plausibly and silently. The crawler selects by id and raises a
+hard error if the block is missing rather than falling back.
+
+Three further states all mean *unknown* and must not be mistaken for a broken
+page — or for zero. An unknown id answers **HTTP 200** with a "Monster not found"
+page, not a 404. A monster the site lists but has no numbers for renders every
+cell as `?` with the title "We don't have this yet" and ships no per-server blocks
+at all (25239 `C4_SASQUATCH`). And ten monsters get a stat block that is simply
+blank — level 0, 0 HP, every stat 0 — including six Byalan mobs with perfectly
+good RagnaPlace records, so taking those zeros at face value would assert "no
+resistance" on the strength of an empty page. Note that 0 HP *alone* is not the
+test: 1210 and the twelve Agni/Varuna/Vayu/Chandra spirits carry 0 HP with a real
+level, and RagnaPlace independently agrees.
+
+### Testing the crawler without redistributing their pages
+
+**No divine-pride HTML is checked in.** Copies of their page source would put
+their markup into this MIT-licensed repo, so the fixtures in
+[`tools/crawl-divine-pride.test.mjs`](tools/crawl-divine-pride.test.mjs) are
+*written*: `page()` and `statBlock()` emit only the structure the parser keys on.
+The stat numbers in them are game facts, which is a separate thing from
+divine-pride's expression of those facts.
+
+Written fixtures can only encode what we *believe* the markup is, so the same
+file carries four **opt-in live checks**:
+
+```bash
+DP_LIVE=1 node --test tools/crawl-divine-pride.test.mjs
+```
+
+They fetch four real pages and assert the written fixtures still describe
+reality — including that `alternatestats_default` is still not first *and* still
+disagrees with the first block, the assumption the whole parser rests on. Plain
+`node --test` skips them and stays hermetic. Run the live pass whenever you touch
+the parser, or before trusting a crawl after a long gap.
 
 This file used to be committed at the repo root and consumers fetched it from
 `raw.githubusercontent.com`. It now lives in the gitignored `resources/raw/`
@@ -839,6 +936,11 @@ API, so keep the deployed copy — it is not recoverable from a checkout.
   keyed API for it. That table is the only data here sourced from them;
   everything else under `/raw` is extracted from the client GRF. If you find it
   useful, visit and support the site.
+- The `res` / `mres` resistances in `/raw/mobs.json` come from
+  **[divine-pride.net](https://www.divine-pride.net)**, which is the only public
+  source that publishes them per server. The crawler fetches one page per monster,
+  serialised and cached, and takes nothing else from the site. Thanks to them for
+  maintaining it — please visit and support the site.
 - Ragnarok Online and its assets are © Gravity Co., Ltd. No game assets are
   included in or distributed by this repository.
 
