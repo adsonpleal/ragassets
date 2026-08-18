@@ -77,7 +77,7 @@ level ~200, so they come from divine-pride, which publishes them per server.
    ```
 
    Reads **`data/luafiles514/lua files/datainfo/npcidentity.lub`** and writes every
-   `JT_<AEGIS>` → id at 1000 or above (~4585 ids in the current client). Use the
+   `JT_<AEGIS>` → id at 1000 or above (~4604 ids in the current client). Use the
    `datainfo/` copy, **not** `lua files/npcidentity.lub` — that one is a stale
    subset that stops at id 10203 and misses every 20000+ monster.
 
@@ -117,6 +117,28 @@ level ~200, so they come from divine-pride, which publishes them per server.
    and caches every parsed record in `_scratch/dp-cache.jsonl` for 30 days — so
    an interrupted run resumes and a re-run right after is nearly free. Use
    `--only 21360,21361` to spot-check without a full crawl.
+
+   **After a client update this order deadlocks, and the way out is not `--only`.**
+   The crawler defaults to the id list *inside the existing `mobs.json`*, which is
+   still the pre-update catalogue — so it never fetches the new monsters, and step 3
+   keeps refusing to write because they have no `res`/`mres`. Worse, `--only`
+   **overwrites `_scratch/dp-stats.json` with just the listed ids**, throwing away
+   the full crawl (recoverable — `_scratch/dp-cache.jsonl` still holds every parsed
+   record, so regenerating costs no requests). Instead, build a monster-only id file
+   from the resume log step 3 already wrote and crawl that:
+
+   ```bash
+   node -e "const fs=require('fs');const r=fs.readFileSync('resources/raw/mobs.json.partial.jsonl','utf8').trim().split(/\r?\n/).map(JSON.parse).filter(x=>x.mob);const mobs=[...new Map(r.map(x=>[x.id,{id:x.id,aegisId:x.mob.sprite}])).values()].sort((a,b)=>a.id-b.id);fs.writeFileSync('_scratch/mobids-monsters.json',JSON.stringify({count:mobs.length,mobs},null,2))"
+   node tools/crawl-divine-pride.mjs --ids _scratch/mobids-monsters.json
+   node tools/scrape-mobs.mjs --ids _scratch/mobids.json   # resumes; 0 API calls
+   ```
+
+   That covers exactly the real monsters (not the ~1900 NPC ids in `mobids.json`,
+   which would be ~40 min of pointless 404s at 1200 ms apart) and re-runs entirely
+   from cache. Do **not** reach for `--allow-partial-dp` here: the holes after a
+   client update are the brand-new level 210+ monsters, which is exactly where the
+   resistances matter most (2026-08-18: all 6 new Airboat mobs came back with
+   res 204-326, mres 107-409).
 
    `--merge-only` re-merges into the existing `mobs.json` without touching the
    RagnaPlace API, which is what you want whenever only the resistances changed.
@@ -166,7 +188,7 @@ uses (2501, 2502, 2503, 3819) are dummy pages with level 1 and 10 HP against a
 real RagnaPlace record. Never use it because a value merely looks surprising:
 publishing 0 from a bogus record is the exact failure this source exists to stop.
 
-**Current state: 82 disagreements on 39 of 2710 monsters, all recorded.** The big
+**Current state: 82 disagreements on 39 of 2718 monsters, all recorded.** The big
 one is a genuine correction — RagnaPlace reports `propertyLevel: 1` for all 20
 `E_*`/`EVENT_*` event clones, and on the 13 with an identifiable base monster
 divine-pride's value is exactly the base's, which both sources already agree on.
@@ -215,7 +237,7 @@ and letting them fire would bury the real findings.
 
   **Always diff the MVP/boss counts against the previous file before committing.**
   Both traps above produced a perfectly plausible-looking mobs.json and were caught
-  only that way. Current baseline: 2724 monsters, 601 boss, 264 MVP.
+  only that way. Current baseline: 2732 monsters, 602 boss, 265 MVP (2026-08-18 client).
 - **`race` is dirty upstream, not in transit.** 449 rows come back as
   `"fantasma"`, 20 as `"Human"`, 1 as `"Demi-Human"`, 10 as `null` — the API
   returns exactly what the old HTML scrape did, so this is RagnaPlace's own data,
