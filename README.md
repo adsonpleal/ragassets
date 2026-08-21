@@ -96,7 +96,7 @@ parameter:
 | `gender` | `male`/`female` or `1`/`0` | Default male. |
 | `head` | integer | Player head id. |
 | `outfit` | integer | Alternate outfit (`0` = default). |
-| `headgear` | comma-separated ints | Up to 3, e.g. `headgear=4,125`. |
+| `headgear` | comma-separated ints | Up to 3, e.g. `headgear=4,125`. A **hat-effect** costume (`1500` *Fúria dos Shuras*, the only one the client ships today) has a blank accessory sprite and its visual in a separate looping sprite the client plays at the character's head; the renderer composites that automatically, and its longer timeline sets the animation's length. |
 | `headgearBehind` | comma-separated ints | **Usually unnecessary** — whether an effect headgear (aura/halo/the Sun God's Ornament `2669`) draws behind the character is decided automatically per direction from the client's layer-priority table. This param is a manual override that forces the listed ids behind in every direction (for accessories the client table doesn't cover). |
 | `garment` | integer | |
 | `weapon` | integer | |
@@ -283,7 +283,10 @@ at all, or it ships one that is deliberately blank (every `.act` layer tinted
 alpha 0, flagged as `spriteBlank` on
 [`/raw/items.json`](#get-raw--client-data-tables-items-jobs-skills-monsters)).
 Either way it draws them with its `.str` world-effect system, so the sprite
-renderer above can't produce them. `extract-grf.mjs --effects` pulls each one's
+renderer above can't produce them. (One blank accessory is *not* in this set: a
+**hat effect** puts its visual in a separate looping sprite instead of a `.str`,
+and [`/image`](#get-image--rendered-sprite) composites that itself — see
+`spriteBlank` below.) `extract-grf.mjs --effects` pulls each one's
 `.str` out of the GRF as a small JSON + PNG bundle (see
 [GRF extraction](#resources--grf-extraction-required)); the gateway serves those
 bundles for the [latamvisuais](https://github.com/adsonpleal/latamvisuais) map
@@ -301,12 +304,18 @@ table's keys come back unresolved. It has no item ids — the item → hat-effec
 link is server-side — so the costume still has to be matched by hand, but it
 settles *which* `.str` an ambiguous folder plays.
 
+`EffectHatItemTable.lub` looks like the missing link and is not: its keys are a
+contiguous `1..109`, so it is a flat *list* of the items that have a hat effect,
+not a `HAT_EF` id → item map. Joining the two by number produces plausible
+nonsense — `HAT_EF_Blossom_Fluttering` lands on `20522` *Miaura* while the item
+that really is `흩날리는벚꽃` sits one row later. Match by resource name instead.
+
 | Path | What you get |
 |---|---|
 | `GET /effects/index.json` | Catalogue: `{"items":[{"id","name","slots","effect"}]}` — one entry per effect-only costume (`effect` is the bundle key; there is no character `view`). |
 | `GET /effects/{key}/effect.json` | The parsed `.str` animation: `{"key","fps","maxKey","layers":[{"textures":[…],"anims":[…]}]}`. |
 | `GET /effects/{key}/tex_N.png` | That effect's layer textures (TGA alpha kept; BMP magenta-keyed → alpha). |
-| `GET /effects/sprites/{key}/sprite.json` | A sprite-based map effect's play list: `{"frames":[{"img":"0.png","delay":96,"offset":[x,y]},…]}` — frames in play order, per-frame `delay` in ms, and `offset` (RO px, +x right / +y down) the composited image centre relative to the effect's placement origin. |
+| `GET /effects/sprites/{key}/sprite.json` | A sprite-based effect's play list: `{"frames":[{"img":"0.png","delay":96,"offset":[x,y]},…]}` — frames in play order, per-frame `delay` in ms, and `offset` (RO px, +x right / +y down) the composited image centre relative to the effect's placement origin. `key` is a map effect's slug (`torch_01`) or `eff_<id>` for the skill/hat effects the replay viewer plays by effect id. |
 | `GET /effects/sprites/{key}/N.png` | That sprite effect's composited frames (each `.act` frame's layers baked into one image). |
 
 ```
@@ -394,8 +403,17 @@ casing / EUC-KR); responses carry the same immutable cache headers, `ETag`/`304`
 and wildcard CORS as `/icons`. The two tables are ported from **roBrowserLegacy**
 (`SkillConst`/`SkillEffect`/`EffectTable`) by `tools/gen-effect-tables.mjs` and
 embedded, so they need no extraction; re-run that script (optionally `--src <dir>`)
-if the upstream tables change. Only `type:"STR"` effects render; a skill that maps
-only to procedural (`2D`/`3D`/`SPR`/`CYLINDER`/`FUNC`) effects shows nothing.
+if the upstream tables change. A handful of upstream rows name an asset that
+cannot exist — a `\xHH` escape with a wrong byte, a sprite no client ships — and
+`EFFECT_PART_FIXUPS` in that script corrects them per part; each key has to keep
+matching, so an upstream fix fails the build instead of passing unnoticed.
+
+`type:"STR"` parts render from `/effect/str`, and `type:"SPR"` parts have a
+pre-composited bundle at
+[`/effects/sprites/eff_<id>/`](#get-effects--effect-only-costumes) — every one of
+them, so a skill that maps to a SPR effect has something to play. A skill that
+maps only to `2D`/`3D`/`CYLINDER`/`FUNC` effects still shows nothing: those the
+client generates procedurally.
 
 `/effect/sound` reads a separate static tree (`extract-grf.mjs --sounds`, see
 [GRF extraction](#resources--grf-extraction-required)) and `404`s until it's built.
@@ -548,15 +566,26 @@ silently loses them. `viewKind` (`"headgear"`/`"garment"`/`null`) says which of
 the two sprite tables the view lives in, which usually follows the equip slot but
 not always; rendering those few from the slot-implied table draws the wrong item.
 
-`spriteBlank` marks the handful of views (13 items in the current client) whose
-sprite is there but **deliberately draws nothing** — every layer of the `.act` is
-tinted alpha 0. That is how the client says "this costume's visual is an effect,
+`spriteBlank` marks the handful of views (10 items in the current client) that
+**render as nothing**. Their sprite is there but every layer of the `.act` is
+tinted alpha 0, which is how the client says "this costume's visual is an effect,
 not a sprite": the falling-petal and aura costumes all work this way. Rendering
 them yields an empty image, so a costume catalogue has to skip them and take the
 visual from [`/effects/index.json`](#get-effects--effect-only-costumes) instead —
-where the effect is a `.str` we can serve. A few (`31089` *Fúria dos Shuras*,
-`31091` *Chuva Dourada*) are driven by an effect the client plays from a sprite
-rather than a `.str`, and are not served yet.
+where the effect is a `.str` we can serve.
+
+A blank `.act` is not on its own enough to set the flag. `31089` *Fúria dos
+Shuras* (view `1500`) is a **hat effect**: the client plays its visual from a
+second sprite shipped beside the item sprites under the costume's own resource
+name plus `_이펙트` (`아이템/c홍염의폭렬파동_이펙트`), attached to the character's
+head. [`/image`](#get-image--rendered-sprite) composites that sprite, so the view
+does draw and `spriteBlank` is `false` — those items are ordinary renderable
+costumes, listed only in `items.json` and not in `/effects/index.json`. It is the
+only file in the whole GRF carrying that suffix, and the only costume of its kind
+today. The same sprite is served as a bundle at `/effects/sprites/eff_1130/` —
+that is the numbered effect the client reaches it by
+(`HAT_EF_BAKURETSU_HADOU` → `hatEffectTable[47].hatEffectID`), for consumers that
+play effects by id rather than render a character.
 
 `description` — on both `items.json` and `skills.json` — is the client's own
 pt-BR tooltip, **raw**: the `^RRGGBB` colour codes and the line breaks are kept

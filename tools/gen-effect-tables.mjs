@@ -92,6 +92,25 @@ const CLASSIC_OVERRIDES = {
   2214: { effectId: 734 },
 };
 
+// Per-part corrections to roBrowserLegacy's effect table, keyed "<id>#<partIndex>"
+// and shallow-merged over the part. Each is a bug at the source, not a difference
+// of client: the entry as published names an asset that cannot exist. Every key
+// has to match a part (the build fails otherwise), so an upstream fix shows up as
+// a build error instead of silently doing nothing.
+const EFFECT_PART_FIXUPS = {
+  // 145 EF_SHOCKWAVE (Shockwave Trap) — Legacy replaced the classic STR entry with
+  // an SPR one naming a sprite no client ships; its own source still carries the
+  // STR version, commented out, directly above it (same file, wav and
+  // attachedEntity, so `type` is the whole difference). shockwave.str is right
+  // there in data/texture/effect, and 146 EF_SHOCKWAVEHIT is still STR upstream.
+  "145#0": { type: "STR" },
+  // 683 EF_POK_WHITE (Happy White Day Banner) — its sprite name is written as \xHH
+  // escapes and one byte is wrong: \x5f (an underscore) where \xad belongs, so
+  // 폭죽_화이트데이 ("firework, White Day") comes out a byte short and matches no
+  // file. The sibling banners (682 러브, 684 생일, 686 크리스마스) are intact.
+  "683#0": { file: "\xc6\xf8\xc1\xd7\x5f\xc8\xad\xc0\xcc\xc6\xae\xb5\xa5\xc0\xcc" },
+};
+
 function parseArgs(argv) {
   const a = { src: null, out: null, soundsIndex: null };
   for (let i = 0; i < argv.length; i++) {
@@ -223,6 +242,7 @@ function deriveFuncName(body, importSet) {
 function cleanEffectTable(table, importSet) {
   const out = {};
   const funcs = {};
+  const fixed = new Set();
   for (const [id, parts] of Object.entries(table)) {
     if (!Array.isArray(parts)) continue;
     out[id] = parts.map((part, idx) => {
@@ -244,8 +264,17 @@ function cleanEffectTable(table, importSet) {
         if (!p.type) p.type = "FUNC";
         p.func = funcName;
       }
+      const fix = EFFECT_PART_FIXUPS[`${id}#${idx}`];
+      if (fix) {
+        fixed.add(`${id}#${idx}`);
+        Object.assign(p, fix);
+      }
       return p;
     });
+  }
+  for (const key of Object.keys(EFFECT_PART_FIXUPS)) {
+    if (!fixed.has(key))
+      throw new Error(`EFFECT_PART_FIXUPS ${key} matched no part — upstream moved or fixed it, drop the entry`);
   }
   return { table: out, funcs };
 }

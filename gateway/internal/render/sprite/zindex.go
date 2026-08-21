@@ -19,6 +19,12 @@ func ZIndexForSprite(s *Sprite, direction, action, frame int, bodyImf *roformat.
 	if s.Behind && s.Type == TypeAccessory {
 		return 1 + s.TypeOrder
 	}
+	// A hat effect is played by the client's effect pass, which runs after every
+	// entity layer, so it sits over the whole character in all directions —
+	// above the topmost weapon/shield (30).
+	if s.Type == TypeHatEffect {
+		return 35 + s.TypeOrder
+	}
 	headBeforeBody := bodyImf != nil && action >= 0 && frame >= 0 && bodyImf.Priority(1, action, frame) == 1
 
 	if IsTopLeftDir(direction) {

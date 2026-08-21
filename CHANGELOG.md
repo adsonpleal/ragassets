@@ -6,6 +6,42 @@ continuously (no version tags), so entries are grouped by date.
 ## 2026-08-21
 
 ### Added
+- **`31089` *Fúria dos Shuras* renders** — the last of the six new costumes still
+  invisible, and the only one whose visual is neither a costume sprite nor a
+  `.str`. Its accessory sprite is blank by design; what the client draws instead
+  is a *second sprite*, `data/sprite/아이템/c홍염의폭렬파동_이펙트` — 27 frames of
+  crimson flame, 91 layers, played on a loop at the character's head.
+  `/image?job=1&headgear=1500` is no longer byte-identical to a render with no
+  headgear, and it is the effect's timeline, not the body's, that now sets the
+  animation length.
+
+  The chain is the client's own: `EffectHatItemTable` lists `31089` as a hat
+  effect, `HatEFID.HAT_EF_BAKURETSU_HADOU = 47`, `hatEffectTable[47]` points at
+  effect `1130`, and roBrowser's port of that effect table has it as
+  `type: 'SPR'` — a played sprite with `head: true` and `yOffset: -50`, not a
+  `.str`. The renderer uses that offset verbatim; the body's own head attach
+  point sits at `-56`, so it lands where the client puts it.
+
+  Nothing is hard-coded to the id. The link is the name: the accessory table's
+  value for view `1500` is `_C홍염의폭렬파동`, and the sprite is that name plus
+  `_이펙트` under the item sprite folder. It is the only file in the whole GRF
+  carrying that suffix, so the rule cannot collide, and a future costume of the
+  same kind is picked up without a table entry.
+
+  The same sprite is served as a bundle at `/effects/sprites/eff_1130/` (27
+  composited frames + `sprite.json`), so a consumer that plays effects by id —
+  the `.rrf` replay viewer — gets it too. That id used to fail to build: the
+  ported effect table names it `bakuretsu_hadou/bakuretsu_hadou`, a path this
+  client does not ship, and a new `SPR_EFFECT_OVERRIDE` (the SPR side of
+  `STR_OVERRIDE`) redirects it to the Korean resource name.
+
+  One trap is worth writing down: `EffectHatItemTable` is **not** indexed by
+  `HAT_EF` id. Its keys are a contiguous `1..109` — a flat list of the items that
+  have a hat effect — so joining it to `HatEFID` by number yields plausible
+  nonsense (`HAT_EF_Blossom_Fluttering` → `20522` *Miaura*, with the item that
+  really is `흩날리는벚꽃` one row later, and `31089` → "cloaking"). There is no
+  item → `HAT_EF` link in the client's lua at all; it comes from the server.
+
 - **Six more effect-only costumes are served** — `/effects/index.json` goes from
   18 to 24 items, and the unresolved list drops from 12 to 6:
 
@@ -38,6 +74,50 @@ continuously (no version tags), so entries are grouped by date.
   Dullahan* have an empty `resourceFileName` in the client's table, `31089`
   *Fúria dos Shuras* isn't in it at all, and `400149` *Aura de Betelgeuse* names
   `efst_black_thunder/ros2023_f.str` — which this client's GRF does not ship.
+
+- **Every `type:"SPR"` effect now builds a bundle** — the `--effects` skill-SPR
+  step went from 60 built / 9 unresolved to **68 built / 0 unresolved**, and the
+  ninth (`145`) moved to the STR set. Four separate causes, none of them the same
+  bug:
+
+  | ids | why it resolved to nothing | fix |
+  |---|---|---|
+  | `1130` | the ported name is another client's | `SPR_EFFECT_OVERRIDE` (above) |
+  | `ef_mandragora_attack`, `ef_hydra_attack` | `"../npc/x"` walks out of the effect folder, and the GRF is a flat name list — a path still carrying `..` matches nothing | collapse the `..` before the lookup |
+  | `ef_odium_attack`, `ef_drosera_attack`, `ef_mavka_attack`, `ef_entweihen_attack` | the same, plus this client keeps only two of the six under `npc/` | fall back to the Korean monster folder, same basename |
+  | `683` `EF_POK_WHITE` | upstream typo (below) | `EFFECT_PART_FIXUPS` |
+  | `145` `EF_SHOCKWAVE` | published as a sprite no client ships (below) | restored to `STR` |
+
+  Both table corrections live in a new `EFFECT_PART_FIXUPS` in
+  `tools/gen-effect-tables.mjs`, keyed `"<id>#<partIndex>"` and shallow-merged
+  over the part, so each is a minimal delta from upstream rather than a copy of
+  the entry. A key that stops matching fails the build, so an upstream fix
+  surfaces instead of quietly doing nothing. Regenerating changes exactly those
+  two effect ids and leaves `skill_map.json`, `effect_funcs.json` and
+  `effect_provenance.json` byte-identical.
+
+  `683` *Happy White Day Banner* names its sprite in `\xHH` escapes and one byte
+  is wrong — `\x5f` (an underscore) where `\xad` belongs — so 폭죽_화이트데이
+  ("firework, White Day") came out a byte short and matched nothing. The sibling
+  banners (`682` 러브, `684` 생일, `686` 크리스마스) are intact. The rebuilt bundle
+  renders "Happy White Day!" across 22 frames, which is its own proof.
+
+  `145` *Shockwave Trap* was the odd one: roBrowserLegacy replaced the classic
+  `STR` entry with an `SPR` one naming a sprite that is in no GRF, and left the
+  original commented out directly above it — same `file`, `wav` and
+  `attachedEntity`, so `type` is the entire difference. This client ships
+  `data/texture/effect/shockwave.str` (60 fps, 74 keyframes, five textures), so
+  the entry is restored to `STR`: `/effect/table` and `/effect/str?file=shockwave`
+  answer for it now, and the table's STR count goes from 251 to 252.
+
+### Changed
+- **`spriteBlank` means "renders as nothing", not "the `.act` is blank"** — a
+  blank `.act` with a hat-effect sprite behind it is no longer flagged, because
+  `/image` draws it. `/raw/items.json` goes from 13 flagged items to 10: the
+  three rows that share view `1500` (`31089` *Fúria dos Shuras* plus two unnamed
+  ones) become ordinary renderable costumes. For the same reason `31089` stops
+  being an effect-only costume — the `--effects` unresolved list drops from 6 to
+  5 and `/effects/index.json` is byte-identical.
 
 ### Fixed
 - **Two costumes were serving the wrong `.str` of their folder** —

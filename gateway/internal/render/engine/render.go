@@ -33,7 +33,7 @@ func drawPlayer(sprites []*sprite.Sprite, action uint, frame int, sortDg sortFun
 	actionBox.ToInfinity()
 	for si, s := range sprites {
 		actionindex := int(action)
-		if s.Type == sprite.TypeShadow {
+		if s.Type == sprite.TypeShadow || s.Type == sprite.TypeHatEffect {
 			actionindex = 0
 		}
 		dobj := s.DrawObjectsOfAction(actionindex)
@@ -124,6 +124,11 @@ func resolveFrame(s *sprite.Sprite, action uint, i, maxframes int, dobj raster.D
 	case s.Type == sprite.TypeShadow:
 		actionindex = 0
 		frameindex = 0
+	case s.Type == sprite.TypeHatEffect:
+		// One action, no directions: the client plays a hat effect the same way
+		// whatever the character is doing or facing, so it keeps advancing
+		// through its own frames while the action index stays at 0.
+		actionindex = 0
 	case (s.Type == sprite.TypePlayerHead || s.Type == sprite.TypeAccessory || s.Type == sprite.TypeGarment) &&
 		(pa == rotype.ActStand || pa == rotype.ActSit):
 		if maxframes >= 3 {

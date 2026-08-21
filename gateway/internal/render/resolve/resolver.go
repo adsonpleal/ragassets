@@ -20,6 +20,8 @@ const (
 	kShield     = "방패"   // shield folder
 	kMonster    = "몬스터"  // monster folder
 	kEffect     = "이팩트"  // effect sprite folder
+	kItem       = "아이템"  // item sprite folder (hat-effect sprites live here)
+	kHatEffect  = "_이펙트" // hat-effect sprite name suffix ("_effect")
 	kMerc       = "용병"   // mercenary folder
 	kHairPrefix = "머리"   // head palette filename prefix ("머리<id>_...")
 )
@@ -230,6 +232,23 @@ func (r *Resolver) HeadgearSprite(headgearID uint32, gender rotype.Gender) strin
 		return ""
 	}
 	return join(kAccessory, gender.String(), gender.String()+accName)
+}
+
+// HatEffectSprite returns the sprite path of the hat effect a headgear plays. A
+// "hat effect" costume ships an accessory sprite that is deliberately blank —
+// every .act layer tinted alpha 0 — and puts its real visual in a separate
+// looping sprite, which the client's hat-effect table lists as type "SPR" and
+// plays at the character's head. The accessory name table is the link: view 1500
+// is "_c홍염의폭렬파동", so the sprite is 아이템/c홍염의폭렬파동_이펙트. It is
+// genderless (one file for both), and the whole client ships exactly one of them
+// today, so a caller can simply probe for the file: the name cannot collide with
+// anything else. Returns "" when the headgear id is unknown.
+func (r *Resolver) HatEffectSprite(headgearID uint32) string {
+	accName := r.tables.AccName(headgearID)
+	if accName == "" {
+		return ""
+	}
+	return join(kItem, strings.TrimPrefix(accName, "_")+kHatEffect)
 }
 
 // GarmentSprite returns a garment/robe sprite path. english selects the

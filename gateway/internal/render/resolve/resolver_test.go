@@ -89,6 +89,23 @@ func TestHeadgearAndGarmentUseTables(t *testing.T) {
 	}
 }
 
+// A hat effect is the accessory name with its leading underscore dropped and the
+// client's "_effect" suffix, under the item sprite folder — no gender prefix.
+func TestHatEffectSprite(t *testing.T) {
+	r := New(fakeTables{})
+	if got := r.HatEffectSprite(100); got != "아이템/testhat_이펙트" {
+		t.Errorf("hat effect = %q", got)
+	}
+	// Unknown accessory -> no effect to look for.
+	if got := r.HatEffectSprite(999); got != "" {
+		t.Errorf("unknown hat effect = %q, want empty", got)
+	}
+	// The one the live client ships (view 1500, [Visual] Fúria dos Shuras).
+	if got := New(DefaultTables()).HatEffectSprite(1500); got != "아이템/c홍염의폭렬파동_이펙트" {
+		t.Errorf("hat effect 1500 = %q", got)
+	}
+}
+
 func TestGarmentCandidates(t *testing.T) {
 	r := New(fakeTables{}) // RobeSprName(200) = "testrobe"
 	got := r.GarmentCandidates(1, 200, rotype.Male)

@@ -373,3 +373,127 @@ func TestGarmentPrefersPerJobAct(t *testing.T) {
 			gotY, wantY, rootAct.Sprites(0, 0)[0].Y)
 	}
 }
+
+// A "hat effect" costume ships an accessory sprite that is deliberately blank —
+// every .act layer tinted alpha 0 — and puts its real visual in a separate
+// looping sprite the client's hat-effect table plays at the character's head.
+// The client ships exactly one today: view 1500, item 31089 [Visual] Fúria dos
+// Shuras (아이템/c홍염의폭렬파동_이펙트). Rendering only the accessory produces an
+// image byte-identical to wearing nothing at all, which is what this used to do.
+func TestHatEffectDrawsBlankAccessory(t *testing.T) {
+	e := newEngine(t)
+
+	const view = 1500
+	fx := e.res.HatEffectSprite(view)
+	if !e.mgr.ExistsAct(fx) || !e.mgr.ExistsSpr(fx) {
+		t.Skipf("hat-effect sprite %q not extracted", fx)
+	}
+	// The premise: the accessory itself draws nothing (alpha-0 layers only).
+	acc, err := e.mgr.Act(e.res.HeadgearSprite(view, rotype.Male))
+	if err != nil {
+		t.Fatalf("load accessory act: %v", err)
+	}
+	for _, layer := range acc.Sprites(0, 0) {
+		if layer.Tint.A != 0 {
+			t.Fatalf("accessory for view %d is not blank any more (layer alpha %d)", view, layer.Tint.A)
+		}
+	}
+
+	bare := baseReq()
+	bare.Frame = 0
+	worn := bare
+	worn.Headgear = []uint32{view}
+
+	bareRes, err := e.Render(bare)
+	if err != nil {
+		t.Fatalf("render bare: %v", err)
+	}
+	wornRes, err := e.Render(worn)
+	if err != nil {
+		t.Fatalf("render worn: %v", err)
+	}
+	if framesEqual(bareRes.Frames[0], wornRes.Frames[0]) {
+		t.Error("wearing the hat effect changed nothing — the effect sprite was not composited")
+	}
+	// The effect is wider and taller than the character it swirls around, so it
+	// grows the still's bounding box in both axes.
+	if wornRes.Frames[0].Width <= bareRes.Frames[0].Width || wornRes.Frames[0].Height <= bareRes.Frames[0].Height {
+		t.Errorf("worn still is %dx%d, not larger than the bare %dx%d",
+			wornRes.Frames[0].Width, wornRes.Frames[0].Height, bareRes.Frames[0].Width, bareRes.Frames[0].Height)
+	}
+
+	// The effect has its own, longer timeline (27 frames against the body's 3),
+	// and it is played straight through rather than sliced into head directions.
+	anim := worn
+	anim.Frame = -1
+	animRes, err := e.Render(anim)
+	if err != nil {
+		t.Fatalf("render animation: %v", err)
+	}
+	fxAct, err := e.mgr.Act(fx)
+	if err != nil {
+		t.Fatalf("load effect act: %v", err)
+	}
+	if want := fxAct.NumberOfFrames(0); len(animRes.Frames) != want {
+		t.Errorf("animation has %d frames, want the effect's %d", len(animRes.Frames), want)
+	}
+}
+
+// The effect sprite has a single action and no per-direction frames — the client
+// plays a hat effect the same way whatever the character is doing or facing — so
+// it has to be pinned to action 0 rather than indexed by the request's action.
+// Indexing it draws nothing at all for every action but stand-facing-south.
+func TestHatEffectDrawsInEveryAction(t *testing.T) {
+	e := newEngine(t)
+
+	const view = 1500
+	if fx := e.res.HatEffectSprite(view); !e.mgr.ExistsAct(fx) || !e.mgr.ExistsSpr(fx) {
+		t.Skipf("hat-effect sprite %q not extracted", fx)
+	}
+
+	// Stand facing each direction, walk, sit, attack — and a female body, since
+	// the effect sprite is one genderless file.
+	for _, c := range []struct {
+		name   string
+		action uint
+		gender rotype.Gender
+	}{
+		{"stand south", 0, rotype.Male},
+		{"stand west", 3, rotype.Male},
+		{"stand north", 4, rotype.Male},
+		{"walk south", 8, rotype.Male},
+		{"walk east", 8 + 7, rotype.Male},
+		{"sit", 16, rotype.Male},
+		{"attack", 40, rotype.Male},
+		{"stand female", 0, rotype.Female},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			req := baseReq()
+			req.Frame = 0
+			req.Action = c.action
+			req.Gender = c.gender
+
+			bare, err := e.Render(req)
+			if err != nil {
+				t.Fatalf("render bare: %v", err)
+			}
+			req.Headgear = []uint32{view}
+			worn, err := e.Render(req)
+			if err != nil {
+				t.Fatalf("render worn: %v", err)
+			}
+			if framesEqual(bare.Frames[0], worn.Frames[0]) {
+				t.Error("the hat effect drew nothing")
+			}
+		})
+	}
+}
+
+// The hat effect follows the headgear id, not the character: a headgear with no
+// effect sprite beside it leaves the render untouched.
+func TestHatEffectOnlyForItsOwnHeadgear(t *testing.T) {
+	e := newEngine(t)
+	if got := e.loadHatEffect(1); got != nil {
+		t.Errorf("headgear 1 (goggles) grew a hat effect: %v", got.Act)
+	}
+}

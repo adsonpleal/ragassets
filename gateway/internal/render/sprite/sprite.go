@@ -19,6 +19,9 @@ const (
 	TypeAccessory
 	TypeCostume
 	TypeGarment
+	// TypeHatEffect is the separate looping sprite a "hat effect" costume plays
+	// at the character's head in place of its own (blank) accessory sprite.
+	TypeHatEffect
 	TypeHomunculus
 	TypeMercenary
 	TypeMonster
@@ -51,7 +54,8 @@ type Sprite struct {
 	// as the character turns; the headgearBehind request param forces it on.
 	Behind bool
 
-	// OffsetAdjust is an extra parent-attach offset (doram headgear positioning).
+	// OffsetAdjust is an extra placement offset, applied with or without a parent
+	// (doram headgear positioning; a hat effect's head offset).
 	OffsetAdjust geom.Vec3
 	// ScaleOverride, when non-nil, replaces each layer's scale (shadow scaling).
 	ScaleOverride *float32
@@ -128,7 +132,9 @@ func (s *Sprite) DrawObjectsOfFrame(action, frame int) raster.DrawObject {
 	out := raster.DrawObject{Children: make([]raster.DrawObject, len(layers))}
 	out.BoundingBox.ToInfinity()
 
-	parentOffset := geom.Vec3{}
+	// The placement offset applies with or without a parent; a parented sprite
+	// adds the attach-point delta on top of it.
+	parentOffset := s.OffsetAdjust
 	if s.Parent != nil {
 		parentFrame := frame
 		pa := rotype.IntToPlayerAction(uint(action))
@@ -141,15 +147,14 @@ func (s *Sprite) DrawObjectsOfFrame(action, frame int) raster.DrawObject {
 		}
 		if len(s.Parent.Act.AttachPoints(action, parentFrame)) > 0 {
 			pap := s.Parent.Act.AttachPoint(action, parentFrame, 0)
-			parentOffset = geom.Vec3{X: float32(pap.X), Y: float32(pap.Y)}
+			parentOffset.X += float32(pap.X)
+			parentOffset.Y += float32(pap.Y)
 		}
 		if len(s.Act.AttachPoints(action, frame)) > 0 {
 			ap := s.Act.AttachPoint(action, frame, 0)
-			parentOffset = geom.Vec3{X: parentOffset.X - float32(ap.X), Y: parentOffset.Y - float32(ap.Y)}
+			parentOffset.X -= float32(ap.X)
+			parentOffset.Y -= float32(ap.Y)
 		}
-		// Doram headgear positioning adjustment.
-		parentOffset.X += s.OffsetAdjust.X
-		parentOffset.Y += s.OffsetAdjust.Y
 	}
 
 	for i, as := range layers {

@@ -1598,6 +1598,29 @@ function normRes(s) {
 // The accessory folder, as the client names it (mirrors the Go resolver's
 // kAccessory) — the .act lookup below is the only place this module needs it.
 const kACCESSORY = "악세사리";
+// The item sprite folder, and the suffix ("_effect") marking the separate
+// looping sprite a hat-effect costume plays — see hasHatEffect below.
+const kITEM = "아이템";
+const kHAT_EFFECT_SUFFIX = "_이펙트";
+// The effect sprite folder — where the client keeps the played .spr/.act of every
+// `type:"SPR"` effect — and the monster folder a few of them really live in
+// (see sprEffectCandidates).
+const kEFFECT = "이팩트";
+const kMONSTER = "몬스터";
+
+// The sprite a "hat effect" costume plays, from its accessory-table sprite name
+// ("_C홍염의폭렬파동" → data/sprite/아이템/c홍염의폭렬파동_이펙트), without the
+// extension — the caller looks up the .spr/.act pair. Such a costume ships an
+// accessory sprite that is deliberately blank and puts its real visual in this
+// separate looping sprite, which the client's hat-effect table calls type "SPR"
+// and plays at the character's head; the renderer composites it (gateway
+// internal/render, loadHatEffect), so the view does draw after all. Exactly one
+// file in the whole GRF carries the suffix today — the one 31089 [Visual] Fúria
+// dos Shuras (view 1500) plays — so the name alone identifies it.
+export function hatEffectSprite(accName) {
+  const base = normRes(accName);
+  return base ? `data/sprite/${kITEM}/${base}${kHAT_EFFECT_SUFFIX}` : "";
+}
 
 // Reverse lookup (sprite name → view id) over the client's accessory/robe name
 // tables — the same authority build-db.mjs uses to recover a costume's view when
@@ -1690,13 +1713,24 @@ function buildViewResolver(grf) {
     }
     return accActs.get(path);
   };
+
+  // Whether a blank accessory belongs to a "hat effect" costume — one that ships
+  // the sprite named by hatEffectSprite. Called only for the handful of blank
+  // views, since findBestEntry walks every GRF entry.
+  const hasHatEffect = (name) => {
+    const base = hatEffectSprite(name);
+    return Boolean(base && findBestEntry(grf, normalize(base + ".spr")) && findBestEntry(grf, normalize(base + ".act")));
+  };
+
   // A handful of costumes ship an accessory sprite that is deliberately blank:
-  // every .act layer is tinted alpha 0, so the client draws nothing and what the
-  // player actually sees is a separate effect (the falling petals/feathers ones,
-  // 골드샤워, 홍염의폭렬파동, …). They resolve a view like any other costume, so
-  // the view alone cannot tell them apart from a real headgear — read the .act.
-  // Only accessories do this: not one of the client's 77k robe .act files is
-  // fully transparent, so garments are taken at face value.
+  // every .act layer is tinted alpha 0, so the client draws nothing itself and
+  // what the player actually sees is a separate effect (the falling
+  // petals/feathers ones, 골드샤워, 홍염의폭렬파동, …). They resolve a view like
+  // any other costume, so the view alone cannot tell them apart from a real
+  // headgear — read the .act. Only accessories do this: not one of the client's
+  // 77k robe .act files is fully transparent, so garments are taken at face
+  // value. A blank .act whose costume has a hat-effect sprite still draws, so it
+  // is not reported here — what it renders is that sprite, not the accessory.
   const blankCache = new Map();
   const drawsNothing = (view, slots) => {
     if (view == null || slots.includes("garment")) return false;
@@ -1707,7 +1741,7 @@ function buildViewResolver(grf) {
     const entry = name && accAct(normalize(`data/sprite/${kACCESSORY}/남/남${name}.act`));
     if (entry) {
       try {
-        blank = actDrawsNothing(extractFile(grf, entry));
+        blank = actDrawsNothing(extractFile(grf, entry)) && !hasHatEffect(name);
       } catch (err) {
         console.error(`  ! act ${name}: ${err.message}`);
       }
@@ -1738,9 +1772,10 @@ export function actDrawsNothing(bytes) {
 
 // Enumerate the effect-only costumes from System/iteminfo_new.lub: costume==true,
 // a parsed visual slot, and nothing the character renderer can draw — either no
-// resolvable view at all, or a view whose sprite is blank by design (the set
-// build-db drops). The "invisible" costumes (가린다/Invisível — res 인비지블*)
-// hide gear and have no visual to extract, so they're excluded up front.
+// resolvable view at all, or a view whose sprite is blank by design and has no
+// hat-effect sprite behind it (the set build-db drops). The "invisible" costumes
+// (가린다/Invisível — res 인비지블*) hide gear and have no visual to extract, so
+// they're excluded up front.
 function buildEffectCostumes(grf, args) {
   const lubPath = resolveItemInfoPath(args);
   if (!lubPath) {
@@ -1761,9 +1796,11 @@ function buildEffectCostumes(grf, args) {
     if (!slots.length) continue;
 
     // Renderable? (iteminfo carries the view, or its resource name resolves to
-    // one) — and does that view's sprite actually draw? A view whose .act is
-    // entirely alpha-0 renders as nothing, which is how the client says "the
-    // visual is an effect, not a sprite"; those stay in this set.
+    // one) — and does that view actually draw? A view whose .act is entirely
+    // alpha-0 renders as nothing, which is how the client says "the visual is an
+    // effect, not a sprite"; those stay in this set. A hat effect draws that
+    // effect from a sprite rather than a .str, so the renderer handles it and it
+    // leaves here (drawsNothing already accounts for it).
     const cn = entry.get("ClassNum");
     const view =
       typeof cn === "number" && cn > 0
@@ -1831,6 +1868,47 @@ const STR_OVERRIDE = {
   "토끼리본모자": "data/texture/effect/efst_rabbit_aura/toto.str", //                 HAT_EF_rabbit_aura
   teaparty_wonderland: "data/texture/effect/efst_alice_tea/alice02.str", //          HAT_EF_alice_tea
 };
+
+// The STR_OVERRIDE of the SPR side: effect ids whose ported `file` names an asset
+// this client does not ship, mapped to the GRF path holding the same effect.
+const SPR_EFFECT_OVERRIDE = {
+  // 1130 EF_BAKURETSU_HADOU is the hat effect of 31089 [Visual] Fúria dos Shuras
+  // — HatEFID.HAT_EF_BAKURETSU_HADOU = 47 and hatEffectTable[47].hatEffectID =
+  // 1130, the client's own chain (that entry carries no resourceFileName, which
+  // is why it has no .str). roBrowser names the sprite bakuretsu_hadou, another
+  // client's romanization; this one ships it under the costume's Korean resource
+  // name — 폭렬파동 is 爆裂波動, read "bakuretsu hadou", so the two are one effect.
+  // The renderer plays the same file for the costume (see hatEffectSprite).
+  1130: "data/sprite/아이템/c홍염의폭렬파동_이펙트",
+};
+
+// Collapse "a/b/../c" to "a/c". The GRF is a flat name list, so a path that still
+// carries ".." matches nothing — it has to be resolved before the lookup.
+function collapseDots(path) {
+  const out = [];
+  for (const seg of path.split("/")) {
+    if (seg === "..") out.pop();
+    else if (seg !== "." && seg !== "") out.push(seg);
+  }
+  return out.join("/");
+}
+
+// The GRF sprites (no extension) a `type:"SPR"` effect may play, in preference
+// order — the caller takes the first that exists. Normally that is just the
+// effect table's own file name under the effect sprite folder. Two things make
+// that not enough:
+//   • SPR_EFFECT_OVERRIDE redirects the ids whose ported name is another client's.
+//   • Six names are written "../npc/<name>", walking out of the effect folder into
+//     the client's English-named npc tree — so the ".." has to be collapsed. This
+//     client keeps only two of those six sprites under npc/; the other four sit in
+//     the Korean monster folder under the same basename (identical assets, the two
+//     folders are the same tree under two names), so that is the second candidate.
+export function sprEffectCandidates(id, file) {
+  if (SPR_EFFECT_OVERRIDE[id]) return [SPR_EFFECT_OVERRIDE[id]];
+  const out = [collapseDots(`data/sprite/${kEFFECT}/${file}`)];
+  if (file.startsWith("../")) out.push(`data/sprite/${kMONSTER}/${file.slice(file.lastIndexOf("/") + 1)}`);
+  return out;
+}
 
 // The served effect key: the resource name normalized to a URL/path-safe slug.
 // Most resource names are already ASCII; the Korean-named ones aren't, so we fall
@@ -2146,7 +2224,9 @@ function extractEffects(grfPath, outBase, args) {
     // .spr/.act the client loads from data/sprite/이팩트/<file>. Build one bundle per
     // effect id under sprites/eff_<id>/ so the replay viewer's loadSprEntry resolves
     // any SPR effect by id (no per-name slug map). The table `file` is EUC-KR bytes
-    // kept as latin1 (like every client string here) — decode before pathing.
+    // kept as latin1 (like every client string here) — decode before pathing, and
+    // let sprEffectCandidates place the names that aren't a plain child of the
+    // effect folder (the hat effect 1130, the six "../npc/…" monster bullets).
     let sprEffBuilt = 0;
     const sprEffFailed = [];
     const effTablePath = new URL("./gateway/internal/effect/data/effect_table.json", import.meta.url);
@@ -2160,13 +2240,16 @@ function extractEffects(grfPath, outBase, args) {
         if (seenSpriteKeys.has(key)) continue;
         seenSpriteKeys.add(key);
         const name = decodeClientString(sprPart.file);
-        const sprite = `data/sprite/이팩트/${name}`;
+        const candidates = sprEffectCandidates(id, name);
+        // Keep candidates[0] when nothing exists, so the failure names a real path.
+        const sprite = candidates.find((c) => findBestEntry(grf, normalize(c + ".spr"))) || candidates[0];
+        const label = sprite === `data/sprite/${kEFFECT}/${name}` ? name : `${name} → ${sprite}`;
         const outDir = join(spritesRoot, key);
         rmSync(outDir, { recursive: true, force: true });
         mkdirSync(outDir, { recursive: true });
         try {
           const info = buildSpriteEffect(grf, sprite, key, outDir);
-          console.error(`  ✓ sprites/${key} (skill SPR ${name}) → ${info.frames} frames`);
+          console.error(`  ✓ sprites/${key} (skill SPR ${label}) → ${info.frames} frames`);
           sprEffBuilt++;
         } catch (err) {
           rmSync(outDir, { recursive: true, force: true });
@@ -4347,11 +4430,12 @@ export function projectItems(tbl, aegisMap = new Map(), views = null) {
       description: joinDescriptionLines(entry.get("identifiedDescriptionName")),
       view,
       spriteView,
-      // The view resolves but its sprite is blank by design (every .act layer
-      // tinted alpha 0): the client renders nothing and shows an effect instead.
-      // Consumers that draw a costume from spriteView have to skip these, or
-      // they publish an empty preview — see /effects/index.json for the ones
-      // whose effect is a .str we can serve.
+      // The view resolves but nothing is drawn for it: its sprite is blank by
+      // design (every .act layer tinted alpha 0), which is how the client says
+      // the visual is an effect, and no hat-effect sprite stands behind it that
+      // the renderer can composite in its place. Consumers that draw a costume
+      // from spriteView have to skip these, or they publish an empty preview —
+      // see /effects/index.json for the ones whose effect is a .str we can serve.
       spriteBlank: Boolean(spriteView && views?.drawsNothing(spriteView, equipSlots)),
       viewKind: (spriteView && views?.spriteKind(spriteView, resourceName)) || null,
       equipSlots,

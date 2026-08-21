@@ -214,6 +214,14 @@ func (e *Engine) processPlayer(req Request, requestFrame *int) ([]*sprite.Sprite
 			if hgName == "" {
 				continue
 			}
+			// Loaded before the accessory itself, and independently of it: a
+			// hat-effect costume's accessory sprite is blank by design, so its
+			// visual would be lost if a failure to load that blank sprite skipped
+			// the effect too.
+			if fx := e.loadHatEffect(id); fx != nil {
+				fx.TypeOrder = h
+				sprites = append(sprites, fx)
+			}
 			hg, err := e.getSprite(hgName, hgName, sprite.TypeAccessory)
 			if err != nil {
 				continue
@@ -243,6 +251,30 @@ func (e *Engine) processPlayer(req Request, requestFrame *int) ([]*sprite.Sprite
 	e.applyPalettes(req, body, head, useOutfit)
 
 	return sprites, interval, nil
+}
+
+// hatEffectYOffset raises a hat effect above the character's origin, the
+// client's own offset for the one it ships (hatEffectTable → EffectTable id
+// 1130, yOffset -50). RO screen pixels, +y down.
+const hatEffectYOffset = -50
+
+// loadHatEffect loads the looping sprite a hat-effect costume plays at the
+// character's head, or nil when the headgear has no such sprite (almost always).
+// Unlike an accessory it is not parented to the body: the client plays it as an
+// effect at the character's position rather than pinning it to the body's
+// per-frame attach point, so it keeps its own frame timeline and takes a fixed
+// vertical offset instead.
+func (e *Engine) loadHatEffect(headgearID uint32) *sprite.Sprite {
+	name := e.res.HatEffectSprite(headgearID)
+	if name == "" || !e.mgr.ExistsAct(name) || !e.mgr.ExistsSpr(name) {
+		return nil
+	}
+	fx, err := e.getSprite(name, name, sprite.TypeHatEffect)
+	if err != nil {
+		return nil
+	}
+	fx.OffsetAdjust = geom.Vec3{Y: hatEffectYOffset}
+	return fx
 }
 
 // resolveBody picks the body sprite path, preferring an alternative outfit when

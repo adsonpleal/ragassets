@@ -31,6 +31,8 @@ import {
   toPlayableWav,
   decodeClientString,
   actDrawsNothing,
+  hatEffectSprite,
+  sprEffectCandidates,
 } from "./extract-grf.mjs";
 
 // The real data/fogparametertable.txt lays out each record across five
@@ -916,6 +918,51 @@ test("actDrawsNothing spots the all-alpha-0 effect-costume placeholder", () => {
   assert.equal(actDrawsNothing(buildAct23([0, 1, 0], 100, 0)), true);
   assert.equal(actDrawsNothing(buildAct23([0, 1, 0], 100, 255)), false);
   assert.equal(actDrawsNothing(buildAct23([0, 1, 0], 100, 1)), false); // barely visible still counts
+});
+
+// ...except when the blank accessory is a hat effect: the costume's real visual
+// is a separate looping sprite named after the same resource, which the renderer
+// composites at the character's head. The name is the whole link — the accessory
+// table's leading underscore goes, the rest is the resource name plus "_이펙트".
+// The ported effect table carries roBrowser's file names, and not all of them are
+// a plain child of the effect folder. Effect 1130 is the same flame the costume
+// above plays — the client's chain reaches it as HAT_EF_BAKURETSU_HADOU → 1130 —
+// but under the Korean resource name, so the id has to be redirected or the
+// bundle never builds and the replay viewer has nothing to play for it.
+test("sprEffectCandidates redirects the ids whose ported name is another client's", () => {
+  assert.deepEqual(sprEffectCandidates("1130", "bakuretsu_hadou/bakuretsu_hadou"), [
+    "data/sprite/아이템/c홍염의폭렬파동_이펙트",
+  ]);
+  // Numeric keys reach the same entry (Object.entries hands them over as strings).
+  assert.deepEqual(sprEffectCandidates(1130, "bakuretsu_hadou/bakuretsu_hadou"), [
+    "data/sprite/아이템/c홍염의폭렬파동_이펙트",
+  ]);
+  // Everything else keeps the table's own name under the effect sprite folder.
+  assert.deepEqual(sprEffectCandidates("666", "어스퀘이크"), ["data/sprite/이팩트/어스퀘이크"]);
+});
+
+// A "../npc/x" name walks out of the effect folder. The GRF is a flat name list,
+// so the ".." has to be collapsed or the path matches nothing at all; and this
+// client keeps only two of those six sprites under npc/, the rest under the
+// Korean monster folder, so both are offered in order.
+test("sprEffectCandidates resolves the ../npc names out of the effect folder", () => {
+  assert.deepEqual(sprEffectCandidates("ef_mandragora_attack", "../npc/mandragora_atk"), [
+    "data/sprite/npc/mandragora_atk",
+    "data/sprite/몬스터/mandragora_atk",
+  ]);
+  // A sub-path that stays inside the folder keeps it, and gets no monster fallback.
+  assert.deepEqual(sprEffectCandidates("1240", "digital_space/digital_space"), [
+    "data/sprite/이팩트/digital_space/digital_space",
+  ]);
+});
+
+test("hatEffectSprite names the sprite a hat-effect costume plays", () => {
+  assert.equal(hatEffectSprite("_C홍염의폭렬파동"), "data/sprite/아이템/c홍염의폭렬파동_이펙트");
+  // Backslashes and case come from the client table the same way normRes takes them.
+  assert.equal(hatEffectSprite("C홍염의폭렬파동"), "data/sprite/아이템/c홍염의폭렬파동_이펙트");
+  // No accessory name, nothing to look for.
+  assert.equal(hatEffectSprite(""), "");
+  assert.equal(hatEffectSprite(undefined), "");
 });
 
 
