@@ -3,6 +3,63 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-08-21
+
+### Added
+- **Six more effect-only costumes are served** — `/effects/index.json` goes from
+  18 to 24 items, and the unresolved list drops from 12 to 6:
+
+  | item | resource | bundle |
+  |---|---|---|
+  | `19871` Ritmo do Momento | `음계의오오라` | `decoration_of_music` |
+  | `20154` Folhas Outonais | `흩날리는낙엽` | `maple_falls` |
+  | `20285` Aura de Amatsu | `흩날리는벚꽃` | `blossom_fluttering` |
+  | `31091` Chuva Dourada | `c골드샤워` | `gold_shower` |
+  | `31092` Chapéu do Coelho Elegante | `토끼리본모자` | `rabbit_aura` |
+  | `410231` Chá das Maravilhas | `Teaparty_Wonderland` | `teaparty_wonderland` |
+
+  These are the costumes whose effect folder is romanized, so `efst_<res>` can't
+  find it. The picks are not guesses from the folder name: the client ships
+  `HatEffectInfo/HatEffectInfo.lub`, which maps every `HAT_EF_*` id to the exact
+  `.str` it plays, and each of the six is that table's own answer. Loading it
+  needs `HatEffectIds.lub` in the same Lua globals first, or the table's keys
+  come back unresolved and it looks like a one-entry file.
+
+  That table also settles the folders holding more than one `.str`, which is why
+  `흩날리는낙엽` takes `maple_falls.str` and not the `dandan1.str` sitting beside
+  it. Each bundle was checked against its textures before landing: `maple_falls`
+  is an autumn maple leaf, `blossom_fluttering` a cherry petal, `gold_shower` a
+  coin in five rotation frames, `decoration_of_music` musical notes,
+  `rabbit_aura` a rabbit face and a carrot, `teaparty_wonderland` a teapot and
+  the four card suits.
+
+  The six that stay unresolved have nothing to serve: `20535` *Holograma
+  Futurista*, `20950`/`24422` (the Sura level auras) and `31819` *Capacete de
+  Dullahan* have an empty `resourceFileName` in the client's table, `31089`
+  *Fúria dos Shuras* isn't in it at all, and `400149` *Aura de Betelgeuse* names
+  `efst_black_thunder/ros2023_f.str` — which this client's GRF does not ship.
+
+### Fixed
+- **Two costumes were serving the wrong `.str` of their folder** —
+  `c_sakura_fubuki` (`480296`) was built from `cherryblossoms.str` and
+  `c_swirling_flame` (`480131`) from `vortexf.str`; the client's hat-effect table
+  names `sakura_fubuki.str` and `vortexf2.str`, and no client table references
+  the two files we were using. Both bundles are rebuilt.
+
+  `vortexf.str` is the clearer of the two: it references a texture the GRF no
+  longer ships, so it extracted as "7 textures (1 missing)" and one of its four
+  layers drew nothing at all. `vortexf2.str` extracts clean at 3 layers / 6
+  textures, with pixel-identical flame frames. For the sakura the textures tell
+  it: `cherryblossoms.str` carries a blossom-branch garland, while
+  `sakura_fubuki.str` is four tumbling petal shapes plus the flower — a petal
+  blizzard, which is what 桜吹雪 means and what the costume is called.
+
+- **`rabbit_aura` no longer publishes a frozen animation** — `toto.str` carries
+  `maxKey = 1835102790` in its header for an effect whose last keyframe is 180,
+  so a viewer looping on it would never appear to move. An implausible header
+  value now falls back to the last keyframe. It is the only one of the client's
+  258 effects that needs it; every other `effect.json` is byte-identical.
+
 ## 2026-08-20
 
 ### Fixed

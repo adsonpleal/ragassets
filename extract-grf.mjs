@@ -1802,11 +1802,12 @@ function indexStrFiles(grf) {
 // from the resource name go here too once mapped — until then they report as
 // unresolved (expected manual follow-up, per the project brief).
 const STR_OVERRIDE = {
-  // efst_c_sakura_fubuki holds cherryblossoms.str AND sakura_fubuki.str; the
-  // costume uses the cherry-blossom petals.
-  c_sakura_fubuki: "data/texture/effect/efst_c_sakura_fubuki/cherryblossoms.str",
-  // c_swirling_flame holds vortexf.str AND vortexf2.str; the primary is vortexf.
-  c_swirling_flame: "data/texture/effect/c_swirling_flame/vortexf.str",
+  // Both of these folders hold two .str files, and the client's hat-effect table
+  // (see below) names which one the costume plays — the sibling is dead weight
+  // no client table references. vortexf.str even points at a texture the GRF no
+  // longer ships, so one of its layers draws nothing; vortexf2.str is clean.
+  c_sakura_fubuki: "data/texture/effect/efst_c_sakura_fubuki/sakura_fubuki.str",
+  c_swirling_flame: "data/texture/effect/c_swirling_flame/vortexf2.str",
   // Magic circles: the effect folder collapses the resource name's punctuation
   // ("magic_circle" → efst_magiccircle). The rainbow folder holds mc.str AND
   // mcr.str — mcr ("magic circle rainbow") is the rainbow variant.
@@ -1818,6 +1819,17 @@ const STR_OVERRIDE = {
   "c흩날리는천사의날개": "data/texture/effect/efst_angel_fluttering/angel_fluttering.str",
   "c흩날리는깃털": "data/texture/effect/efst_feather_fluttering/feath.str",
   "눈의선물": "data/texture/effect/efst_gift_of_snow/gift_of_snow.str",
+  // The rest of the romanized set, taken from the client's own hat-effect table
+  // (HatEffectInfo/HatEffectInfo.lub maps each HAT_EF_* id to the exact .str it
+  // plays) rather than guessed from the folder name. That table is also what
+  // settles the ambiguous folders below — it names one .str per effect, so
+  // efst_maple_falls resolves to maple_falls.str and not dandan1.str.
+  "흩날리는낙엽": "data/texture/effect/efst_maple_falls/maple_falls.str", //          HAT_EF_Maple_Falls
+  "흩날리는벚꽃": "data/texture/effect/efst_blossom_fluttering/sakura.str", //        HAT_EF_Blossom_Fluttering
+  "c골드샤워": "data/texture/effect/efst_gold_shower/coin2.str", //                   HAT_EF_gold_shower
+  "음계의오오라": "data/texture/effect/efst_decoration_of_music/note_1.str", //       HAT_EF_decoration_of_music
+  "토끼리본모자": "data/texture/effect/efst_rabbit_aura/toto.str", //                 HAT_EF_rabbit_aura
+  teaparty_wonderland: "data/texture/effect/efst_alice_tea/alice02.str", //          HAT_EF_alice_tea
 };
 
 // The served effect key: the resource name normalized to a URL/path-safe slug.
@@ -1843,7 +1855,7 @@ const isMinStr = (p) => strBase(p).startsWith("min_"); // low-spec "minimized" v
 // .str, else flag the folder as ambiguous for the override table. Costume resource
 // names often carry a leading "C_" that the effect folder omits (C_InkPainting_Day
 // → efst_inkpainting_day), so the de-prefixed form is tried too.
-function resolveStr(strIndex, res) {
+export function resolveStr(strIndex, res) {
   const r = normRes(res);
   if (!r) return null;
   if (STR_OVERRIDE[r]) {
@@ -1992,8 +2004,23 @@ function buildEffect(grf, strPath, key, outDir) {
     })),
   }));
 
-  writeFileSync(join(outDir, "effect.json"), JSON.stringify({ key, fps: str.fps, maxKey: str.maxKey, layers }));
+  const maxKey = effectMaxKey(str.maxKey, layers, key);
+
+  writeFileSync(join(outDir, "effect.json"), JSON.stringify({ key, fps: str.fps, maxKey, layers }));
   return { layers: layers.length, textures: texFile.size, texMissing, bytesRead: str.bytesRead, total: str.total };
+}
+
+// The animation length the viewer loops on. One shipped .str
+// (efst_rabbit_aura/toto.str) carries garbage in that header field —
+// 1,835,102,790 for an effect whose last keyframe is 180 — which would leave the
+// effect frozen on its first frame forever. Fall back to the last keyframe when
+// the header is implausible; 1 of the client's 258 effects needs it and the rest
+// are untouched (the largest legitimate maxKey is in the hundreds).
+export function effectMaxKey(headerMaxKey, layers, key = "") {
+  if (headerMaxKey >= 0 && headerMaxKey <= 10000) return headerMaxKey;
+  const lastKey = layers.reduce((m, ly) => ly.anims.reduce((n, a) => Math.max(n, a.frame), m), 0);
+  console.error(`  ! ${key}: maxKey ${headerMaxKey} is out of range — using last keyframe ${lastKey}`);
+  return lastKey;
 }
 
 function extractEffects(grfPath, outBase, args) {

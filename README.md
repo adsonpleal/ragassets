@@ -290,6 +290,17 @@ bundles for the [latamvisuais](https://github.com/adsonpleal/latamvisuais) map
 simulator to render client-side. These endpoints return `404` until you run the
 `--effects` step.
 
+A costume is linked to its `.str` by resource name — `efst_<res>` names the
+folder — but Gravity romanizes some folders (`흩날리는낙엽` lives in
+`efst_maple_falls/`) and some folders hold more than one `.str`. Both cases go in
+the `STR_OVERRIDE` table in `extract-grf.mjs`, and the picks there come from the
+client's own hat-effect table, `HatEffectInfo/HatEffectInfo.lub`, which maps each
+`HAT_EF_*` id to the exact file it plays. Read it with the `HAT_EF_*` constants
+from `HatEffectInfo/HatEffectIds.lub` loaded into the same Lua globals, or the
+table's keys come back unresolved. It has no item ids — the item → hat-effect
+link is server-side — so the costume still has to be matched by hand, but it
+settles *which* `.str` an ambiguous folder plays.
+
 | Path | What you get |
 |---|---|
 | `GET /effects/index.json` | Catalogue: `{"items":[{"id","name","slots","effect"}]}` — one entry per effect-only costume (`effect` is the bundle key; there is no character `view`). |

@@ -19,6 +19,8 @@ import {
   expandStrFiles,
   effectStrKey,
   effectStrPath,
+  effectMaxKey,
+  resolveStr,
   effectStrRefs,
   decodeSprFrames,
   parseActFrames,
@@ -914,4 +916,47 @@ test("actDrawsNothing spots the all-alpha-0 effect-costume placeholder", () => {
   assert.equal(actDrawsNothing(buildAct23([0, 1, 0], 100, 0)), true);
   assert.equal(actDrawsNothing(buildAct23([0, 1, 0], 100, 255)), false);
   assert.equal(actDrawsNothing(buildAct23([0, 1, 0], 100, 1)), false); // barely visible still counts
+});
+
+
+// The costumes whose effect folder is romanized can't be reached from the
+// resource name, so STR_OVERRIDE names the .str by hand. The picks come from the
+// client's own HatEffectInfo table (HAT_EF_* → resourceFileName), which is also
+// what settles the folders holding more than one .str — pinning them here keeps
+// a future "cleanup" from silently swapping in the wrong sibling file.
+test("STR_OVERRIDE resolves the romanized costumes to the .str the client plays", () => {
+  const index = [
+    "data/texture/effect/efst_maple_falls/maple_falls.str",
+    "data/texture/effect/efst_maple_falls/dandan1.str",
+    "data/texture/effect/efst_blossom_fluttering/sakura.str",
+    "data/texture/effect/efst_gold_shower/coin2.str",
+    "data/texture/effect/efst_decoration_of_music/note_1.str",
+    "data/texture/effect/efst_rabbit_aura/toto.str",
+    "data/texture/effect/efst_alice_tea/alice02.str",
+  ];
+  const cases = [
+    ["흩날리는낙엽", "efst_maple_falls/maple_falls.str"], //        HAT_EF_Maple_Falls, not dandan1.str
+    ["흩날리는벚꽃", "efst_blossom_fluttering/sakura.str"], //      HAT_EF_Blossom_Fluttering
+    ["C골드샤워", "efst_gold_shower/coin2.str"], //                 HAT_EF_gold_shower
+    ["음계의오오라", "efst_decoration_of_music/note_1.str"], //     HAT_EF_decoration_of_music
+    ["토끼리본모자", "efst_rabbit_aura/toto.str"], //               HAT_EF_rabbit_aura
+    ["Teaparty_Wonderland", "efst_alice_tea/alice02.str"], //      HAT_EF_alice_tea
+  ];
+  for (const [res, want] of cases) {
+    assert.equal(resolveStr(index, res)?.str, "data/texture/effect/" + want, res);
+  }
+});
+
+// toto.str (the rabbit aura) is the one effect in the client whose header maxKey
+// is garbage. Taken at face value the viewer would loop over 1.8 billion frames
+// and the effect would never appear to move.
+test("effectMaxKey falls back to the last keyframe only when the header is absurd", () => {
+  const layers = [{ anims: [{ frame: 0 }, { frame: 90 }] }, { anims: [{ frame: 180 }] }];
+  assert.equal(effectMaxKey(1835102790, layers), 180);
+  assert.equal(effectMaxKey(-1, layers), 180);
+  // plausible headers are kept verbatim, including ones past the last keyframe
+  // (an effect may hold after its final key) and 0
+  assert.equal(effectMaxKey(360, layers), 360);
+  assert.equal(effectMaxKey(180, layers), 180);
+  assert.equal(effectMaxKey(0, layers), 0);
 });
