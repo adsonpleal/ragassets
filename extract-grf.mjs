@@ -882,27 +882,52 @@ export function runChunk(bytes) {
 // Client strings are CP1252 (Portuguese) or EUC-KR (Korean, untranslated). The
 // VM keeps them as latin1, so recover the bytes and pick the charset: prefer a
 // clean EUC-KR decode that yields Hangul, else fall back to Windows-1252.
+// (The two charsets overlap — see the tie-break inside.)
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const EUCKR = new TextDecoder("euc-kr", { fatal: true });
 const CP1252 = new TextDecoder("windows-1252");
-function decodeClientString(latin1) {
+const HANGUL = /[\uac00-\ud7af]/;
+// Whether a string reads as plausible accented Latin text rather than another
+// charset misread as one: every non-ASCII character is a letter, and no three
+// of them run together (Portuguese tops out at two, "AÇÃO"; a Korean name
+// misread as CP1252 is two characters per syllable, so four and up).
+const isLatinText = (s) =>
+  [...s].every((ch) => ch.charCodeAt(0) < 0x80 || /\p{L}/u.test(ch)) &&
+  !/[\u0080-\uffff]{3}/.test(s);
+export function decodeClientString(latin1) {
   if (latin1 == null) return null;
   const bytes = Buffer.from(latin1, "latin1");
   if (!bytes.some((x) => x >= 0x80)) return latin1; // pure ASCII
   // The patched iteminfo_new.lub is UTF-8; a strict decode succeeds only for
   // genuine UTF-8 and cleanly covers both Portuguese and Korean. Legacy strings
-  // fall back: EUC-KR for pure-Hangul names, else CP1252.
+  // fall back: EUC-KR when it decodes to Korean, else CP1252.
   try {
     return UTF8.decode(bytes);
   } catch {
     /* not UTF-8 */
   }
-  if (!/[A-Za-z]/.test(latin1)) {
-    try {
-      return EUCKR.decode(bytes);
-    } catch {
-      /* fall through to CP1252 */
-    }
+  let korean = null;
+  try {
+    korean = EUCKR.decode(bytes);
+  } catch {
+    /* not EUC-KR either */
+  }
+  if (korean != null) {
+    // Nothing Latin to disagree with: the legacy pure-Korean case, which may be
+    // punctuation- or Hanja-only, so any clean decode wins.
+    if (!/[A-Za-z]/.test(latin1)) return korean;
+    // Otherwise the two readings compete. ASCII + Hangul is a real combination —
+    // the name tables prefix Korean sprite names with ASCII ("_C홍염의폭렬파동"
+    // in AccNameTable) — but a strict EUC-KR decode succeeding proves nothing on
+    // its own: an uppercase Portuguese pair like "ÇÃ" is a valid Hangul double
+    // byte too, so "AÇÃO" would "decode" to Korean. What tells them apart is the
+    // other reading: real accented text is letters all the way through and never
+    // stacks three in a row, while EUC-KR bytes read as CP1252 spill long runs of
+    // symbols ("_C홍염의폭렬파동" comes out as "_CÈ«¿°ÀÇÆø·ÄÆÄµ¿"). So take the
+    // Korean only when the CP1252 reading is not plausible text.
+    const latin = CP1252.decode(bytes);
+    if (HANGUL.test(korean) && !isLatinText(latin)) return korean;
+    return latin;
   }
   return CP1252.decode(bytes);
 }
@@ -1570,6 +1595,10 @@ function normRes(s) {
   return typeof s === "string" ? s.replace(/\\/g, "/").replace(/^_/, "").toLowerCase() : "";
 }
 
+// The accessory folder, as the client names it (mirrors the Go resolver's
+// kAccessory) — the .act lookup below is the only place this module needs it.
+const kACCESSORY = "악세사리";
+
 // Reverse lookup (sprite name → view id) over the client's accessory/robe name
 // tables — the same authority build-db.mjs uses to recover a costume's view when
 // ClassNum is 0. A costume that resolves to a view here is a renderable body
@@ -1602,10 +1631,25 @@ function buildViewResolver(grf) {
     }
     return m;
   };
+  // view id -> the table's own sprite name, kept alongside the reverse map so a
+  // resolved view can be walked back to the .act it renders (see drawsNothing).
+  // Unlike normRes this keeps the leading underscore: the sprite file is the
+  // gender prefix concatenated with the table value verbatim ("남" + "_c골드샤워").
+  const byId = (t) => {
+    const m = new Map();
+    if (!(t instanceof LuaTable)) return m;
+    for (const [k, v] of t.map) {
+      if (typeof k !== "number" || k <= 0 || typeof v !== "string") continue;
+      const name = decodeClientString(v).replace(/\\/g, "/").toLowerCase();
+      if (name) m.set(k, name);
+    }
+    return m;
+  };
   const accG = tablesFrom("accessoryid", "accname");
   const robeG = tablesFrom("spriterobeid", "spriterobename");
   const acc = reverse(accG.get("AccNameTable"));
   const robe = reverse(robeG.get("RobeNameTable"), robeG.get("RobeNameTable_Eng"));
+  const accById = byId(accG.get("AccNameTable"));
 
   // The view a costume renders with when iteminfo's ClassNum is 0 — common on
   // newer costumes — recovered from the item's sprite resource name.
@@ -1629,13 +1673,74 @@ function buildViewResolver(grf) {
     return isAcc ? "headgear" : "garment";
   };
 
-  return { resolveView, spriteKind };
+  // Accessory .act entries, indexed on first use: drawsNothing runs for every
+  // view in items.json, and a findBestEntry scan per view walks all 269k rows.
+  let accActs = null;
+  const accAct = (path) => {
+    if (accActs === null) {
+      accActs = new Map();
+      const prefix = normalize(`data/sprite/${kACCESSORY}/`);
+      for (const f of grf.files) {
+        if (!(f.flags & 0x01)) continue;
+        const n = normalize(f.filename);
+        if (!n.startsWith(prefix) || !n.endsWith(".act")) continue;
+        const prev = accActs.get(n);
+        if (!prev || f.uncompSize > prev.uncompSize) accActs.set(n, f); // largest copy wins
+      }
+    }
+    return accActs.get(path);
+  };
+  // A handful of costumes ship an accessory sprite that is deliberately blank:
+  // every .act layer is tinted alpha 0, so the client draws nothing and what the
+  // player actually sees is a separate effect (the falling petals/feathers ones,
+  // 골드샤워, 홍염의폭렬파동, …). They resolve a view like any other costume, so
+  // the view alone cannot tell them apart from a real headgear — read the .act.
+  // Only accessories do this: not one of the client's 77k robe .act files is
+  // fully transparent, so garments are taken at face value.
+  const blankCache = new Map();
+  const drawsNothing = (view, slots) => {
+    if (view == null || slots.includes("garment")) return false;
+    if (blankCache.has(view)) return blankCache.get(view);
+    let blank = false;
+    const name = accById.get(view);
+    // Both genders ship the same geometry; the male sprite stands for the pair.
+    const entry = name && accAct(normalize(`data/sprite/${kACCESSORY}/남/남${name}.act`));
+    if (entry) {
+      try {
+        blank = actDrawsNothing(extractFile(grf, entry));
+      } catch (err) {
+        console.error(`  ! act ${name}: ${err.message}`);
+      }
+    }
+    blankCache.set(view, blank);
+    return blank;
+  };
+
+  return { resolveView, spriteKind, drawsNothing };
+}
+
+
+// Whether an .act never puts a pixel on screen: every layer of every frame is
+// tinted with alpha 0. The renderer (like zrenderer and the client) skips those
+// layers, so such a sprite is a placeholder for an effect, not a visual.
+export function actDrawsNothing(bytes) {
+  let layers = 0;
+  for (const action of parseActFrames(bytes).actions) {
+    for (const frame of action) {
+      for (const layer of frame) {
+        if (layer.color[3] !== 0) return false;
+        layers++;
+      }
+    }
+  }
+  return layers > 0;
 }
 
 // Enumerate the effect-only costumes from System/iteminfo_new.lub: costume==true,
-// a parsed visual slot, and NO resolvable character view (the set build-db drops).
-// The "invisible" costumes (가린다/Invisível — res 인비지블*) hide gear and have no
-// visual to extract, so they're excluded up front.
+// a parsed visual slot, and nothing the character renderer can draw — either no
+// resolvable view at all, or a view whose sprite is blank by design (the set
+// build-db drops). The "invisible" costumes (가린다/Invisível — res 인비지블*)
+// hide gear and have no visual to extract, so they're excluded up front.
 function buildEffectCostumes(grf, args) {
   const lubPath = resolveItemInfoPath(args);
   if (!lubPath) {
@@ -1643,7 +1748,7 @@ function buildEffectCostumes(grf, args) {
   }
   const tbl = runChunk(readFileSync(lubPath)).get("tbl");
   if (!(tbl instanceof LuaTable)) throw new Error("iteminfo: no `tbl` global");
-  const { resolveView } = buildViewResolver(grf);
+  const { resolveView, drawsNothing } = buildViewResolver(grf);
 
   const effects = [];
   const excluded = [];
@@ -1655,10 +1760,16 @@ function buildEffectCostumes(grf, args) {
     const slots = parseSlots(entry.get("identifiedDescriptionName"));
     if (!slots.length) continue;
 
-    // Renderable? (iteminfo carries the view, or its resource name resolves to one.)
+    // Renderable? (iteminfo carries the view, or its resource name resolves to
+    // one) — and does that view's sprite actually draw? A view whose .act is
+    // entirely alpha-0 renders as nothing, which is how the client says "the
+    // visual is an effect, not a sprite"; those stay in this set.
     const cn = entry.get("ClassNum");
-    if (typeof cn === "number" && cn > 0) continue;
-    if (resolveView(slots, entry.get("identifiedResourceName")) != null) continue;
+    const view =
+      typeof cn === "number" && cn > 0
+        ? Math.round(cn)
+        : resolveView(slots, entry.get("identifiedResourceName"));
+    if (view != null && !drawsNothing(view, slots)) continue;
 
     const res = decodeClientString(entry.get("identifiedResourceName")) || "";
     // "Invisible" costumes hide gear — no .str to extract.
@@ -4209,6 +4320,12 @@ export function projectItems(tbl, aegisMap = new Map(), views = null) {
       description: joinDescriptionLines(entry.get("identifiedDescriptionName")),
       view,
       spriteView,
+      // The view resolves but its sprite is blank by design (every .act layer
+      // tinted alpha 0): the client renders nothing and shows an effect instead.
+      // Consumers that draw a costume from spriteView have to skip these, or
+      // they publish an empty preview — see /effects/index.json for the ones
+      // whose effect is a .str we can serve.
+      spriteBlank: Boolean(spriteView && views?.drawsNothing(spriteView, equipSlots)),
       viewKind: (spriteView && views?.spriteKind(spriteView, resourceName)) || null,
       equipSlots,
       costume: entry.get("costume") === true,

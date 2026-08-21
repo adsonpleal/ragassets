@@ -277,10 +277,14 @@ original client filenames:
 
 ### `GET /effects/...` — effect-only costumes
 
-Some costumes have **no character sprite** — auras, falling petals, spotlights,
-ghosts, weather. The client draws them with its `.str` world-effect system, so the
-sprite renderer above can't produce them. `extract-grf.mjs --effects` pulls each
-one's `.str` out of the GRF as a small JSON + PNG bundle (see
+Some costumes have **no character sprite to draw** — auras, falling petals,
+spotlights, ghosts, weather. Either the client ships no accessory sprite for them
+at all, or it ships one that is deliberately blank (every `.act` layer tinted
+alpha 0, flagged as `spriteBlank` on
+[`/raw/items.json`](#get-raw--client-data-tables-items-jobs-skills-monsters)).
+Either way it draws them with its `.str` world-effect system, so the sprite
+renderer above can't produce them. `extract-grf.mjs --effects` pulls each one's
+`.str` out of the GRF as a small JSON + PNG bundle (see
 [GRF extraction](#resources--grf-extraction-required)); the gateway serves those
 bundles for the [latamvisuais](https://github.com/adsonpleal/latamvisuais) map
 simulator to render client-side. These endpoints return `404` until you run the
@@ -506,7 +510,7 @@ themselves.
 
 | Path | What you get |
 |---|---|
-| `GET /raw/items.json` | Every item: `id, name, slots, aegisName, resourceName, description, view, spriteView, viewKind, equipSlots, costume`. |
+| `GET /raw/items.json` | Every item: `id, name, slots, aegisName, resourceName, description, view, spriteView, spriteBlank, viewKind, equipSlots, costume`. |
 | `GET /raw/jobs.json` | Every class: `id, jt, name, hasIcon`. |
 | `GET /raw/skills.json` | Every skill: `id, name, maxLevel, description, delay`. |
 | `GET /raw/status.json` | Status-effect (EFST) `id` → `name`. |
@@ -528,10 +532,20 @@ at display time, so `slots` is a separate number and a consumer that wants
 `view` is the literal client `ClassNum`; **`spriteView` is the one to render
 with**. Newer costumes ship `ClassNum: 0` and keep their real view only in the
 client's accessory/robe name tables, so `spriteView` falls back to that lookup
-(228 items in the current client) — a costume catalogue built on `view` alone
+(232 items in the current client) — a costume catalogue built on `view` alone
 silently loses them. `viewKind` (`"headgear"`/`"garment"`/`null`) says which of
 the two sprite tables the view lives in, which usually follows the equip slot but
 not always; rendering those few from the slot-implied table draws the wrong item.
+
+`spriteBlank` marks the handful of views (13 items in the current client) whose
+sprite is there but **deliberately draws nothing** — every layer of the `.act` is
+tinted alpha 0. That is how the client says "this costume's visual is an effect,
+not a sprite": the falling-petal and aura costumes all work this way. Rendering
+them yields an empty image, so a costume catalogue has to skip them and take the
+visual from [`/effects/index.json`](#get-effects--effect-only-costumes) instead —
+where the effect is a `.str` we can serve. A few (`31089` *Fúria dos Shuras*,
+`31091` *Chuva Dourada*) are driven by an effect the client plays from a sprite
+rather than a `.str`, and are not served yet.
 
 `description` — on both `items.json` and `skills.json` — is the client's own
 pt-BR tooltip, **raw**: the `^RRGGBB` colour codes and the line breaks are kept

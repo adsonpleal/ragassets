@@ -3,6 +3,48 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-08-20
+
+### Fixed
+- **A Korean sprite name that starts with an ASCII letter no longer decodes to
+  mojibake** — `decodeClientString` only tried EUC-KR when the string had no
+  Latin letter at all, and the client's accessory/robe name tables prefix every
+  Korean sprite name with `_C` (`AccNameTable[1500] = "_C홍염의폭렬파동"`). The
+  `C` sent all of them down the CP1252 path, so they came out as
+  `_CÈ«¿°ÀÇÆø·ÄÆÄµ¿` and matched no item resource name: the reverse lookup that
+  recovers a costume's view when `ClassNum` is 0 simply missed. 94 of the 3,513
+  name-table strings were affected; in `/raw/items.json` **8 items gain a
+  `spriteView`** (`31089` *Fúria dos Shuras* → 1500, `5979` → 1380, `20457` →
+  1461, …) and **82 gain a `viewKind`**. None lost either.
+
+  The charsets genuinely overlap, so "EUC-KR decoded cleanly" is not enough to
+  decide on: `ÇÃ` is a valid Hangul double byte, and a decoder that trusts a
+  clean read turns `AÇÃO` into Korean. The tie-break is the *other* reading —
+  real accented text is letters all the way through and never stacks three in a
+  row, while EUC-KR read as CP1252 spills long runs of symbols.
+
+### Added
+- **`spriteBlank` on `/raw/items.json`** — 13 items resolve a view whose sprite
+  is there but draws nothing: every layer of the `.act` is tinted alpha 0, which
+  is how the client says "this costume's visual is an effect, not a sprite". The
+  renderer honours that (it skips alpha-0 layers, like zrenderer and the client),
+  so `/image?headgear=1500` correctly comes back byte-identical to a render with
+  no headgear at all. Only accessories do this — not one of the client's 77,774
+  robe `.act` files is fully transparent.
+
+  Without the flag the decode fix above would have *cost* two working costumes:
+  `5979` *Penas Encantadas* and `20457` *Penas Coloridas* are served today as
+  `.str` effects (`angel_fluttering`, `feather_fluttering`), and a consumer that
+  reads their new `spriteView` as "renderable" would swap a working effect for an
+  empty image. `--effects` applies the same test, so `/effects/index.json` is
+  byte-identical to before this change.
+
+  `31089` *Fúria dos Shuras* and `31091` *Chuva Dourada* are still not visible
+  anywhere: their blank sprite has no `.str` behind it either. The client plays
+  `data/sprite/아이템/c홍염의폭렬파동_이펙트` (1 action, 27 frames, animated
+  alpha) — a sprite effect, which `/effects/sprites/` can already carry but the
+  costume catalogue has no field for yet.
+
 ## 2026-08-15
 
 ### Added

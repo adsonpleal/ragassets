@@ -27,6 +27,8 @@ import {
   encodeWavPcm,
   decodeImaAdpcm,
   toPlayableWav,
+  decodeClientString,
+  actDrawsNothing,
 } from "./extract-grf.mjs";
 
 // The real data/fogparametertable.txt lays out each record across five
@@ -195,7 +197,7 @@ test("decodeSprFrames reads truecolor frames and swizzles ABGR → RGBA", () => 
 // sprite indices, and a single per-action delay (stored as delay/25). Exercises
 // the corrected 2.x layer layout: 4-byte packed colour (not 4 floats) and the
 // 16-byte attach points, plus the trailing events + delays sections.
-function buildAct23(indices, delayMs) {
+function buildAct23(indices, delayMs, alpha = 255) {
   const parts = [];
   const i32 = (v) => { const b = Buffer.alloc(4); b.writeInt32LE(v); return b; };
   const f32 = (v) => { const b = Buffer.alloc(4); b.writeFloatLE(v); return b; };
@@ -211,7 +213,7 @@ function buildAct23(indices, delayMs) {
     parts.push(i32(0), i32(0)); // x, y
     parts.push(i32(idx)); // sprite index
     parts.push(i32(0)); // mirror
-    parts.push(Buffer.from([255, 255, 255, 255])); // packed colour (4 bytes)
+    parts.push(Buffer.from([255, 255, 255, alpha])); // packed colour (4 bytes)
     parts.push(f32(1)); // scaleX (scaleY copied at 2.3)
     parts.push(i32(0), i32(0)); // rotation, sprite type
     parts.push(i32(-1)); // event id
@@ -827,6 +829,7 @@ test("projectItems recovers spriteView when ClassNum is 0, leaving view alone", 
   const views = {
     resolveView: (slots, res) => (res === "recovered_hat" && slots.includes("top") ? 199 : undefined),
     spriteKind: (view) => (view === 199 ? "headgear" : undefined),
+    drawsNothing: (view) => view === 42, // the effect-costume placeholder
   };
   const desc = luaTable([[1, "Equipa em: Topo"]]);
   const items = projectItems(
@@ -842,6 +845,9 @@ test("projectItems recovers spriteView when ClassNum is 0, leaving view alone", 
   // ClassNum present: view and spriteView agree, nothing was recovered
   assert.equal(items[0].view, 42);
   assert.equal(items[0].spriteView, 42);
+  // ...and that view's sprite is blank, so a catalogue must not draw it
+  assert.equal(items[0].spriteBlank, true);
+  assert.equal(items[1].spriteBlank, false);
   // ClassNum 0 but the name tables know it — this is the row that would
   // otherwise vanish from a costume catalogue
   assert.equal(items[1].view, 0);
@@ -857,4 +863,55 @@ test("projectItems works without a view resolver", () => {
   const [item] = projectItems(luaTable([[1, luaRecord({ identifiedDisplayName: "X", ClassNum: 7 })]]));
   assert.equal(item.spriteView, 7);
   assert.equal(item.viewKind, null);
+  assert.equal(item.spriteBlank, false);
+});
+
+
+// The Lua VM hands strings over as latin1, so decodeClientString has to pick the
+// charset from the bytes. The client mixes both in the same table, and — this is
+// the trap — a CP1252 accent pair is usually a valid EUC-KR double byte too, so
+// "decodes cleanly" is not enough to go on either way.
+test("decodeClientString reads a Korean name that carries an ASCII prefix", () => {
+  // AccNameTable[1500] = "_C홍염의폭렬파동": ASCII "_C" then EUC-KR Hangul. The
+  // ASCII letter must not stop the EUC-KR reading — CP1252 would yield
+  // "_CÈ«¿°ÀÇÆø·ÄÆÄµ¿", whose normalized form matches no item resource name, and
+  // the costume silently loses its sprite view.
+  const bytes = [0x5f, 0x43, 0xc8, 0xab, 0xbf, 0xb0, 0xc0, 0xc7, 0xc6, 0xf8, 0xb7, 0xc4, 0xc6, 0xc4, 0xb5, 0xbf];
+  assert.equal(decodeClientString(Buffer.from(bytes).toString("latin1")), "_C홍염의폭렬파동");
+
+  // Same shape, but every CP1252 byte happens to be a letter ("_CÀüÅõÀÇÈçÀû") —
+  // the run of them is what gives it away as Korean.
+  const combat = [0x5f, 0x43, 0xc0, 0xfc, 0xc5, 0xf5, 0xc0, 0xc7, 0xc8, 0xe7, 0xc0, 0xfb];
+  assert.equal(decodeClientString(Buffer.from(combat).toString("latin1")), "_C전투의흔적");
+});
+
+test("decodeClientString reads a pure EUC-KR name", () => {
+  const bytes = [0xc0, 0xce, 0xba, 0xf1, 0xc1, 0xf6, 0xba, 0xed, 0xc4, 0xb8]; // 인비지블캡
+  assert.equal(decodeClientString(Buffer.from(bytes).toString("latin1")), "인비지블캡");
+});
+
+test("decodeClientString leaves accented Portuguese alone", () => {
+  // "AÇÃO" is C7 C3 — a perfectly valid Hangul double byte (것), so a decoder
+  // that trusts a clean EUC-KR read turns the client's pt-BR text into Korean.
+  const cases = [
+    [[0x41, 0xc7, 0xc3, 0x4f], "AÇÃO"],
+    [[0x4d, 0x41, 0x4c, 0x44, 0x49, 0xc7, 0xd5, 0x45, 0x53], "MALDIÇÕES"],
+    [[0x50, 0x6f, 0xe7, 0xe3, 0x6f, 0x20, 0x64, 0x65, 0x20, 0x43, 0x75, 0x72, 0x61], "Poção de Cura"],
+  ];
+  for (const [bytes, want] of cases) {
+    assert.equal(decodeClientString(Buffer.from(bytes).toString("latin1")), want);
+  }
+});
+
+test("decodeClientString keeps UTF-8 (the patched iteminfo) as-is", () => {
+  assert.equal(decodeClientString(Buffer.from("Poção de Cura", "utf8").toString("latin1")), "Poção de Cura");
+});
+
+// Effect costumes ship an accessory sprite that is there but deliberately blank:
+// every layer tinted alpha 0. That is how the client says "the visual is an
+// effect" — so the extractor must not mistake such a view for a renderable one.
+test("actDrawsNothing spots the all-alpha-0 effect-costume placeholder", () => {
+  assert.equal(actDrawsNothing(buildAct23([0, 1, 0], 100, 0)), true);
+  assert.equal(actDrawsNothing(buildAct23([0, 1, 0], 100, 255)), false);
+  assert.equal(actDrawsNothing(buildAct23([0, 1, 0], 100, 1)), false); // barely visible still counts
 });
