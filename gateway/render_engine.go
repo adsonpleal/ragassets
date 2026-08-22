@@ -14,6 +14,7 @@ import (
 	"github.com/ragassets/gateway/internal/render/engine"
 	"github.com/ragassets/gateway/internal/render/raster"
 	"github.com/ragassets/gateway/internal/render/rotype"
+	"github.com/ragassets/gateway/internal/render/skin"
 )
 
 // buildRequest converts incoming query params into an engine.Request and returns
@@ -42,6 +43,7 @@ func buildRequest(q url.Values) (engine.Request, string, error) {
 	req.HeadPalette = -1
 	req.EnableShadow = true
 	req.HeadDir = rotype.All
+	req.SkinTone = 1
 
 	intInto := func(name string, dst *int) error {
 		if q.Has(name) {
@@ -140,6 +142,30 @@ func buildRequest(q url.Values) (engine.Request, string, error) {
 			return req, "", err
 		}
 		req.EnableShadow = b
+	}
+
+	// Skin tone (fan-made; the game has no such option). A preset id or a custom
+	// base colour, never both — silently preferring one would hide a client bug.
+	if q.Has("skinTone") && q.Has("skinColor") {
+		return req, "", errors.New("'skinTone' and 'skinColor' cannot be combined; pass one or the other")
+	}
+	if q.Has("skinTone") {
+		allowed := make([]int, 0, skin.PresetCount)
+		for i := 1; i <= skin.PresetCount; i++ {
+			allowed = append(allowed, i)
+		}
+		n, err := parseEnum("skinTone", q.Get("skinTone"), map[string]int{"default": 1}, allowed)
+		if err != nil {
+			return req, "", err
+		}
+		req.SkinTone = n
+	}
+	if q.Has("skinColor") {
+		c, err := parseHexColor("skinColor", q.Get("skinColor"))
+		if err != nil {
+			return req, "", err
+		}
+		req.SkinColor = &c
 	}
 
 	req.Canvas = q.Get("canvas")

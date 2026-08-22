@@ -103,6 +103,8 @@ parameter:
 | `shield` | integer | |
 | `bodyPalette` | integer | `-1` = standard. |
 | `headPalette` | integer | `-1` = standard. |
+| `skinTone` | `1`–`4` (or `default`) | **Fan-made — see below.** `1` (the default) is the untouched original; `2`–`4` are progressively deeper tones. |
+| `skinColor` | hex `RRGGBB` | **Fan-made — see below.** A custom skin colour, e.g. `skinColor=8a5a3b`. A full 8-step ramp with the sprite's own shading is generated from it, not a flat fill. Mutually exclusive with `skinTone`. |
 | `headdir` | `straight`/`left`/`right`/`all` or `0`/`1`/`2`/`3` | Default all. For stand/sit, `straight`/`left`/`right` pin the head to that facing across the whole animation (the body still animates); `all` cycles the head through directions. |
 | `madogearType` | `robot`/`suit` or `0`/`2` | |
 | `enableShadow` | boolean | `true`/`false`. |
@@ -115,6 +117,36 @@ parameter:
 A missing or malformed `job`/parameter returns `400`. A render failure (e.g. a
 job whose sprite isn't in the extracted assets) returns `500`.
 
+#### Skin tone — a fan-made addition
+
+**Ragnarok Online has no skin-tone option.** There is no such setting in the
+client, no server ever sends one, and no official sprite ships in more than one
+skin tone. `skinTone` and `skinColor` are a capability of *this gateway*: the
+ramps are generated here, from the sprites' own palettes. Nothing about them is
+official, and a character rendered with one will not match that character in
+game. It exists because the LATAM community has asked for skin tones for years,
+and a fan site can at least show what they would look like.
+
+How it works, briefly. Human skin in a sprite is an 8-entry ramp of palette
+indices — highlight through deep shadow. Recolouring the ramp recolours skin in
+every frame, direction and animation at once, and leaves clothing, hair and eyes
+untouched. New ramps are generated in Oklab (darkening skin in HSL turns it grey
+and purple), preserving the original ramp's relative lightness spacing so the
+sprite keeps its own shading. `skinColor` anchors your colour to the ramp's
+dominant midtone, so what you pass is what most of the skin becomes.
+
+Two behaviours worth knowing:
+
+- **Doram is not supported** and the parameters are silently ignored for those
+  jobs, rather than erroring — a client iterating job ids should not break.
+- **A clothes dye no longer tints skin when a tone is set.** Many of the
+  client's own body dye palettes shift the skin ramp along with the garment;
+  with `skinTone`/`skinColor` the requested tone wins.
+
+Where the skin ramp sits in a palette is **not** fixed, so it is not guessed at
+render time. It is baked per sprite by `cmd/gen-skin-table` — see
+[Regenerating the skin table](#regenerating-the-skin-table).
+
 ### Examples
 
 ```
@@ -123,6 +155,8 @@ job whose sprite isn't in the extracted assets) returns `500`.
 /image?job=1002&action=0&frame=2         # a single frame of that action
 /image?job=1&gender=female&headgear=4,125&garment=1&weapon=2&head=4&action=32
 /image?job=0&canvas=200x200+75+175&action=93
+/image?job=4069&gender=female&skinTone=3  # fan-made skin tone (not in the game)
+/image?job=4069&gender=female&skinColor=8a5a3b
 ```
 
 ### Understanding `action` (animations & directions)
@@ -669,6 +703,7 @@ docker-compose.yml        # the gateway service
 gateway/                  # the Go gateway + in-process renderer (this project)
 gateway/internal/render/  # the native zrenderer reimplementation (parsers, raster, engine)
 gateway/cmd/gen-resolver/ # offline tool: bakes id→sprite-name tables from the client .lub
+gateway/cmd/gen-skin-table/ # offline tool: bakes per-sprite skin-ramp palette indices
 resources/                # YOUR extracted GRF assets (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*
 resources/effects/        # effect-only costume bundles (extract-grf.mjs --effects), served at /effects/*
@@ -710,6 +745,45 @@ don't need those endpoints. The headgear/garment
 ID→sprite-name tables are baked from the client `luafiles514/.lub` into the binary
 by `gateway/cmd/gen-resolver` — re-run it when you update the client (see that
 directory's `dump.lua` and `main.go`).
+
+#### Regenerating the skin table
+
+The fan-made [skin tone](#skin-tone--a-fan-made-addition) feature needs to know
+where each sprite keeps its skin ramp. That is baked into the binary as
+`gateway/internal/render/skin/data/skin_table.json`; the committed JSON is the
+source of truth, so this only needs re-running when the client's sprites change:
+
+```bash
+cd gateway && go run ./cmd/gen-skin-table -resources ../resources -sheets /tmp/skin-review
+```
+
+Nothing about the ramp's position is assumed, and it is not assumed there is only
+one. For each of ~540 body and 84 head sprites the tool maps **every** palette
+index carrying a canonical skin colour to the ramp step it represents. Blocks of
+three or more consecutive steps are taken directly — eight specific colours in
+order is not something a garment stumbles into — and an isolated skin-coloured
+index is taken only if its pixels are actually drawn touching confirmed skin.
+
+All three parts are load-bearing:
+
+- **Position varies.** The Wanderer's default body keeps skin at 48–55 while her
+  `costume_1` body keeps it at 43–50.
+- **A sprite can hold skin in more than one place.** 51 of them do:
+  `타조원더러_여` has a block at 48–55 *and* another at 240–247, and
+  `costume_1/레인져늑대_여_1` has 32–39 plus a 43-pixel block at 240–247.
+  Recolouring only one leaves the rest of the skin in its original colour.
+- **The adjacency test protects the mounts.** A poring is pink and a toad is
+  brown, so several mounts carry a stray index that exactly matches a skin
+  colour. Those pixels never touch the rider, so they are left alone — 23 such
+  indices across the library, each one reviewed.
+
+It also finds the pixels that **cannot** be handled by a palette swap. Most head
+sprites use a single palette index for two different things — a hair highlight
+and the face's specular highlight — so those pixels are located here (about 1,800
+across the whole head library) and repainted individually at render time. Two
+independent rules find them, and `-sheets` writes contact sheets of every pixel
+either rule touched. **Look at them before committing a new table**: every bug
+found in this feature so far was caught by eye and missed by the pixel counts.
 
 To serve the static icons (`/icons/*`), run the icon extraction step too:
 

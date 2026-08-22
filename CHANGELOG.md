@@ -3,6 +3,54 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-08-22
+
+### Added
+- **Skin tone on `/image` — `skinTone=1..4` and `skinColor=RRGGBB`** — a fan-made
+  capability, stated as such in the README: Ragnarok Online has no skin-tone
+  option, no client or server sends one, and no official sprite ships in more
+  than one tone. The ramps are generated here from the sprites' own palettes.
+  `skinTone=1` is the untouched original and is byte-identical to omitting the
+  parameter. `skinColor` takes a custom colour and builds a full 8-step ramp from
+  it, anchored so the colour you pass is the dominant lit midtone — not a flat
+  fill. Doram is out of scope and the parameters are ignored there rather than
+  erroring.
+
+  Ramps are built in Oklab. Darkening a skin ramp in HSL drags it toward grey and
+  purple, because HSL "lightness" is not perceptual; in Oklab the original ramp's
+  relative lightness spacing can be preserved, so the sprite keeps its own
+  shading and only the tone moves.
+
+- **`cmd/gen-skin-table`** — bakes `internal/render/skin/data/skin_table.json`:
+  which palette indices hold the skin ramp, per sprite. Two things make this a
+  bake rather than a rule.
+
+  First, the ramp is **not at a fixed palette position, and there is not always
+  only one of it**. The Wanderer's default body keeps skin at 48–55; her
+  `costume_1` body keeps it at 43–50; `타조원더러_여` carries it at 48–55 *and*
+  240–247; and `미케닉_남_1` has no eight-long run at all because it never uses
+  the lightest highlight. So the generator maps every palette index carrying a
+  canonical skin colour to the ramp step it represents, rather than hunting for
+  a single range. 51 body sprites hold skin in more than one place.
+
+  Isolated skin-coloured indices are only accepted when their pixels are drawn
+  touching confirmed skin. That is what keeps the mounts out: a poring is pink
+  and a toad is brown, and 23 indices across the library match a skin colour
+  exactly while belonging to the animal, not the rider.
+
+  Second, and the trap worth writing down: **one palette index means two
+  different things**. Index 216 (sometimes 217 or 232) is a hair highlight *and*,
+  in most head sprites, the face's specular highlight. No palette swap can
+  separate them — the same index has to come out two different colours in the
+  same frame. So ~1,800 pixels across the 84 head sprites are identified at bake
+  time and repainted individually after decoding. Each carries its position on
+  the skin ramp rather than a colour, which is what keeps a hair dye from leaking
+  into the face.
+
+  Because a `.spr` is a flat image pool that the `.act` merely indexes, a
+  palette-level recolour covers every action, direction and frame at once; the
+  per-pixel repaints are keyed by image index, so they do too.
+
 ## 2026-08-21
 
 ### Added
