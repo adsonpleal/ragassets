@@ -16,13 +16,13 @@ const resRoot = "../../../resources"
 // TestBakeCoversEveryDrawnSkinIndex is the completeness check for the committed
 // table, and the only rigorous one available.
 //
-// Checking rendered pixels instead does not work: compositing (a layer tint, or
-// the 0.75 resample applied to baby classes) can land on a skin colour by
-// coincidence, and such a pixel is indistinguishable from genuinely-missed skin
-// once it is a colour rather than a palette index. So the assertion is made where
-// the truth actually lives — every palette index that carries a canonical skin
-// colour and is actually drawn must be in the table, across the sprite's embedded
-// palette and every dye that can be applied to it.
+// Checking rendered pixels instead does not work: a clothes dye can paint a
+// non-skin palette index a colour that exactly matches a skin colour (dye
+// 몸/검사_여_2 sets index 16 to f7f0e5 on a garment), and such a pixel is
+// indistinguishable from genuinely-missed skin once it is a colour rather than an
+// index. So the assertion is made where the truth actually lives — every palette
+// index that carries a canonical skin colour and is actually drawn must be in the
+// table.
 func TestBakeCoversEveryDrawnSkinIndex(t *testing.T) {
 	if _, err := os.Stat(resRoot + "/data"); err != nil {
 		t.Skipf("resources not present: %v", err)

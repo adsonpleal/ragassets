@@ -15,12 +15,13 @@ import (
 // A library-wide smoke test: every player job, gender and outfit renders at both
 // tones, keeps its silhouette, and actually changes where the sprite has skin.
 //
-// It deliberately does NOT assert "no base-ramp colour survives". Compositing —
-// a layer tint, or the 0.75 resample applied to baby classes — can land on a skin
-// colour by coincidence, and once a pixel is a colour rather than a palette index
-// that is indistinguishable from genuinely-missed skin. Completeness is asserted
-// where the truth lives instead, against palette indices, in
-// cmd/gen-skin-table's TestBakeCoversEveryDrawnSkinIndex.
+// It deliberately does NOT assert "no base-ramp colour survives". A clothes dye
+// can paint a NON-skin palette index a colour that exactly matches a skin colour
+// — dye 몸/검사_여_2 sets index 16 to f7f0e5, the lightest skin highlight, on a
+// garment — and leaving that pixel alone is correct. Once a pixel is a colour
+// rather than a palette index, that is indistinguishable from genuinely-missed
+// skin. Completeness is asserted where the truth lives instead, against palette
+// indices, in cmd/gen-skin-table's TestBakeCoversEveryDrawnSkinIndex.
 //
 // Runs a sampled sweep by default; set SKIN_SWEEP=full for every job id.
 
