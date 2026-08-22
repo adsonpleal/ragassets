@@ -161,3 +161,81 @@ func TestParseSpr_RealFile(t *testing.T) {
 		t.Error("first image fully transparent (suspicious)")
 	}
 }
+
+func TestDecodeIndices_Synthetic(t *testing.T) {
+	// Uncompressed (ver 0x100) and RLE (ver 0x201) must yield the same indices.
+	build := func(ver uint16, body func(*leBuf)) *Spr {
+		t.Helper()
+		w := &leBuf{}
+		w.str("SP").u16(ver).u16(1)
+		if ver >= 0x200 {
+			w.u16(0)
+		}
+		w.u16(2).u16(2)
+		body(w)
+		w.b = append(w.b, palette1024(nil)...)
+		s, err := ParseSpr(w.b)
+		if err != nil {
+			t.Fatalf("ParseSpr(ver %#x): %v", ver, err)
+		}
+		return s
+	}
+
+	plain := build(0x100, func(w *leBuf) { w.bytes(0, 1, 2, 3) })
+	rle := build(0x201, func(w *leBuf) {
+		body := []byte{0x00, 0x01, 0x01, 0x02, 0x03} // run of 1 transparent, then 1,2,3
+		w.u16(uint16(len(body))).bytes(body...)
+	})
+
+	for name, s := range map[string]*Spr{"uncompressed": plain, "rle": rle} {
+		idx, w, h := s.DecodeIndices(0)
+		if w != 2 || h != 2 {
+			t.Errorf("%s: size = %dx%d, want 2x2", name, w, h)
+		}
+		want := []byte{0, 1, 2, 3}
+		for i := range want {
+			if idx[i] != want[i] {
+				t.Errorf("%s: index %d = %d, want %d", name, i, idx[i], want[i])
+			}
+		}
+	}
+
+	if idx, _, _ := plain.DecodeIndices(9); idx != nil {
+		t.Error("DecodeIndices(out of range) should return nil")
+	}
+}
+
+// TestDecodeIndicesMatchesDecodeImage pins DecodeIndices' RLE walk to the one in
+// decodeIndexed. The two are deliberately duplicated so the render hot path keeps
+// its single pass; this test is what stops them drifting.
+func TestDecodeIndicesMatchesDecodeImage(t *testing.T) {
+	for _, rel := range []string{
+		"resources/data/sprite/인간족/몸통/남/검사_남.spr",
+		"resources/data/sprite/인간족/머리통/여/1_여.spr",
+	} {
+		s, err := ParseSpr(mustRead(t, repoFile(t, rel)))
+		if err != nil {
+			t.Fatalf("ParseSpr(%s): %v", rel, err)
+		}
+		pal := s.Palette()
+		for i := 0; i < s.ImageCount(0); i++ {
+			idx, w, h := s.DecodeIndices(i)
+			img := s.DecodeImage(i, 0, nil)
+			if w != img.Width || h != img.Height {
+				t.Fatalf("%s image %d: size %dx%d vs %dx%d", rel, i, w, h, img.Width, img.Height)
+			}
+			for p := range idx {
+				want := pal[idx[p]]
+				if idx[p] == 0 {
+					want.A = 0
+				} else {
+					want.A = 0xFF
+				}
+				if img.Pixels[p] != want {
+					t.Fatalf("%s image %d pixel %d: index %d -> %+v, DecodeImage gave %+v",
+						rel, i, p, idx[p], want, img.Pixels[p])
+				}
+			}
+		}
+	}
+}

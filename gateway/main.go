@@ -35,6 +35,7 @@ import (
 
 	"github.com/ragassets/gateway/internal/effect"
 	"github.com/ragassets/gateway/internal/render/engine"
+	"github.com/ragassets/gateway/internal/render/raster"
 	"github.com/ragassets/gateway/internal/render/resolve"
 )
 
@@ -1028,6 +1029,21 @@ func parseEnum(name, s string, names map[string]int, allowed []int) (int, error)
 	}
 	sort.Strings(keys)
 	return 0, fmt.Errorf("'%s' must be one of %v or %v, got %q", name, keys, allowed, s)
+}
+
+// parseHexColor accepts an opaque RGB colour as six hex digits, with or without a
+// leading '#'. Three-digit shorthand is deliberately not accepted: it would make
+// two spellings of the same colour produce two cache entries for one render.
+func parseHexColor(name, s string) (raster.Color, error) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "#")
+	if len(s) != 6 {
+		return raster.Color{}, fmt.Errorf("'%s' must be a 6-digit hex colour like 'c9a07f', got %q", name, s)
+	}
+	v, err := strconv.ParseUint(s, 16, 32)
+	if err != nil {
+		return raster.Color{}, fmt.Errorf("'%s' must be a 6-digit hex colour like 'c9a07f', got %q", name, s)
+	}
+	return raster.Color{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: 0xFF}, nil
 }
 
 func contentTypeForExt(ext string) string {

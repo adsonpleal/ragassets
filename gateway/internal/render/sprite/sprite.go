@@ -42,6 +42,14 @@ type Sprite struct {
 	// Palette overrides the SPR's embedded palette when non-nil (body/head dye).
 	Palette roformat.Palette
 
+	// PixelOverrides repaints individual pixels after palette decoding, keyed by
+	// SPR image index (sprType 0 only). Nil unless a skin tone was applied.
+	//
+	// It exists because some head sprites use one palette index for two different
+	// things — a hair highlight and the face's specular highlight. A palette swap
+	// cannot separate them, so the face pixels are repainted directly.
+	PixelOverrides map[int][]PixelRun
+
 	Type        Type
 	TypeOrder   int                  // ordering within a type (accessory 0..2, etc.)
 	AccessoryID uint32               // headgear view id (accessory layer-priority lookup)
@@ -72,15 +80,48 @@ func New(act *roformat.Act, spr *roformat.Spr, typ Type) *Sprite {
 	return &Sprite{Act: act, Spr: spr, Type: typ, HeadDir: rotype.Straight, imgCache: map[imgKey]raster.RawImage{}}
 }
 
-// Image decodes (and caches) a SPR image using this sprite's palette override.
+// PixelRun paints a fixed colour over a set of decoded pixels of one SPR image.
+// Offsets are flat indices into RawImage.Pixels (x + y*width) and are treated as
+// read-only — they are aliased straight from the embedded table.
+type PixelRun struct {
+	Color   raster.Color
+	Offsets []int32
+}
+
+// Image decodes (and caches) a SPR image using this sprite's palette override,
+// then applies any pixel overrides. DecodeImage allocates a fresh image per call
+// and the cache is per-render, so the override is safe to write in place — and
+// applying it before the cache store means both the geometry and raster passes
+// see the same pixels.
 func (s *Sprite) Image(id, sprType int) raster.RawImage {
 	k := imgKey{id, sprType}
 	if img, ok := s.imgCache[k]; ok {
 		return img
 	}
 	img := s.Spr.DecodeImage(id, sprType, s.Palette)
+	if sprType == 0 && len(s.PixelOverrides) > 0 {
+		applyPixelRuns(img, s.PixelOverrides[id])
+	}
 	s.imgCache[k] = img
 	return img
+}
+
+// applyPixelRuns repaints the listed pixels. Offsets that fall outside the image,
+// or land on a transparent pixel, are skipped: a stale offset from a re-extracted
+// asset must not be able to alter the silhouette.
+func applyPixelRuns(img raster.RawImage, runs []PixelRun) {
+	n := len(img.Pixels)
+	for _, run := range runs {
+		for _, off := range run.Offsets {
+			if off < 0 || int(off) >= n {
+				continue
+			}
+			if img.Pixels[off].A == 0 {
+				continue
+			}
+			img.Pixels[off] = run.Color
+		}
+	}
 }
 
 // transformOfSprite builds the affine transform for one ACT sprite layer. When
