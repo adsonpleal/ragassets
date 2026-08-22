@@ -128,6 +128,57 @@ func (s *Spr) DecodeImage(index, sprType int, pal Palette) raster.RawImage {
 	return out
 }
 
+// DecodeIndices returns one raw palette index per pixel of an indexed (sprType 0)
+// image, row-major, along with its dimensions. Returns nil when the index is out
+// of range or the image is empty.
+//
+// Only the offline table generator (cmd/gen-skin-table) needs this: it classifies
+// pixels by which palette *index* they use, information DecodeImage discards. The
+// RLE walk below is deliberately duplicated from decodeIndexed rather than shared,
+// so the render hot path keeps its single pass with no extra allocation.
+// TestDecodeIndicesMatchesDecodeImage pins the two walks together.
+func (s *Spr) DecodeIndices(index int) (idx []byte, width, height int) {
+	if index < 0 || index >= len(s.images[0]) {
+		return nil, 0, 0
+	}
+	img := s.images[0][index]
+	if img.width <= 0 || img.height <= 0 {
+		return nil, 0, 0
+	}
+	n := img.width * img.height
+	dst := make([]byte, n)
+	off := img.dataOffset
+
+	if s.Ver >= 0x201 {
+		size := int(uint16(s.buf[off]) | uint16(s.buf[off+1])<<8)
+		off += 2
+		end := off + size
+		p := 0
+		for j := off; j < end && p < n; j++ {
+			v := s.buf[j]
+			if v == 0 {
+				// Run of transparent pixels.
+				if j+1 >= end {
+					break
+				}
+				runLen := int(s.buf[j+1])
+				j++
+				for k := 0; k < runLen && p < n; k++ {
+					dst[p] = 0
+					p++
+				}
+				continue
+			}
+			dst[p] = v
+			p++
+		}
+		return dst, img.width, img.height
+	}
+
+	copy(dst, s.buf[off:off+n])
+	return dst, img.width, img.height
+}
+
 // decodeIndexed fills dst from a palette-indexed image. ver≥0x201 images are RLE
 // compressed: a byte of 0 starts a run whose length is the following byte (those
 // pixels are transparent); any other byte is a literal palette index. Index 0 is
