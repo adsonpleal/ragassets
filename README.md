@@ -3,8 +3,9 @@
 `ragassets` is a thin, fast HTTP layer that renders and serves Ragnarok Online
 sprites as images and animations, with aggressive on-disk caching so repeat
 requests are served instantly. It also serves the client's **item, collection,
-skill, class (job) and status-effect (buff/debuff) icons** as static transparent
-PNGs — those are plain files extracted straight from the GRF, no rendering involved.
+skill, class (job) and status-effect (buff/debuff) icons**, and the **full-size
+card artwork**, as static PNGs — those are plain files extracted straight from the
+GRF, no rendering involved.
 
 > **Rendering is done in-process by a native Go reimplementation of
 > [zrenderer](https://github.com/zhad3/zrenderer)'s algorithm** (under
@@ -77,8 +78,9 @@ client ──GET /image?job=1002&...──▶  gateway (Go)
 - **Concurrent requests for the same URL trigger exactly one render** (in-process
   single-flight); parsed sprite/palette resources are cached in memory and reused
   across requests.
-- **`GET /icons/*` is plain static file serving** — the icons are extracted
-  once from the client GRF by `extract-grf.mjs --icons` (see
+- **`GET /icons/*` and `GET /illust/*` are plain static file serving** — the
+  icons and the card artwork are extracted once from the client GRF by
+  `extract-grf.mjs --icons` / `--illust` (see
   [GRF extraction](#resources--grf-extraction-required)); no rendering involved.
 
 ## API
@@ -308,6 +310,36 @@ original client filenames:
 | Hair styles — doram | `img_hairstyle_doramboy01`…`06`, `img_hairstyle_doramgirl01`…`06` |
 | Hair colors | `color01`…`color09` with states `off`, `on`, `over`, `press` (e.g. `color03_on`) |
 | Misc | `bt_make_*`, `bt_close_*`, `bt_doublecheck_*`, `bt_hairstyle_*`, `img_human_on/off`, `img_doram_*`, `bg_makebg` |
+
+Cards are the one item type whose picture is **not** here: every card shares one
+generic inventory icon and one generic description image (their iteminfo resource
+name is literally 이름없는카드, "nameless card"), so `/icons/collection/4001.png`
+and `/icons/collection/4302.png` are the same bytes. The per-card artwork is a
+separate, much larger asset — see [`/illust`](#get-illustcardidpng--card-artwork).
+
+### `GET /illust/card/{id}.png` — card artwork
+
+Serves a card's **full-size illustration** (300×400) — the picture the client
+shows for a card, keyed by item id (see
+[GRF extraction](#resources--grf-extraction-required) — this endpoint returns
+`404` until you run the `--illust` extraction step):
+
+```
+/illust/card/4001.png        # Poring Card
+/illust/card/4302.png        # Ghostring Card
+/illust/card/27083.png       # a newer-block card
+```
+
+It is not an `/icons` type on purpose: this is an illustration rather than an
+icon, and the client links it through its own `data/num2cardillustnametable.txt`
+(`<item id>#<bmp basename>#`) instead of the iteminfo resource name every `/icons`
+image is keyed by. Responses carry the same immutable cache headers, `ETag`/`304`
+and wildcard CORS as `/icons`; unknown ids return `404`.
+
+**1,095 of the client's 1,291 card ids have art.** The rest resolve only to the
+client's own `sorry` placeholder bitmap (192 ids) or name a file that was never
+shipped (4 ids: `4486`, `4488`, `27221`, `27225`). Those `404` rather than serving
+~190 copies of the same apology image — render your own fallback.
 
 ### `GET /effects/...` — effect-only costumes
 
@@ -706,6 +738,7 @@ gateway/cmd/gen-resolver/ # offline tool: bakes id→sprite-name tables from the
 gateway/cmd/gen-skin-table/ # offline tool: bakes per-sprite skin-ramp palette indices
 resources/                # YOUR extracted GRF assets (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*
+resources/illust/         # card artwork (extract-grf.mjs --illust), served at /illust/*
 resources/effects/        # effect-only costume bundles (extract-grf.mjs --effects), served at /effects/*
 resources/maps/           # world-map bundles (extract-grf.mjs --maps), served at /maps/*
 resources/bgm/            # per-map background music (extract-grf.mjs --bgm), served at /bgm/*
@@ -799,6 +832,25 @@ directly. Item ids are resolved via `System/iteminfo_new.lub` (found automatical
 next to the GRF; override with `--iteminfo <path>`), skill ids via `skillid.lub`,
 and status icons via the `stateicon/efstids.lub` + `stateicon/stateiconimginfo.lub`
 tables — all inside the GRF. Rerunning overwrites in place.
+
+To serve the card artwork (`/illust/card/*`), run the illustration step:
+
+```bash
+node extract-grf.mjs --illust resources/illust --grf path/to/data.grf
+```
+
+This decodes the 300×400 card BMPs from `data/texture/유저인터페이스/cardbmp/`
+into `resources/illust/card/<id>.png` (~1,095 files, ~110 MB), keyed by item id
+through the client's `data/num2cardillustnametable.txt`. Unlike the icon BMPs
+these are full-bleed artwork with no colorkey, so they are written fully opaque —
+a magenta pixel in a card illustration is part of the picture.
+
+The table repeats some ids: a late block re-points ~190 of them at the client's
+`sorry` placeholder, in a few cases over a name whose real art is still shipped
+(the 마신의정수 cards), and one id (`4557`) names art that was never shipped before
+naming art that was. So the extractor takes the **first name that resolves to a
+real file**, never the placeholder, and skips ids that have nothing else — those
+`404`, which is the honest answer for "this card has no art".
 
 To serve the effect-only costumes (`/effects/*`), run the effect extraction step:
 

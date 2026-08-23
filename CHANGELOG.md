@@ -3,6 +3,41 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-08-23
+
+### Added
+- **`GET /illust/card/{id}.png` — the full-size (300×400) card artwork**, plus the
+  `extract-grf.mjs --illust` step that produces it. This is the one item picture
+  `/icons` never had: cards all share a single generic inventory icon and a single
+  generic description image (their iteminfo resource name is 이름없는카드,
+  "nameless card"), so `/icons/collection/4001.png` and `/icons/collection/4302.png`
+  are byte-identical. The real art lives in
+  `data/texture/유저인터페이스/cardbmp/` and is reached by a different key
+  entirely — the client's own `data/num2cardillustnametable.txt`
+  (`<item id>#<bmp basename>#`) rather than an iteminfo resource name.
+
+  It is a new route rather than an `/icons` kind because it is an illustration,
+  not an icon — 12× the pixel area of the `collection` image, keyed off a
+  different table. `/illust/{kind}/` leaves room for the client's other
+  illustration folder (`유저인터페이스/illust/`, NPC portraits) without inventing
+  a third route; `handleIcon` and `handleIllust` now share one `servePNGByKind`.
+
+  **The name table has to be read by first-hit, not last-hit.** ~190 ids are
+  re-pointed at the client's `sorry` placeholder by a block appended to the end
+  of the table, and for the 마신의정수 cards that block buries artwork that is
+  still shipped; conversely id `4557` names art that was never shipped
+  (약화된펜릴카드) before naming art that was (펜릴카드_). So the extractor takes
+  the first name that resolves to a real file and never the placeholder. Ids left
+  with nothing — 192 placeholder-only, 4 never shipped — are skipped, so they
+  `404` instead of serving ~190 copies of the same apology bitmap.
+
+  Card BMPs are also full-bleed artwork with no colorkey, so they are written
+  fully opaque (`bmpToPng({opaque: true})`): a magenta pixel in a card
+  illustration is part of the picture, not a transparency key.
+
+  1,095 PNGs, ~110 MB. `ILLUST_DIR` points the gateway at the store; like every
+  other optional tree, a missing one just 404s.
+
 ## 2026-08-22
 
 ### Added
