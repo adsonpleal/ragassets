@@ -524,3 +524,61 @@ func TestImmutableAssetsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func illustServer(t *testing.T) *server {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "card"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "card", "4001.png"), []byte("\x89PNG\r\n\x1a\nfake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return &server{cfg: config{illustDir: dir, port: "0"}, flight: newFlightGroup()}
+}
+
+func TestIllustEndpoint(t *testing.T) {
+	s := illustServer(t)
+	cases := []struct {
+		path string
+		code int
+	}{
+		{"/illust/card/4001.png", http.StatusOK},
+		{"/illust/card/9999.png", http.StatusNotFound},     // valid pattern, no such card
+		{"/illust/item/4001.png", http.StatusNotFound},     // not an illust kind
+		{"/illust/card/4001.bmp", http.StatusNotFound},     // disallowed extension
+		{"/illust/card/sub/4001.png", http.StatusNotFound}, // nested path
+		{"/illust/4001.png", http.StatusNotFound},          // no kind
+		{"/illust/card/", http.StatusNotFound},             // empty name
+	}
+	for _, c := range cases {
+		rec := get(t, s, s.handleIllust, c.path)
+		if rec.Code != c.code {
+			t.Errorf("%s: status = %d, want %d", c.path, rec.Code, c.code)
+		}
+		if c.code == http.StatusOK {
+			if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+				t.Errorf("%s: content-type = %q, want image/png", c.path, ct)
+			}
+			if rec.Header().Get("Access-Control-Allow-Origin") != "*" {
+				t.Errorf("%s: missing CORS header", c.path)
+			}
+		}
+	}
+}
+
+// TestIllustTraversal confirms the kind whitelist plus filename pattern reject
+// path traversal even when the raw request path contains "..".
+func TestIllustTraversal(t *testing.T) {
+	s := illustServer(t)
+	for _, p := range []string{
+		"/illust/../main.go",
+		"/illust/card/..%2f..%2fmain.go",
+		"/illust/%2e%2e/card/4001.png",
+	} {
+		rec := get(t, s, s.handleIllust, p)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", p, rec.Code)
+		}
+	}
+}

@@ -33,6 +33,8 @@ import {
   actDrawsNothing,
   hatEffectSprite,
   sprEffectCandidates,
+  parseCardIllustTable,
+  pickCardIllust,
 } from "./extract-grf.mjs";
 
 // The real data/fogparametertable.txt lays out each record across five
@@ -1006,4 +1008,38 @@ test("effectMaxKey falls back to the last keyframe only when the header is absur
   assert.equal(effectMaxKey(360, layers), 360);
   assert.equal(effectMaxKey(180, layers), 180);
   assert.equal(effectMaxKey(0, layers), 0);
+});
+
+// data/num2cardillustnametable.txt is EUC-KR: "4001#포링카드#" is the Poring
+// card's 300x400 illustration. The bytes below are that exact line from the
+// live client, so the decode is tested against real client encoding rather than
+// a re-encoding of it.
+const CARD_TABLE_BYTES = Buffer.from(
+  "2f2f206361726473" + "0d0a" + // "// cards" comment line
+    "3430303123c6f7b8b5c4abb5e523" + "0d0a" + // 4001#포링카드#
+    "3430303223" + "6d795f63617264" + "23" + "0d0a" + // 4002#my_card#  (ASCII name)
+    "34303032230d0a" + // 4002## — empty name, ignored
+    "6a756e6b" + "0d0a" + // "junk" — no id, ignored
+    "3430303223" + "736f727279" + "23", // 4002#sorry#
+  "hex",
+);
+
+test("parseCardIllustTable reads EUC-KR names and keeps every name per id", () => {
+  const table = parseCardIllustTable(CARD_TABLE_BYTES);
+  assert.deepEqual([...table.keys()], ["4001", "4002"]);
+  assert.deepEqual(table.get("4001"), ["포링카드"]);
+  assert.deepEqual(table.get("4002"), ["my_card", "sorry"]);
+});
+
+// The table's trailing block re-points ~190 ids at the "sorry" placeholder,
+// sometimes over a name whose art is still shipped (the 마신의정수 cards), and
+// some ids name art that was never shipped before naming art that was (4557).
+// So: first name that resolves to real art wins, placeholder never does.
+test("pickCardIllust takes the first shipped name and never the placeholder", () => {
+  const shipped = (...names) => (n) => names.includes(n);
+  assert.equal(pickCardIllust(["마신의정수카드1", "sorry"], shipped("마신의정수카드1", "sorry")), "마신의정수카드1");
+  assert.equal(pickCardIllust(["sorry", "마신의정수카드1"], shipped("마신의정수카드1", "sorry")), "마신의정수카드1");
+  assert.equal(pickCardIllust(["약화된펜릴카드", "펜릴카드_"], shipped("펜릴카드_")), "펜릴카드_");
+  assert.equal(pickCardIllust(["sorry"], shipped("sorry")), null); // placeholder only
+  assert.equal(pickCardIllust(["SLD_Gioia_Card"], shipped()), null); // never shipped
 });

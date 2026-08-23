@@ -46,6 +46,7 @@ import (
 type config struct {
 	resourceDir string // extracted GRF assets (contains data/)
 	iconsDir    string
+	illustDir   string
 	effectsDir  string
 	mapsDir     string
 	bgmDir      string
@@ -58,6 +59,7 @@ func loadConfig() config {
 	return config{
 		resourceDir: env("RESOURCE_DIR", "/resources"),
 		iconsDir:    env("ICONS_DIR", "/icons"),
+		illustDir:   env("ILLUST_DIR", "/illust"),
 		effectsDir:  env("EFFECTS_DIR", "/effects"),
 		mapsDir:     env("MAPS_DIR", "/maps"),
 		bgmDir:      env("BGM_DIR", "/bgm"),
@@ -111,6 +113,12 @@ func main() {
 		log.Printf("icons: serving %s at /icons/{type}/{id}.png", cfg.iconsDir)
 	}
 
+	if fi, err := os.Stat(cfg.illustDir); err != nil || !fi.IsDir() {
+		log.Printf("illust: %s not found — /illust/* will return 404 (run extract-grf.mjs --illust)", cfg.illustDir)
+	} else {
+		log.Printf("illust: serving %s at /illust/card/{id}.png", cfg.illustDir)
+	}
+
 	if fi, err := os.Stat(cfg.effectsDir); err != nil || !fi.IsDir() {
 		log.Printf("effects: %s not found — /effects/* will return 404 (run extract-grf.mjs --effects)", cfg.effectsDir)
 	} else {
@@ -151,6 +159,7 @@ func main() {
 	mux.HandleFunc("/image", s.handleImage)
 	mux.HandleFunc("/gif", s.handleGif)
 	mux.HandleFunc("/icons/", s.handleIcon)
+	mux.HandleFunc("/illust/", s.handleIllust)
 	mux.HandleFunc("/effects/", s.handleEffect)
 	mux.HandleFunc("/effect/", s.handleEffectAsset)
 	mux.HandleFunc("/maps/", s.handleMap)
@@ -184,6 +193,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"     /image?job=1002&action=0   (animation, APNG)\n"+
 		"     /gif?job=1002&action=0     (same, as an animated GIF)\n"+
 		"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n"+
+		"     /illust/card/4001.png      (a card's full-size artwork)\n"+
 		"     /effects/index.json        (effect-only costume catalogue)\n"+
 		"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n"+
 		"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's per-frame img/delay/offset)\n"+
@@ -377,25 +387,47 @@ func ifNoneMatch(r *http.Request, etag string) bool {
 var iconKinds = map[string]bool{"item": true, "collection": true, "skill": true, "job": true, "status": true, "ui": true}
 var iconFilePattern = regexp.MustCompile(`^[a-z0-9_]+\.png$`)
 
-// handleIcon serves /icons/{type}/{name}.png from the icons dir. The kind
-// whitelist plus the lowercase-word filename pattern (no dots, no slashes)
-// make path traversal structurally impossible; anything else is a 404.
+// handleIcon serves /icons/{type}/{name}.png from the icons dir.
 func (s *server) handleIcon(w http.ResponseWriter, r *http.Request) {
+	s.servePNGByKind(w, r, "/icons/", s.cfg.iconsDir, iconKinds)
+}
+
+// ---------------------------------------------------------------------------
+// /illust handler — full-size client artwork extracted by extract-grf.mjs
+// --illust. Same shape as /icons and deliberately not part of it: a card
+// illustration is a 300x400 picture, keyed through the client's own
+// num2cardillustnametable.txt rather than through an iteminfo resource name,
+// and the /icons images for a card are one generic icon shared by every card.
+// ---------------------------------------------------------------------------
+
+// Keep in sync with extractIllust() in extract-grf.mjs.
+var illustKinds = map[string]bool{"card": true}
+
+// handleIllust serves /illust/{type}/{name}.png from the illust dir.
+func (s *server) handleIllust(w http.ResponseWriter, r *http.Request) {
+	s.servePNGByKind(w, r, "/illust/", s.cfg.illustDir, illustKinds)
+}
+
+// servePNGByKind serves <base>/{kind}/{name}.png for the /icons and /illust
+// trees. The kind whitelist plus the lowercase-word filename pattern (no dots,
+// no slashes) make path traversal structurally impossible; anything else is a
+// 404.
+func (s *server) servePNGByKind(w http.ResponseWriter, r *http.Request, prefix, base string, kinds map[string]bool) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/icons/"), "/")
-	if len(parts) != 2 || !iconKinds[parts[0]] || !iconFilePattern.MatchString(parts[1]) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	if len(parts) != 2 || !kinds[parts[0]] || !iconFilePattern.MatchString(parts[1]) {
 		http.NotFound(w, r)
 		return
 	}
 
-	path := filepath.Join(s.cfg.iconsDir, parts[0], parts[1])
+	path := filepath.Join(base, parts[0], parts[1])
 	f, err := os.Open(path)
 	if err != nil {
-		http.NotFound(w, r) // unknown id, or icons not extracted yet
+		http.NotFound(w, r) // unknown id, or the store isn't extracted yet
 		return
 	}
 	defer f.Close()

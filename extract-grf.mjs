@@ -14,6 +14,7 @@
 //   node extract-grf.mjs --extract <out-dir> --grf <file.grf> [--match <regex>]
 //   node extract-grf.mjs --dump   <file.grf>::<path>      # one file to stdout (fwd-slash path)
 //   node extract-grf.mjs --icons  <out-dir> --grf <file.grf> [--iteminfo <path>]
+//   node extract-grf.mjs --illust <out-dir> --grf <file.grf>
 //   node extract-grf.mjs --effects <out-dir> --grf <file.grf> [--iteminfo <path>]
 //   node extract-grf.mjs --maps <out-dir> --grf <file.grf> [--map <name>]
 //
@@ -32,6 +33,11 @@
 //   # char-creation UI elements (keyed by basename) as transparent PNGs
 //   # (reads System/iteminfo_new.lub next to the GRF unless --iteminfo is given):
 //   node extract-grf.mjs --icons resources/icons --grf data.grf
+//
+//   # Extract the full-size card artwork (300x400), keyed by item id — the
+//   # picture behind a card, which the icons above do NOT contain (every card
+//   # shares one generic inventory icon and one generic collection image):
+//   node extract-grf.mjs --illust resources/illust --grf data.grf
 //
 //   # Extract the "effect-only" costumes (auras / falling petals / spotlights —
 //   # the costumes that have no character sprite, drawn by the client's ".str"
@@ -85,6 +91,7 @@ function parseArgs(argv) {
     else if (a === "--extract") out.extract = argv[++i];
     else if (a === "--match") out.match = argv[++i];
     else if (a === "--icons") out.icons = argv[++i];
+    else if (a === "--illust") out.illust = argv[++i];
     else if (a === "--effects") out.effects = argv[++i];
     else if (a === "--maps") out.maps = argv[++i];
     else if (a === "--map") out.map = argv[++i];
@@ -116,6 +123,10 @@ function usage() {
       "  and char-creation UI elements (keyed by basename) as transparent PNGs.",
       "  Reads System/iteminfo_new.lub next to the GRF unless --iteminfo points",
       "  at it explicitly.",
+      "",
+      "  --illust extracts the full-size (300x400) card artwork as <out>/card/<id>.png,",
+      "  keyed by item id through data/num2cardillustnametable.txt. Cards all share one",
+      "  generic --icons image, so this is the only per-card picture the client ships.",
       "",
       "  --effects extracts the effect-only costumes (.str world effects: auras,",
       "  falling petals, spotlights) as per-effect bundles (effect.json + tex PNGs)",
@@ -157,7 +168,7 @@ function usage() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.effects && !args.maps && !args.bgm && !args.sounds && !args.mobids && !args.raw)) {
+  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.illust && !args.effects && !args.maps && !args.bgm && !args.sounds && !args.mobids && !args.raw)) {
     usage();
     process.exit(args.help ? 0 : 1);
   }
@@ -207,6 +218,15 @@ function main() {
       process.exit(1);
     }
     extractIcons(args.grf, args.icons, args);
+    process.exit(0);
+  }
+
+  if (args.illust) {
+    if (!args.grf) {
+      console.error("usage: --illust <out-dir> --grf <file.grf>");
+      process.exit(1);
+    }
+    extractIllust(args.grf, args.illust);
     process.exit(0);
   }
 
@@ -1226,6 +1246,11 @@ function bmpToPng(bmpBytes, opts = {}) {
   if (opts.keyCorners && decoded.magenta === 0) {
     keyCornerBackground(decoded.width, decoded.height, decoded.rgba);
   }
+  // Full-bleed artwork (card illustrations) has no colorkey at all: undo the
+  // decoder's magenta keying so a magenta pixel in the picture stays a pixel.
+  if (opts.opaque) {
+    for (let i = 3; i < decoded.rgba.length; i += 4) decoded.rgba[i] = 255;
+  }
   return encodePng(decoded.width, decoded.height, decoded.rgba);
 }
 
@@ -1540,6 +1565,128 @@ function collectGrfFiles(grf, wants) {
     }
   }
   return map;
+}
+
+// ---------------------------------------------------------------------------
+// Card illustration extraction — the full-size (300x400) card artwork.
+//
+//   <out>/card/<id>.png    from data/texture/유저인터페이스/cardbmp/<name>.bmp
+//
+// This is NOT what --icons produces for a card: every card shares one generic
+// 24x24 inventory icon and one generic 75x100 collection image (their
+// iteminfo resource name is literally 이름없는카드, "nameless card"), so the
+// per-card picture exists only here. Served at /illust/card/<id>.png rather
+// than under /icons — it's an illustration, not an icon.
+//
+// The id → file link is the client's own data/num2cardillustnametable.txt: a
+// EUC-KR text table of "<item id>#<bmp basename>#" lines, "//" comments.
+// ---------------------------------------------------------------------------
+
+const CARDBMP_DIR = `${UI}/cardbmp/`;
+const CARD_ILLUST_TABLE = "data/num2cardillustnametable.txt";
+// The client's "no illustration yet" bitmap. A late block of the table re-points
+// ~190 ids at it, in a few cases over a name whose real art is still shipped.
+const CARD_PLACEHOLDER = "sorry";
+
+// Parse num2cardillustnametable.txt → Map(id → [names, in file order]). Ids do
+// repeat, so every name is kept and the pick is left to pickCardIllust(). Lines
+// are decoded one at a time, the way GRF entry names are: the table is EUC-KR
+// Korean with ASCII names mixed in, and a single undecodable line must not drag
+// the whole table onto the CP1252 fallback.
+export function parseCardIllustTable(bytes) {
+  const table = new Map();
+  for (const raw of Buffer.from(bytes).toString("latin1").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("//")) continue;
+    const m = /^([0-9]+)#([^#]+)#/.exec(line);
+    if (!m) continue;
+    const name = decodeName(Buffer.from(m[2], "latin1")).trim();
+    if (!name) continue;
+    const prev = table.get(m[1]);
+    if (prev) prev.push(name);
+    else table.set(m[1], [name]);
+  }
+  return table;
+}
+
+// Choose which of an id's names to draw, given has(name) → is that BMP shipped.
+// Take the first name that resolves to real art: the table's later "sorry" block
+// otherwise buries the 마신의정수 cards' shipped illustrations, and a first name
+// that was never shipped (4557 약화된펜릴카드) still falls through to the later
+// one that was. Returns null when only the placeholder — or nothing — resolves;
+// a 404 is the honest answer for "this card has no art", and the alternative is
+// ~190 copies of the same apology bitmap.
+export function pickCardIllust(names, has) {
+  for (const name of names) {
+    if (name.toLowerCase() === CARD_PLACEHOLDER) continue;
+    if (has(name)) return name;
+  }
+  return null;
+}
+
+function extractIllust(grfPath, outBase) {
+  const grf = openGrf(grfPath);
+  try {
+    const root = resolve(outBase);
+    const cardDir = join(root, "card");
+    mkdirSync(cardDir, { recursive: true });
+
+    const tableEntry = findBestEntry(grf, normalize(CARD_ILLUST_TABLE));
+    if (!tableEntry) throw new Error(`${CARD_ILLUST_TABLE} not found in GRF`);
+    const table = parseCardIllustTable(extractFile(grf, tableEntry));
+    console.error(`num2cardillustnametable.txt: ${table.size} card ids`);
+
+    // Index the cardbmp folder (largest copy wins, as everywhere else).
+    const idx = new Map();
+    for (const f of grf.files) {
+      if (!(f.flags & 0x01)) continue;
+      const n = normalize(f.filename);
+      if (!n.startsWith(CARDBMP_DIR) || !n.endsWith(".bmp")) continue;
+      const prev = idx.get(n);
+      if (!prev || f.uncompSize > prev.uncompSize) idx.set(n, f);
+    }
+    console.error(`  ${idx.size} card illustrations indexed`);
+
+    const entryFor = (name) => idx.get(normalize(`${CARDBMP_DIR}${name}.bmp`));
+    let written = 0;
+    let placeholder = 0;
+    const fails = { extract: 0, convert: 0 };
+    const missing = [];
+    for (const [id, names] of table) {
+      const pick = pickCardIllust(names, (n) => entryFor(n) !== undefined);
+      if (!pick) {
+        if (names.some((n) => entryFor(n))) placeholder++;
+        else missing.push(`${id} (${names.join(", ")})`);
+        continue;
+      }
+      let bmp;
+      try {
+        bmp = extractFile(grf, entryFor(pick));
+      } catch {
+        fails.extract++;
+        continue;
+      }
+      // Card art is full-bleed and the client draws it opaque, so a magenta
+      // pixel here is part of the picture rather than a colorkey.
+      const png = bmpToPng(bmp, { opaque: true });
+      if (!png) {
+        fails.convert++;
+        continue;
+      }
+      writeFileSync(join(cardDir, `${id}.png`), png);
+      written++;
+    }
+
+    console.error(
+      `\nIllustrations (PNG) → ${root}\n  card: ${written}` +
+        (placeholder ? `\n  ${placeholder} id(s) skipped — only the "${CARD_PLACEHOLDER}" placeholder` : "") +
+        (fails.extract ? `\n  ${fails.extract} entry(s) failed to extract` : "") +
+        (fails.convert ? `\n  ${fails.convert} BMP(s) skipped (unsupported encoding)` : ""),
+    );
+    if (missing.length) console.error(`  not in GRF: ${missing.join(", ")}`);
+  } finally {
+    closeGrf(grf);
+  }
 }
 
 // ---------------------------------------------------------------------------
