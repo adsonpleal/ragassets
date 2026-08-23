@@ -326,7 +326,7 @@ shows for a card, keyed by item id (see
 
 ```
 /illust/card/4001.png        # Poring Card
-/illust/card/4302.png        # Ghostring Card
+/illust/card/4302.png        # Tao Gunka Card
 /illust/card/27083.png       # a newer-block card
 ```
 
