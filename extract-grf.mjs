@@ -12,6 +12,7 @@
 // Usage:
 //   node extract-grf.mjs --list   <file.grf>
 //   node extract-grf.mjs --extract <out-dir> --grf <file.grf> [--match <regex>]
+//   node extract-grf.mjs --prune-robes <resources-dir> [--dry-run]
 //   node extract-grf.mjs --dump   <file.grf>::<path>      # one file to stdout (fwd-slash path)
 //   node extract-grf.mjs --icons  <out-dir> --grf <file.grf> [--iteminfo <path>]
 //   node extract-grf.mjs --illust <out-dir> --grf <file.grf>
@@ -28,6 +29,11 @@
 //
 //   # The --match value is a JS regex tested (case-insensitive) against each
 //   # stored filename. Stored names use BACKSLASH separators, so escape them.
+//
+//   # Delete the adventurer-backpack sprites Gravity leaves behind in every robe
+//   # folder it copies the backpack's to make (the client ignores them; we would
+//   # render them instead of the garment). Run this after every --extract:
+//   node extract-grf.mjs --prune-robes resources
 //
 //   # Extract item/collection/skill/job icons (keyed by numeric id) and
 //   # char-creation UI elements (keyed by basename) as transparent PNGs
@@ -89,6 +95,8 @@ function parseArgs(argv) {
     else if (a === "--list") out.list = argv[++i];
     else if (a === "--dump") out.dump = argv[++i];
     else if (a === "--extract") out.extract = argv[++i];
+    else if (a === "--prune-robes") out.pruneRobes = argv[++i];
+    else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--match") out.match = argv[++i];
     else if (a === "--icons") out.icons = argv[++i];
     else if (a === "--illust") out.illust = argv[++i];
@@ -113,11 +121,15 @@ function usage() {
       "",
       "  node extract-grf.mjs --list    <file.grf>",
       "  node extract-grf.mjs --extract <out-dir> --grf <file.grf> [--match <regex>]",
+      "  node extract-grf.mjs --prune-robes <resources-dir> [--dry-run]",
       "  node extract-grf.mjs --dump    <file.grf>::<path>",
       "  node extract-grf.mjs --icons   <out-dir> --grf <file.grf> [--iteminfo <path>]",
       "",
       "  --match is a regex tested against stored names (backslash separators).",
       '  e.g. --match "data\\\\(sprite|palette|imf|luafiles514)\\\\"',
+      "",
+      "  --prune-robes deletes the adventurer-backpack sprites Gravity leaves in",
+      "  every robe folder it copies that folder to make. Run it after --extract.",
       "",
       "  --icons extracts item/collection/skill/job icons (keyed by numeric id)",
       "  and char-creation UI elements (keyed by basename) as transparent PNGs.",
@@ -168,7 +180,7 @@ function usage() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || (!args.list && !args.extract && !args.dump && !args.icons && !args.illust && !args.effects && !args.maps && !args.bgm && !args.sounds && !args.mobids && !args.raw)) {
+  if (args.help || (!args.list && !args.extract && !args.pruneRobes && !args.dump && !args.icons && !args.illust && !args.effects && !args.maps && !args.bgm && !args.sounds && !args.mobids && !args.raw)) {
     usage();
     process.exit(args.help ? 0 : 1);
   }
@@ -189,6 +201,11 @@ function main() {
     }
     extractAll(args.grf, args.extract, args.match);
     process.exit(0);
+  }
+
+  if (args.pruneRobes) {
+    pruneRobes(args.pruneRobes, { dryRun: args.dryRun });
+    process.exit(process.exitCode || 0);
   }
 
   if (args.dump) {
@@ -687,6 +704,154 @@ function extractAll(grfPath, outDir, matchPattern) {
   );
   if (encrypted) console.error(`Decrypted ${encrypted} encrypted file(s).`);
   if (skipped) console.error(`Skipped ${skipped} unreadable/invalid file(s).`);
+}
+
+// ---------------------------------------------------------------------------
+// Robe template leftovers (--prune-robes)
+// ---------------------------------------------------------------------------
+//
+// Gravity builds each 로브/<garment>/ folder by copying the 모험가배낭 ("Adventurer's
+// Backpack") folder: every per-job .act is replaced with the new garment's
+// geometry and so is the folder-root .spr, but the per-job .spr files are left
+// behind as the backpack's. The client never reads them — it pairs a per-job .act
+// with the folder-root .spr — so nobody at Gravity notices.
+//
+// Our renderer does read them: engine.loadGarment takes the first candidate pair
+// where both files exist, and resolve.GarmentCandidates offers {per-job act,
+// per-job spr} before {per-job act, root spr}. So every job that inherited a
+// leftover renders the backpack instead of the garment. Only jobs the folder has
+// no per-job .spr for (the 4th classes, which are act-only here) came out right.
+//
+// The fix is to delete the leftovers from the extracted tree; the {per-job act,
+// root spr} pair already in the candidate list then takes over on its own, and no
+// resolver change is needed. This runs on the extracted tree rather than inside
+// --extract so that --extract stays a plain byte copier, and so an already
+// extracted resources/ (including a deployed one) can be repaired in place.
+//
+// "The root .spr always wins" would be the easy rule and it is WRONG: 201 of the
+// client's 218 robe folders are healthy, and plenty of them (c_giant_white_rabbit,
+// c_niflheim_key, c_samba_carnival) ship genuine per-job image banks that differ
+// from their root .spr and must keep winning. The criterion has to be the
+// content: is this .spr the backpack?
+
+const kROBE = "로브";
+const kGENDER_DIRS = ["남", "여"];
+
+// A per-job .spr content this many distinct robe folders share is not any one
+// garment's artwork — it is a copy left over from the template. In this client
+// the measurement is unambiguous: 8 contents appear in 18–20 folders each and the
+// next-largest sharing group is 4, so anything from 5 to 17 selects the same 8.
+// All 8 decode to the adventurer's backpack (7 of them are the same bag drawn for
+// a different body — the per-job variants 모험가배낭's own folder no longer ships,
+// which is why "byte-identical to 모험가배낭/모험가배낭.spr" alone misses ~260 of
+// the bad slots). Anchoring on the count rather than on those 8 hashes keeps the
+// rule readable and lets it survive a client patch that redraws the bag.
+const ROBE_TEMPLATE_MIN_FOLDERS = 10;
+
+// The per-job .spr contents that are template leftovers. `perFolder` maps a robe
+// folder name to its per-job entries ({ hash }); a content is a leftover when at
+// least `minFolders` distinct folders carry it. Returns a Set of hashes.
+export function robeTemplateHashes(perFolder, minFolders = ROBE_TEMPLATE_MIN_FOLDERS) {
+  const owners = new Map(); // hash -> Set(folder)
+  for (const [folder, entries] of perFolder) {
+    for (const { hash } of entries) {
+      if (!owners.has(hash)) owners.set(hash, new Set());
+      owners.get(hash).add(folder);
+    }
+  }
+  const out = new Set();
+  for (const [hash, folders] of owners) if (folders.size >= minFolders) out.add(hash);
+  return out;
+}
+
+// Index a robe tree: folder name -> [{ path, hash }] for its per-job sprites.
+// Only .spr files inside a gender directory count. The folder-root sprite
+// (로브/<g>/<g>.spr, and the nested 로브/<g>/<g>/<g>.spr) is the image bank the
+// leftovers have to fall back to, so it is never a candidate — it lives directly
+// in the garment folder, never under 남/여, which is what keeps it out.
+function indexRobeSprites(robeRoot) {
+  const perFolder = new Map();
+  if (!existsSync(robeRoot)) return perFolder;
+  for (const folder of readdirSync(robeRoot, { withFileTypes: true })) {
+    if (!folder.isDirectory()) continue;
+    const entries = [];
+    perFolder.set(folder.name, entries);
+    const dir = join(robeRoot, folder.name);
+    // Gender dirs sit either directly in the folder (classic layout) or one level
+    // down under a repeated folder name (nested layout, e.g. c_rata_tail).
+    const genderDirs = [dir, join(dir, folder.name)].flatMap((base) =>
+      kGENDER_DIRS.map((g) => join(base, g)),
+    );
+    for (const gdir of genderDirs) {
+      if (!existsSync(gdir)) continue;
+      for (const f of readdirSync(gdir)) {
+        if (!f.toLowerCase().endsWith(".spr")) continue;
+        const path = join(gdir, f);
+        entries.push({ path, hash: createHash("md5").update(readFileSync(path)).digest("hex") });
+      }
+    }
+  }
+  return perFolder;
+}
+
+// Whether the garment folder still has an image bank of its own after a prune —
+// a folder-root .spr, or a per-job sprite that survived.
+function robeHasSprite(robeRoot, folder, survivors) {
+  if (survivors > 0) return true;
+  const dir = join(robeRoot, folder);
+  return existsSync(join(dir, `${folder}.spr`)) || existsSync(join(dir, folder, `${folder}.spr`));
+}
+
+function pruneRobes(resourcesDir, { dryRun = false } = {}) {
+  const robeRoot = join(resolve(resourcesDir), "data", "sprite", kROBE);
+  if (!existsSync(robeRoot)) {
+    console.error(`No robe tree at ${robeRoot} — run --extract first.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.error(`Indexing ${robeRoot}…`);
+  const perFolder = indexRobeSprites(robeRoot);
+  const total = [...perFolder.values()].reduce((n, e) => n + e.length, 0);
+  const leftovers = robeTemplateHashes(perFolder);
+  console.error(
+    `  ${perFolder.size} folders, ${total} per-job sprites, ` +
+      `${leftovers.size} template content(s) shared by ≥${ROBE_TEMPLATE_MIN_FOLDERS} folders`,
+  );
+
+  let removed = 0;
+  const rows = [];
+  const emptied = [];
+  for (const [folder, entries] of perFolder) {
+    const hits = entries.filter((e) => leftovers.has(e.hash));
+    if (!hits.length) continue;
+    const survivors = entries.length - hits.length;
+    rows.push({ folder, removed: hits.length, survivors });
+    if (!robeHasSprite(robeRoot, folder, survivors)) emptied.push(folder);
+    for (const { path } of hits) {
+      if (!dryRun) rmSync(path, { force: true });
+      removed++;
+    }
+  }
+
+  rows.sort((a, b) => b.removed - a.removed);
+  for (const r of rows) {
+    console.error(`  ${r.folder.padEnd(26)} ${String(r.removed).padStart(4)} removed, ${r.survivors} kept`);
+  }
+  console.error(
+    `\n${dryRun ? "Would remove" : "Removed"} ${removed} backpack leftover(s) from ${rows.length} folder(s).`,
+  );
+  // A folder with nothing left has no artwork anywhere in the client, so its
+  // costume is not a sprite at all — it is a .str world effect --effects should
+  // be picking up. c_snow_powder is the one such folder today (see
+  // GARMENT_TEMPLATE_ONLY); anything new showing up here needs the same look.
+  if (emptied.length) {
+    console.error(
+      `! ${emptied.length} folder(s) now have no sprite at all: ${emptied.join(", ")}\n` +
+        `  Those garments ship no artwork — check whether they are .str effects ` +
+        `(GARMENT_TEMPLATE_ONLY / --effects).`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1769,6 +1934,18 @@ export function hatEffectSprite(accName) {
   return base ? `data/sprite/${kITEM}/${base}${kHAT_EFFECT_SUFFIX}` : "";
 }
 
+// Robe folders that are nothing but the copied 모험가배낭 template: every .spr in
+// them is a backpack leftover (see --prune-robes) and no folder-root .spr exists,
+// so the garment has no artwork anywhere in the client. Its real visual is a .str
+// world effect, which is what --effects picks up once drawsNothing agrees.
+//
+// c_snow_powder (view 100) is the only one in this client: all 267 of its per-job
+// sprites decode to the backpack, the folder has no root .spr, and the client
+// ships data/texture/effect/efst_snow_powder/ssnnnn2.str — which resolveStr finds
+// on its own from the de-prefixed resource name, so no STR_OVERRIDE is needed.
+// --prune-robes reports any folder it empties, which is how a new one shows up.
+const GARMENT_TEMPLATE_ONLY = new Set(["c_snow_powder"]);
+
 // Reverse lookup (sprite name → view id) over the client's accessory/robe name
 // tables — the same authority build-db.mjs uses to recover a costume's view when
 // ClassNum is 0. A costume that resolves to a view here is a renderable body
@@ -1805,13 +1982,15 @@ function buildViewResolver(grf) {
   // resolved view can be walked back to the .act it renders (see drawsNothing).
   // Unlike normRes this keeps the leading underscore: the sprite file is the
   // gender prefix concatenated with the table value verbatim ("남" + "_c골드샤워").
-  const byId = (t) => {
+  const byId = (...tables) => {
     const m = new Map();
-    if (!(t instanceof LuaTable)) return m;
-    for (const [k, v] of t.map) {
-      if (typeof k !== "number" || k <= 0 || typeof v !== "string") continue;
-      const name = decodeClientString(v).replace(/\\/g, "/").toLowerCase();
-      if (name) m.set(k, name);
+    for (const t of tables) {
+      if (!(t instanceof LuaTable)) continue;
+      for (const [k, v] of t.map) {
+        if (typeof k !== "number" || k <= 0 || typeof v !== "string") continue;
+        const name = decodeClientString(v).replace(/\\/g, "/").toLowerCase();
+        if (name && !m.has(k)) m.set(k, name); // first table wins
+      }
     }
     return m;
   };
@@ -1820,6 +1999,8 @@ function buildViewResolver(grf) {
   const acc = reverse(accG.get("AccNameTable"));
   const robe = reverse(robeG.get("RobeNameTable"), robeG.get("RobeNameTable_Eng"));
   const accById = byId(accG.get("AccNameTable"));
+  const robeById = byId(robeG.get("RobeNameTable"), robeG.get("RobeNameTable_Eng"));
+
 
   // The view a costume renders with when iteminfo's ClassNum is 0 — common on
   // newer costumes — recovered from the item's sprite resource name.
@@ -1875,12 +2056,18 @@ function buildViewResolver(grf) {
   // petals/feathers ones, 골드샤워, 홍염의폭렬파동, …). They resolve a view like
   // any other costume, so the view alone cannot tell them apart from a real
   // headgear — read the .act. Only accessories do this: not one of the client's
-  // 77k robe .act files is fully transparent, so garments are taken at face
-  // value. A blank .act whose costume has a hat-effect sprite still draws, so it
-  // is not reported here — what it renders is that sprite, not the accessory.
+  // 77k robe .act files is fully transparent. A blank .act whose costume has a
+  // hat-effect sprite still draws, so it is not reported here — what it renders
+  // is that sprite, not the accessory.
+  //
+  // A garment says the same thing a different way, so it gets its own branch: its
+  // .act files are ordinary, but the folder ships no artwork at all — every .spr
+  // in it is an adventurer-backpack leftover and there is no folder-root .spr to
+  // fall back to. See GARMENT_TEMPLATE_ONLY.
   const blankCache = new Map();
   const drawsNothing = (view, slots) => {
-    if (view == null || slots.includes("garment")) return false;
+    if (view == null) return false;
+    if (slots.includes("garment")) return GARMENT_TEMPLATE_ONLY.has(robeById.get(view) || "");
     if (blankCache.has(view)) return blankCache.get(view);
     let blank = false;
     const name = accById.get(view);

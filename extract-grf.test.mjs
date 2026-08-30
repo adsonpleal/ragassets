@@ -35,6 +35,7 @@ import {
   sprEffectCandidates,
   parseCardIllustTable,
   pickCardIllust,
+  robeTemplateHashes,
 } from "./extract-grf.mjs";
 
 // The real data/fogparametertable.txt lays out each record across five
@@ -171,6 +172,42 @@ test("effectStrRefs resolves EF_BUBBLE (109) to bubble1..4 and skips non-STR ids
   assert.equal(refs[0].path, "data/texture/effect/bubble1.str");
   assert.deepEqual(effectStrRefs(45), []); // EF_FIREFLY is a FUNC — not in the table
   assert.deepEqual(effectStrRefs(204), []); // Korean-named potion — unservable key
+});
+
+// robeTemplateHashes takes folder -> per-job sprite entries and reports the
+// contents so many folders share that they can only be template leftovers.
+// `sprites` below is written the way the real tree reads: a garment's own bank is
+// unique to it, a leftover repeats verbatim across unrelated costumes.
+function robeIndex(sprites) {
+  return new Map(
+    Object.entries(sprites).map(([folder, hashes]) => [folder, hashes.map((hash) => ({ hash }))]),
+  );
+}
+
+test("robeTemplateHashes picks the widely-shared contents, not the per-folder banks", () => {
+  const spread = (n, hash) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`c_g${i}`, ["own" + i, hash]]));
+  // "bag" sits in 12 folders next to each one's own sprite; only "bag" is shared.
+  const hits = robeTemplateHashes(robeIndex(spread(12, "bag")), 10);
+  assert.deepEqual([...hits], ["bag"]);
+});
+
+test("robeTemplateHashes leaves art a couple of sibling folders share alone", () => {
+  // The client also ships small families (a costume under its Korean and English
+  // folder name, the four angel-wing variants) whose art is legitimately equal.
+  // Those must survive — the threshold is what separates them from the template.
+  const idx = robeIndex({
+    thanatos_sword: ["sword", "hilt"],
+    "타나토스의검": ["sword", "hilt"],
+    c_cat_fork: ["sword", "fork"],
+  });
+  assert.deepEqual([...robeTemplateHashes(idx, 10)], []);
+});
+
+test("robeTemplateHashes counts folders, not files", () => {
+  // One folder repeating a content across all its job slots is the normal case
+  // for a garment with a single image bank — it is not evidence of a template.
+  const idx = robeIndex({ c_solo: Array(300).fill("same") });
+  assert.deepEqual([...robeTemplateHashes(idx, 10)], []);
 });
 
 // A minimal SPR (v2.1) carrying a single 1x2 truecolor (RGBA) frame. Each pixel

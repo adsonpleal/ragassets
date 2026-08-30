@@ -286,6 +286,15 @@ type GarmentPath struct{ Act, Spr string }
 // ship a complete root act+spr pair whose offsets are wrong for player bodies —
 // they sit ~28px too high — next to the correct per-job acts. Matching the root
 // pair first would silently pick those broken offsets for every job.
+//
+// The per-job spr likewise outranks the folder-root one, and that is also load
+// bearing: many garments ship a real per-job image bank that differs from their
+// root spr. Gravity does leave stale backpack sprites in those per-job slots (it
+// builds each robe folder by copying 모험가배낭), which this order would compose
+// over the right act — but the fix for that belongs to extraction, not here:
+// `extract-grf.mjs --prune-robes` deletes them by content, since a path cannot
+// tell a leftover from a genuine per-job bank. Do not reorder these to work
+// around an unpruned resources tree.
 func (r *Resolver) GarmentCandidates(jobID, garmentID uint32, gender rotype.Gender) []GarmentPath {
 	if !IsPlayer(jobID) || IsWereform(jobID) {
 		return nil

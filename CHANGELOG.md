@@ -3,6 +3,55 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-08-29
+
+### Fixed
+- **Garment costumes that rendered as the Adventurer's Backpack.** `garment=97`
+  (c_scepter) drew a backpack on every class except the 4th ones; so did
+  `c_evil_scythe` (79), `c_sakura_wing` (83), `c_giantcatbag_jp_bl` (80) and
+  `c_ice_wing` (71), and eleven more garments lost a handful of job slots each to
+  the same thing.
+
+  Gravity builds each `data/sprite/로브/<garment>/` folder by copying the
+  `모험가배낭` ("Adventurer's Backpack") folder. It swaps in the new garment's
+  per-job `.act` files and its folder-root `.spr`, but leaves the **per-job
+  `.spr` files** behind as the backpack's. The client never reads them — it pairs
+  a per-job `.act` with the folder-root `.spr` — so the mistake is invisible
+  in-game. We *do* read them: `GarmentCandidates` offers `{per-job act, per-job
+  spr}` before `{per-job act, root spr}`, so every job that inherited a leftover
+  composed the garment's geometry over the backpack's pixels. Only the 4th
+  classes escaped, because the folders are act-only for them.
+
+  New `extract-grf.mjs --prune-robes <resources-dir>` deletes the leftovers from
+  the extracted tree; the `{per-job act, root spr}` pair already in the candidate
+  list then takes over on its own, so the resolver is unchanged. **Run it after
+  every `--extract`** — it is idempotent, and it works on an already extracted or
+  deployed `resources/`. In this client: 2090 sprites across 21 folders.
+
+  A leftover is identified by **content**, never by position. "The root `.spr`
+  always wins" would be the easy rule and it is wrong: 201 of the 218 robe folders
+  are healthy and many (`c_giant_white_rabbit`, `c_niflheim_key`,
+  `c_samba_carnival`) ship genuine per-job image banks that differ from their root
+  `.spr` and have to keep winning. The rule is that a content shared by ten or
+  more distinct robe folders cannot be any one garment's artwork — eight contents
+  appear in 18–20 folders each, the next-largest sharing group is 4, and all eight
+  decode to the backpack. Seven of them are that bag drawn for a different body,
+  the per-job variants `모험가배낭`'s own folder no longer ships, so matching only
+  `모험가배낭/모험가배낭.spr` byte-for-byte would have left ~260 bad slots behind
+  — mostly the mounted jobs of `blackcatbag`, `c_traveller_bag` and the like,
+  which were showing the *adventurer's* backpack rather than their own.
+
+  Extraction itself was never at fault: the extracted bytes match the GRF.
+
+- **`c_snow_powder` (view 100, *[Visual] Aura Nevada*) is a `.str` effect, not a
+  garment.** Its robe folder is pure template — all 267 per-job sprites are
+  backpack leftovers and there is no folder-root `.spr` — so once pruned it has no
+  artwork anywhere in the client. `drawsNothing` now has a garment branch
+  (`GARMENT_TEMPLATE_ONLY`) so `--effects` picks it up, and it resolves
+  `efst_snow_powder/ssnnnn2.str` by the ordinary name rule: a 25-layer snowfall,
+  now served at `/effects/c_snow_powder/`. `--prune-robes` reports any folder it
+  empties, which is how the next one will surface.
+
 ## 2026-08-23
 
 ### Added

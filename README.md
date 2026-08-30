@@ -370,6 +370,17 @@ table's keys come back unresolved. It has no item ids — the item → hat-effec
 link is server-side — so the costume still has to be matched by hand, but it
 settles *which* `.str` an ambiguous folder plays.
 
+One costume reaches this set from the garment side rather than the accessory
+side. A garment's `.act` files are never blank, so "the visual is an effect" shows
+up differently there: the whole `로브/<garment>/` folder is the copied
+`모험가배낭` template, every `.spr` in it is a leftover backpack (see
+[the robe prune](#pruning-the-robe-template-leftovers)) and there is no
+folder-root `.spr` to fall back to, so the garment has no artwork anywhere in the
+client. `c_snow_powder` (view 100, *[Visual] Aura Nevada*) is the only one today
+and is listed in `GARMENT_TEMPLATE_ONLY`; its `.str`
+(`efst_snow_powder/ssnnnn2.str`) then resolves by the ordinary name rule.
+`--prune-robes` reports any folder it empties, which is how the next one surfaces.
+
 `EffectHatItemTable.lub` looks like the missing link and is not: its keys are a
 contiguous `1..109`, so it is a flat *list* of the items that have a hat effect,
 not a `HAT_EF` id → item map. Joining the two by number produces plausible
@@ -778,6 +789,50 @@ don't need those endpoints. The headgear/garment
 ID→sprite-name tables are baked from the client `luafiles514/.lub` into the binary
 by `gateway/cmd/gen-resolver` — re-run it when you update the client (see that
 directory's `dump.lua` and `main.go`).
+
+#### Pruning the robe template leftovers
+
+**Run this after every `--extract`:**
+
+```bash
+node extract-grf.mjs --prune-robes resources
+```
+
+Gravity builds each `data/sprite/로브/<garment>/` folder by copying the
+`모험가배낭` ("Adventurer's Backpack") folder. It replaces every per-job `.act`
+with the new garment's geometry, and the folder-root `.spr` with its artwork —
+but it leaves the per-job `.spr` files behind as the backpack's. The client never
+reads them (it pairs a per-job `.act` with the folder-root `.spr`), so the bug is
+invisible in-game. Our renderer *does* read them: `loadGarment` takes the first
+candidate pair where both files exist and `GarmentCandidates` offers
+`{per-job act, per-job spr}` first, so every job that inherited a leftover renders
+a backpack instead of the garment. Only the 4th classes escaped, because the
+folders are act-only for them and they fell through to the root `.spr`.
+
+This step deletes the leftovers, after which the `{per-job act, root spr}` pair
+already in the candidate list takes over on its own — the resolver needs no
+change. It is idempotent, and it runs on the extracted tree rather than inside
+`--extract` so that `--extract` stays a plain byte copier and an already extracted
+(or deployed) `resources/` can be repaired in place. In this client it removes
+2090 sprites from 21 folders; six garments were almost entirely destroyed
+(`c_scepter`, `c_evil_scythe`, `c_sakura_wing`, `c_snow_powder`,
+`c_giantcatbag_jp_bl`, `c_ice_wing` — views 97/79/83/100/80/71) and the rest lost
+13–18 job slots each, mostly the mounted variants.
+
+A leftover is identified **by content**, never by position: 201 of the 218 robe
+folders are healthy, and plenty of them (`c_giant_white_rabbit`, `c_niflheim_key`,
+`c_samba_carnival`) ship genuine per-job image banks that differ from their root
+`.spr` and must keep winning — so "the root `.spr` always wins" would be wrong.
+The rule is that a content shared by ten or more distinct robe folders cannot be
+any one garment's artwork. The measurement is unambiguous: eight contents appear
+in 18–20 folders each, the next-largest sharing group is 4, and all eight decode
+to the backpack (seven of them are the same bag drawn for a different body — the
+per-job variants `모험가배낭`'s own folder no longer ships, which is why matching
+only `모험가배낭/모험가배낭.spr` byte-for-byte would miss ~260 of the bad slots).
+
+The step also reports any folder left with no sprite at all. That garment has no
+artwork anywhere in the client, which means its visual is a `.str` effect —
+see [effect-only costumes](#get-effects--effect-only-costumes).
 
 #### Regenerating the skin table
 
