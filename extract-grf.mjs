@@ -4792,9 +4792,9 @@ export function projectItems(tbl, aegisMap = new Map(), views = null, packages =
 //
 // The client stores each drop's display name inline, and we drop it: it is a
 // denormalized copy of a name items.json already carries, and a worse one —
-// 4628 of the 12915 published rows disagree with items.json, almost all of them
+// 4776 of the 13111 published rows disagree with items.json, almost all of them
 // because the package table bakes in the "[2]" slot suffix that `slots` keeps
-// separate, and all 49 drops that no longer have an item row are literally named
+// separate, and all 37 drops that no longer have an item row are literally named
 // "Unknown Item". Consumers join on `id` the way they do everywhere else.
 //
 // `prob` is the client's raw weight, passed through unnormalized, because there

@@ -12,20 +12,20 @@ continuously (no version tags), so entries are grouped by date.
   server-side `item_db` it may not have.
 
   The client ships the table itself, as compiled Lua bytecode at
-  `data/luafiles514/lua files/probabilityinfo/packageitem.lub` — 1,578 boxes
+  `data/luafiles514/lua files/probabilityinfo/packageitem.lub` — 1,604 boxes
   keyed by the box's own item id, each with its drop list. `--raw` now runs that
   chunk through the same Lua 5.1 VM the other tables use and hangs each list off
   the item row that opens the box, rather than publishing a second id-keyed file:
   `contains: [{ id, prob, group }, …]`, and `[]` for everything that is not a box.
-  1,471 of the boxes land on an item row (the other 107 are keyed by ids
-  `iteminfo_new.lub` no longer has), for 12,915 drop rows.
+  1,498 of the boxes land on an item row (the other 106 are keyed by ids
+  `iteminfo_new.lub` no longer has), for 13,111 drop rows.
 
   `prob` is passed through **unnormalized** because the file has no single
   denominator: per-group sums land on 10000 and 20000 (basis points) for the
   gacha-style boxes but on 1, 2, 3, 10… for the fixed-contents ones, and 552
   groups sum to 0. `group` is the sub-pool — a box rolls each group
   independently. Drops are id-only: the client stores a display name inline and
-  it is a worse copy of one `items.json` already has (4,628 of the 12,915 rows
+  it is a worse copy of one `items.json` already has (4,776 of the 13,111 rows
   disagree, nearly all because the package table bakes in the `[2]` slot suffix
   that `slots` deliberately keeps apart).
 
@@ -34,7 +34,7 @@ continuously (no version tags), so entries are grouped by date.
   the Spanish one is the largest, so a suffix-only lookup wins the wrong locale.
   `--raw` now also refuses to write an `items.json` where fewer than half the
   boxes matched an item — losing the table would otherwise look like a perfectly
-  valid file with every box empty. `items.json` grows 8.2 → 9.0 MB (~1.1 MB
+  valid file with every box empty. `items.json` grows 8.2 → 9.5 MB (~1.1 MB
   gzipped, unchanged).
 
 ## 2026-08-29

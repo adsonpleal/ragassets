@@ -667,7 +667,7 @@ play effects by id rather than render a character.
 `contains` on `items.json` is **what a box gives you**, on the row of the box
 itself — the client ships that table, so a catalogue can show a box's loot
 without a server-side `item_db` to join against. It is `[]` for everything that
-is not a box, and for the 1,471 that are it lists one entry per drop:
+is not a box, and for the 1,498 that are it lists one entry per drop:
 
 ```json
 "contains": [
@@ -686,13 +686,13 @@ group 0 *and* one from group 6.
 
 Each drop is **id-only**: the client's table stores a display name inline too and
 the projection drops it, because it is a second, worse copy of a name
-`items.json` already carries — 4,628 of the 12,915 drop rows disagree with it,
+`items.json` already carries — 4,776 of the 13,111 drop rows disagree with it,
 nearly all of them because the package table bakes in the `[2]` slot suffix that
-`slots` keeps separate, and all 49 drops that no longer have an item row are
+`slots` keeps separate, and all 37 drops that no longer have an item row are
 literally named `"Unknown Item"`. Join on `id` like everywhere else. The table is
 `ProbabilityInfo/PackageItem.lub`, read at its **full** `data/luafiles514/…`
 path for the same reason the skill tooltips are: `data/spanish/` ships the
-largest copy. 107 of its 1,578 boxes are keyed by an id `iteminfo_new.lub` has no
+largest copy. 106 of its 1,604 boxes are keyed by an id `iteminfo_new.lub` has no
 row for and are dropped — `--raw` prints the count.
 
 `description` — on both `items.json` and `skills.json` — is the client's own
@@ -746,7 +746,7 @@ returns `404` until you run `extract-grf.mjs --raw` (and, for `mobs.json`,
 
 These are also the only text this host serves, and the reverse proxy compresses
 them (`encode zstd gzip` on `/raw/*` in `caddy/ragassets.caddy`) — `items.json`
-is 9.0 MB raw and ~1.1 MB gzipped. Everything else ragassets serves is already
+is 9.5 MB raw and ~1.1 MB gzipped. Everything else ragassets serves is already
 compressed bytes, so the directive is deliberately scoped to `/raw`.
 
 ### `GET /healthz`
