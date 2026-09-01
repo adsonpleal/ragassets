@@ -746,7 +746,7 @@ returns `404` until you run `extract-grf.mjs --raw` (and, for `mobs.json`,
 
 These are also the only text this host serves, and the reverse proxy compresses
 them (`encode zstd gzip` on `/raw/*` in `caddy/ragassets.caddy`) — `items.json`
-is 9.5 MB raw and ~1.1 MB gzipped. Everything else ragassets serves is already
+is 9.5 MB raw and ~1.2 MB over the wire (1.17 MB via zstd). Everything else ragassets serves is already
 compressed bytes, so the directive is deliberately scoped to `/raw`.
 
 ### `GET /healthz`

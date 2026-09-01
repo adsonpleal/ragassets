@@ -34,8 +34,8 @@ continuously (no version tags), so entries are grouped by date.
   the Spanish one is the largest, so a suffix-only lookup wins the wrong locale.
   `--raw` now also refuses to write an `items.json` where fewer than half the
   boxes matched an item — losing the table would otherwise look like a perfectly
-  valid file with every box empty. `items.json` grows 8.2 → 9.5 MB (~1.1 MB
-  gzipped, unchanged).
+  valid file with every box empty. `items.json` grows 8.2 → 9.5 MB raw, ~1.2 MB
+  gzipped over the wire.
 
 ## 2026-08-29
 
