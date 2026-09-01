@@ -9,6 +9,7 @@ import {
   jobLabelsFromConstants,
   projectJobs,
   projectItems,
+  projectPackages,
   projectSkills,
   projectStatus,
   runChunk,
@@ -689,6 +690,45 @@ test("projectItems reads the equip slots and costume flag off the description", 
   assert.deepEqual(item.equipSlots, ["top", "mid", "low"]);
   assert.equal(item.costume, true);
   assert.equal(item.description, "Equipa em: ^777777Topo, Meio e Baixo^000000");
+});
+
+test("projectPackages keys drop lists by the box's id, keeping prob and group raw", () => {
+  const packages = projectPackages(
+    luaTable([
+      [
+        107912,
+        luaTable([
+          [1, luaRecord({ id: 1000274, prob: 10, name: "Cupom da Kachua", group: 0 })],
+          [2, luaRecord({ id: 23047, prob: 1400, name: "[Evento] Bênção de Tyr 5", group: 6 })],
+        ]),
+      ],
+      ["nope", luaTable([[1, luaRecord({ id: 1, prob: 1, group: 0 })]])], // non-numeric box id
+      [9999, luaTable([[1, luaRecord({ prob: 5, group: 0 })]])], // no drop id — nothing left to keep
+    ]),
+  );
+
+  assert.deepEqual([...packages.keys()], [107912]);
+  assert.deepEqual(packages.get(107912), [
+    { id: 1000274, prob: 10, group: 0 },
+    { id: 23047, prob: 1400, group: 6 },
+  ]);
+});
+
+test("projectItems hangs the box contents off the box's own row", () => {
+  const items = projectItems(
+    luaTable([
+      [107912, luaRecord({ identifiedDisplayName: "[Evento] Artefato Oval Noturno" })],
+      [501, luaRecord({ identifiedDisplayName: "Poção Vermelha" })],
+    ]),
+    new Map(),
+    null,
+    new Map([[107912, [{ id: 23047, prob: 1400, group: 6 }]]]),
+  );
+
+  assert.deepEqual(items[1].contains, [{ id: 23047, prob: 1400, group: 6 }]);
+  // everything that is not a box keeps the field, empty — consumers read it
+  // unconditionally, the way they already read equipSlots
+  assert.deepEqual(items[0].contains, []);
 });
 
 test("projectSkills and projectRandomOpt key by numeric id and drop nameless rows", () => {

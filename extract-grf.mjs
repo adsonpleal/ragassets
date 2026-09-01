@@ -173,6 +173,8 @@ function usage() {
       "  into <out-dir> (normally resources/raw, served at /raw/<name>.json).",
       "  They are a faithful projection of the client: per-project naming overrides",
       "  and reshaping stay in each consumer's own sync step.",
+      "  Each item row carries `contains`: the drop list of the box it opens (id +",
+      "  the client's raw prob weight + group), empty for everything that is not a box.",
     ].join("\n"),
   );
 }
@@ -4635,6 +4637,10 @@ const RAW_LUB_PATHS = {
   randomopt: "data/luafiles514/lua files/datainfo/addrandomoptionnametable_ptbr.lub",
   efstids: "data/luafiles514/lua files/stateicon/efstids.lub",
   stateiconinfo: "data/luafiles514/lua files/stateicon/stateiconinfo.lub",
+  // Box contents. Full path for the same reason as skilldescript: the GRF also
+  // ships this table under data/english/ and data/spanish/, and the Spanish copy
+  // is the largest of the three, so a suffix-only want would silently win it.
+  packageitem: "data/luafiles514/lua files/probabilityinfo/packageitem.lub",
 };
 
 // data/itemmoveinfov5.txt lists every item as `<id>\t<move flags...>\t// <AegisName>`;
@@ -4744,7 +4750,7 @@ export function jobLabelsFromConstants(consts) {
 // simulator silently loses them (28 of them in the current client). The two stay
 // separate because a consumer that wants the literal client field should not
 // have to guess whether a value was recovered.
-export function projectItems(tbl, aegisMap = new Map(), views = null) {
+export function projectItems(tbl, aegisMap = new Map(), views = null, packages = new Map()) {
   const out = [];
   if (!(tbl instanceof LuaTable)) return out;
   for (const [id, entry] of tbl.map) {
@@ -4774,9 +4780,50 @@ export function projectItems(tbl, aegisMap = new Map(), views = null) {
       viewKind: (spriteView && views?.spriteKind(spriteView, resourceName)) || null,
       equipSlots,
       costume: entry.get("costume") === true,
+      contains: packages.get(id) ?? [],
     });
   }
   return out.sort((a, b) => a.id - b.id);
+}
+
+// probabilityinfo/packageitem.lub: what a box can give, keyed by the box's own
+// item id. Returns id -> the drop list, so projectItems can hang it off the row
+// the box already has instead of publishing a second id-keyed file.
+//
+// The client stores each drop's display name inline, and we drop it: it is a
+// denormalized copy of a name items.json already carries, and a worse one —
+// 4628 of the 12915 published rows disagree with items.json, almost all of them
+// because the package table bakes in the "[2]" slot suffix that `slots` keeps
+// separate, and all 49 drops that no longer have an item row are literally named
+// "Unknown Item". Consumers join on `id` the way they do everywhere else.
+//
+// `prob` is the client's raw weight, passed through unnormalized, because there
+// is no single denominator to normalize against: per-group sums across the file
+// land on 10000 and 20000 (basis points) for the gacha-style boxes but on 1, 2,
+// 3, 10 … for the fixed-contents ones, and 552 groups sum to 0. A consumer that
+// wants a percentage sums the weights of one `group` and divides by that.
+//
+// `group` is the sub-pool: a box rolls each of its groups independently, so a
+// box with a group 0 and a group 6 hands out one drop from each.
+export function projectPackages(tbl) {
+  const out = new Map();
+  if (!(tbl instanceof LuaTable)) return out;
+  for (const [boxId, pkg] of tbl.map) {
+    if (typeof boxId !== "number" || !(pkg instanceof LuaTable)) continue;
+    const drops = [];
+    for (const row of pkg.map.values()) {
+      if (!(row instanceof LuaTable)) continue;
+      const id = row.get("id");
+      if (typeof id !== "number") continue;
+      drops.push({
+        id: Math.round(id),
+        prob: Number(row.get("prob") || 0),
+        group: Number(row.get("group") || 0),
+      });
+    }
+    if (drops.length) out.set(Math.round(boxId), drops);
+  }
+  return out;
 }
 
 // The description is stored as an array of lines; join them and keep the ^RRGGBB
@@ -5465,10 +5512,28 @@ function extractRawTables(grfPath, outDir, args) {
       ? parseAegisMap(Buffer.from(extractFile(grf, moveInfo)).toString("latin1"))
       : new Map();
     console.error(`items from ${lubPath} (${aegisMap.size} aegis names)`);
-    const items = projectItems(runChunk(readFileSync(lubPath)).get("tbl"), aegisMap, buildViewResolver(grf));
+    // Box contents ride along on the item row that opens the box, so they are
+    // read before the projection rather than written as a table of their own.
+    if (!lub("packageitem")) {
+      throw new Error(`${RAW_LUB_PATHS.packageitem} not found in the GRF`);
+    }
+    const packages = projectPackages(runChunk(lub("packageitem")).get("tbl"));
+    const items = projectItems(runChunk(readFileSync(lubPath)).get("tbl"), aegisMap, buildViewResolver(grf), packages);
     write("items.json", items);
     const recovered = items.filter((i) => !i.view && i.spriteView).length;
     console.error(`  ${recovered} views recovered from resource names (ClassNum 0)`);
+    // A box whose id has no iteminfo row has nowhere to hang its drop list, so
+    // it is dropped — say how many, because the alternative reads as "the client
+    // stopped shipping contents for them".
+    const boxed = items.filter((i) => i.contains.length).length;
+    console.error(
+      `  ${boxed}/${packages.size} boxes carry contents (${packages.size - boxed} reference ids iteminfo has no row for)`,
+    );
+    // Losing the whole table (a re-keyed chunk, a locale swap) has to fail loudly:
+    // items.json would still look perfectly valid, just with every box empty.
+    if (boxed < packages.size * 0.5) {
+      throw new Error(`items.json: only ${boxed}/${packages.size} boxes matched an item — check ${RAW_LUB_PATHS.packageitem}`);
+    }
 
     // Jobs — read positionally out of the constant pools, see parseLuaConstants.
     // classes.json below pairs the same two pools against the palette scan.
