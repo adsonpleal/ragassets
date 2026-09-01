@@ -16,7 +16,9 @@ continuously (no version tags), so entries are grouped by date.
   keyed by the box's own item id, each with its drop list. `--raw` now runs that
   chunk through the same Lua 5.1 VM the other tables use and hangs each list off
   the item row that opens the box, rather than publishing a second id-keyed file:
-  `contains: [{ id, prob, group }, …]`, and `[]` for everything that is not a box.
+  `contains: [{ id, prob, group }, …]`. The key is present **only on a box** —
+  the other 15,446 rows leave it out rather than carrying an empty array, so read
+  it as `item.contains ?? []`.
   1,498 of the boxes land on an item row (the other 106 are keyed by ids
   `iteminfo_new.lub` no longer has), for 13,111 drop rows.
 
@@ -34,7 +36,7 @@ continuously (no version tags), so entries are grouped by date.
   the Spanish one is the largest, so a suffix-only lookup wins the wrong locale.
   `--raw` now also refuses to write an `items.json` where fewer than half the
   boxes matched an item — losing the table would otherwise look like a perfectly
-  valid file with every box empty. `items.json` grows 8.2 → 9.5 MB raw, ~1.2 MB
+  valid file with every box empty. `items.json` grows 8.2 → 9.3 MB raw, ~1.2 MB
   gzipped over the wire.
 
 ## 2026-08-29

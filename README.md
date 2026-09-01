@@ -616,7 +616,7 @@ themselves.
 
 | Path | What you get |
 |---|---|
-| `GET /raw/items.json` | Every item: `id, name, slots, aegisName, resourceName, description, view, spriteView, spriteBlank, viewKind, equipSlots, costume, contains`. |
+| `GET /raw/items.json` | Every item: `id, name, slots, aegisName, resourceName, description, view, spriteView, spriteBlank, viewKind, equipSlots, costume` — plus `contains` on the 1,498 that are boxes. |
 | `GET /raw/jobs.json` | Every class: `id, jt, name, hasIcon`. |
 | `GET /raw/skills.json` | Every skill: `id, name, maxLevel, description, delay`. |
 | `GET /raw/status.json` | Status-effect (EFST) `id` → `name`. |
@@ -666,8 +666,11 @@ play effects by id rather than render a character.
 
 `contains` on `items.json` is **what a box gives you**, on the row of the box
 itself — the client ships that table, so a catalogue can show a box's loot
-without a server-side `item_db` to join against. It is `[]` for everything that
-is not a box, and for the 1,498 that are it lists one entry per drop:
+without a server-side `item_db` to join against. The key is **present only on a
+box** — the 15,446 rows that open into nothing leave it out entirely rather than
+carrying an empty array, which would add 216 KB of noise to a file consumers
+pull over the wire, so read it as `item.contains ?? []`. On the 1,498 that are
+boxes it lists one entry per drop:
 
 ```json
 "contains": [
@@ -746,7 +749,7 @@ returns `404` until you run `extract-grf.mjs --raw` (and, for `mobs.json`,
 
 These are also the only text this host serves, and the reverse proxy compresses
 them (`encode zstd gzip` on `/raw/*` in `caddy/ragassets.caddy`) — `items.json`
-is 9.5 MB raw and ~1.2 MB over the wire (1.17 MB via zstd). Everything else ragassets serves is already
+is 9.3 MB raw and ~1.2 MB over the wire (1.16 MB via zstd). Everything else ragassets serves is already
 compressed bytes, so the directive is deliberately scoped to `/raw`.
 
 ### `GET /healthz`

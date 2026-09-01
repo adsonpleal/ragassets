@@ -726,9 +726,10 @@ test("projectItems hangs the box contents off the box's own row", () => {
   );
 
   assert.deepEqual(items[1].contains, [{ id: 23047, prob: 1400, group: 6 }]);
-  // everything that is not a box keeps the field, empty — consumers read it
-  // unconditionally, the way they already read equipSlots
-  assert.deepEqual(items[0].contains, []);
+  // a row that is not a box leaves the key out entirely rather than carrying an
+  // empty array — the key is absent, not present-and-undefined
+  assert.ok(!("contains" in items[0]));
+  assert.deepEqual(Object.keys(items[0]).filter((k) => k === "contains"), []);
 });
 
 test("projectSkills and projectRandomOpt key by numeric id and drop nameless rows", () => {

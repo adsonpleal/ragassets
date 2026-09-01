@@ -173,8 +173,8 @@ function usage() {
       "  into <out-dir> (normally resources/raw, served at /raw/<name>.json).",
       "  They are a faithful projection of the client: per-project naming overrides",
       "  and reshaping stay in each consumer's own sync step.",
-      "  Each item row carries `contains`: the drop list of the box it opens (id +",
-      "  the client's raw prob weight + group), empty for everything that is not a box.",
+      "  A box's item row carries `contains`: its drop list (id + the client's raw",
+      "  prob weight + group). Rows that are not boxes leave the key out entirely.",
     ].join("\n"),
   );
 }
@@ -4780,7 +4780,11 @@ export function projectItems(tbl, aegisMap = new Map(), views = null, packages =
       viewKind: (spriteView && views?.spriteKind(spriteView, resourceName)) || null,
       equipSlots,
       costume: entry.get("costume") === true,
-      contains: packages.get(id) ?? [],
+      // Only a box carries `contains`; every other row omits the key rather
+      // than carrying an empty array. 15.4k of the 16.9k items are not boxes,
+      // and `"contains":[]` on each of them is 216 KB of nothing in a file
+      // consumers pull over the wire. Read it as `item.contains ?? []`.
+      ...(packages.get(id) ? { contains: packages.get(id) } : {}),
     });
   }
   return out.sort((a, b) => a.id - b.id);
@@ -5525,7 +5529,7 @@ function extractRawTables(grfPath, outDir, args) {
     // A box whose id has no iteminfo row has nowhere to hang its drop list, so
     // it is dropped — say how many, because the alternative reads as "the client
     // stopped shipping contents for them".
-    const boxed = items.filter((i) => i.contains.length).length;
+    const boxed = items.filter((i) => i.contains).length;
     console.error(
       `  ${boxed}/${packages.size} boxes carry contents (${packages.size - boxed} reference ids iteminfo has no row for)`,
     );
