@@ -36,6 +36,9 @@ import {
   sprEffectCandidates,
   parseCardIllustTable,
   pickCardIllust,
+  decodeFilenameV1,
+  v1EncryptionFlags,
+  parseFileTableV1,
   robeTemplateHashes,
 } from "./extract-grf.mjs";
 
@@ -1120,4 +1123,139 @@ test("pickCardIllust takes the first shipped name and never the placeholder", ()
   assert.equal(pickCardIllust(["약화된펜릴카드", "펜릴카드_"], shipped("펜릴카드_")), "펜릴카드_");
   assert.equal(pickCardIllust(["sorry"], shipped("sorry")), null); // placeholder only
   assert.equal(pickCardIllust(["SLD_Gioia_Card"], shipped()), null); // never shipped
+});
+
+// ---------------------------------------------------------------------------
+// GRF v1 (0x100/0x101/0x102) — the format of every LATAM .gpf patch archive.
+//
+// These build the table by hand rather than shipping a .gpf: this project
+// distributes no Ragnarok Online game assets, and a patch archive is game data.
+// The one real datum used is a single verified (ciphertext, plaintext) pair,
+// which is a property of the keyless cipher rather than of any content.
+// ---------------------------------------------------------------------------
+
+// Verified against a real archive: this 8-byte block decrypts to "data\Lua".
+// The cipher is keyless ECB, so one known block is enough to exercise the whole
+// nibble-swap-then-DES path.
+const V1_NAME_CIPHER = Buffer.from([0x03, 0x56, 0x47, 0x52, 0x80, 0x90, 0x02, 0x43]);
+// String.raw so the lone backslash in the GRF path survives review and editing.
+const V1_NAME_PLAIN = String.raw`data\Lua`;
+
+test("decodeFilenameV1 nibble-swaps then DES-decrypts a v1 entry name", () => {
+  const got = decodeFilenameV1(Buffer.from(V1_NAME_CIPHER));
+  assert.equal(got.toString("latin1"), V1_NAME_PLAIN);
+});
+
+test("decodeFilenameV1 leaves a trailing partial block alone", () => {
+  // Names are padded to a multiple of 8; anything shorter than a full block at
+  // the end is not part of the ciphertext and must not be touched.
+  const buf = Buffer.concat([V1_NAME_CIPHER, Buffer.from([1, 2, 3])]);
+  const got = decodeFilenameV1(Buffer.from(buf));
+  assert.equal(got.subarray(0, 8).toString("latin1"), V1_NAME_PLAIN);
+  assert.deepEqual([...got.subarray(8)], [1, 2, 3]);
+});
+
+// The flags byte in a v1 entry always reads as a plain 0x01 — it does not say
+// which DES pass the payload took, so the extension has to.
+test("v1EncryptionFlags derives the DES pass from the extension", () => {
+  for (const name of ["a.gnd", "a.gat", "a.act", "a.str", "A.ACT"]) {
+    assert.equal(v1EncryptionFlags(name, 0x01), 0x05, `${name} should be header-only`);
+  }
+  for (const name of ["a.spr", "a.bmp", "a.lub", "a.rsw", "a.txt", "noext"]) {
+    assert.equal(v1EncryptionFlags(name, 0x01), 0x03, `${name} should be mixed`);
+  }
+});
+
+test("v1EncryptionFlags leaves directory entries alone", () => {
+  // Directory entries carry no payload; every consumer skips them on the file
+  // bit, and they must not be given a decryption mode.
+  assert.equal(v1EncryptionFlags("data\sprite", 0x00), 0x00);
+});
+
+// Builds one v1 table entry. Layout is
+// [u32 len][2 pad][name: len-6][4 pad][u32 raw1][u32 raw2][u32 uncomp][u8 flags][u32 offset],
+// where len spans the 2 pad + name + 4 pad.
+function v1Entry({ cipher, compSize, compSizeAligned, uncompSize, flags, offset }) {
+  const len = cipher.length + 6;
+  const head = Buffer.alloc(4 + len);
+  head.writeUInt32LE(len, 0);
+  cipher.copy(head, 4 + 2);
+  const meta = Buffer.alloc(17);
+  // The three size fields are stored offset, not raw.
+  meta.writeUInt32LE(compSize + uncompSize + 715, 0);
+  meta.writeUInt32LE(compSizeAligned + 37579, 4);
+  meta.writeUInt32LE(uncompSize, 8);
+  meta.writeUInt8(flags, 12);
+  meta.writeUInt32LE(offset, 13);
+  return Buffer.concat([head, meta]);
+}
+
+test("parseFileTableV1 decrypts the name and un-offsets the three size fields", () => {
+  const buf = v1Entry({
+    cipher: V1_NAME_CIPHER,
+    compSize: 1234,
+    compSizeAligned: 1240,
+    uncompSize: 4096,
+    flags: 0x01,
+    offset: 0x2a,
+  });
+  const [f] = parseFileTableV1(buf, 1);
+  assert.equal(f.filename, V1_NAME_PLAIN);
+  assert.equal(f.compSize, 1234);
+  assert.equal(f.compSizeAligned, 1240);
+  assert.equal(f.uncompSize, 4096);
+  assert.equal(f.offset, 0x2a);
+  assert.equal(f.flags, 0x03); // no header-only extension → ENC_MIXED
+});
+
+test("parseFileTableV1 stops at the entry count and reads them in order", () => {
+  const one = v1Entry({
+    cipher: V1_NAME_CIPHER,
+    compSize: 1,
+    compSizeAligned: 8,
+    uncompSize: 2,
+    flags: 0x01,
+    offset: 10,
+  });
+  const two = v1Entry({
+    cipher: V1_NAME_CIPHER,
+    compSize: 3,
+    compSizeAligned: 8,
+    uncompSize: 4,
+    flags: 0x01,
+    offset: 20,
+  });
+  const buf = Buffer.concat([one, two]);
+  assert.equal(parseFileTableV1(buf, 2).length, 2);
+  assert.deepEqual(
+    parseFileTableV1(buf, 2).map((f) => f.offset),
+    [10, 20],
+  );
+  // A count lower than what the buffer holds must not over-read.
+  assert.equal(parseFileTableV1(buf, 1).length, 1);
+});
+
+test("parseFileTableV1 stops cleanly on a truncated table", () => {
+  const full = v1Entry({
+    cipher: V1_NAME_CIPHER,
+    compSize: 1,
+    compSizeAligned: 8,
+    uncompSize: 2,
+    flags: 0x01,
+    offset: 10,
+  });
+  // A patch that is cut short mid-entry should yield what parsed, not throw:
+  // the extractor reports a partial archive far more usefully than a stack trace.
+  for (const cut of [1, 4, 10, full.length - 1]) {
+    assert.doesNotThrow(() => parseFileTableV1(full.subarray(0, cut), 1));
+  }
+  assert.equal(parseFileTableV1(full.subarray(0, full.length - 1), 1).length, 0);
+});
+
+test("parseFileTableV1 rejects an impossibly short entry length", () => {
+  // len < 6 would make the name slice negative; the reader must stop, not wrap.
+  const buf = Buffer.alloc(4 + 17);
+  buf.writeUInt32LE(3, 0);
+  assert.doesNotThrow(() => parseFileTableV1(buf, 1));
+  assert.equal(parseFileTableV1(buf, 1).length, 0);
 });

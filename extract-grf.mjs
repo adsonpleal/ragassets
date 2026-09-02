@@ -372,8 +372,16 @@ function openGrf(path) {
     // Custom forks (Event Horizon etc.) — 4-byte gap before the compressed
     // table and a 21-byte entry trailer (extra u32 vs v0x200).
     files = readFileTableV200(fd, 0x32 + filetableOffset, 21);
-  } else if (version === 0x103 || version === 0x101) {
+  } else if (version === 0x103) {
     files = readFileTableV103(fd, 0x2e + filetableOffset, fileCount, fileSize);
+  } else if (version === 0x102 || version === 0x101 || version === 0x100) {
+    // 0x101 used to be routed to the 0x103 reader. That could not have worked:
+    // v1 encrypts filenames and offsets the size fields, so the 0x103 reader
+    // yields garbage names and sizes that fail to inflate. Only 0x102 is
+    // verified against real archives (every LATAM .gpf patch); 0x100/0x101 come
+    // from the format spec and share the layout, but no archive was available to
+    // test them against.
+    files = readFileTableV1(fd, 0x2e + filetableOffset, fileCount, fileSize);
   } else {
     closeSync(fd);
     throw new Error(`Unsupported GRF version 0x${version.toString(16)}`);
@@ -447,6 +455,101 @@ function readFileTableV103(fd, tableStart, fileCount, fileSize) {
     const offset = buf.readUInt32LE(p + 13);
     p += 17;
     files.push({ filename, compSize, compSizeAligned, uncompSize, flags, offset });
+  }
+  return files;
+}
+
+// ---------------------------------------------------------------------------
+// GRF v1 (0x100 / 0x101 / 0x102) file table.
+//
+// This is the format of every LATAM `.gpf` patch archive, and of the client's
+// event.grf. The extractor only ever opened the merged client data.grf (0x300)
+// before, which is why it never needed this. The entry layout matches 0x103 —
+// [u32 len][2 bytes][name: len-6][u32 x3][u8 flags][u32 offset] — but three
+// things differ, and all three have to be handled together or the archive
+// decodes to garbage rather than failing cleanly:
+//
+//  1. FILENAMES ARE ENCRYPTED. Each 8-byte block is nibble-swapped
+//     (b = b<<4 | b>>4) and *then* run through the single-round DES block. The
+//     order matters: DES-then-swap yields nonsense. It is keyless ECB, which is
+//     why sibling entries visibly share leading blocks.
+//     Verified: cipher 03 56 47 52 80 90 02 43 -> "data\Lua".
+//
+//  2. THE SIZE FIELDS ARE OFFSET, not stored raw:
+//         uncompSize      = raw3
+//         compSize        = raw1 - raw3 - 715
+//         compSizeAligned = raw2 - 37579
+//     Verified on a real 4-entry .gpf: aligned resolves to 26032, and
+//     0x2e + 0 + 26032 lands exactly on the file table offset.
+//
+//  3. THE FLAGS BYTE LIES. Every entry reports plain 0x01; the DES pass has to
+//     be derived from the extension instead. Header-only (0x04) for the formats
+//     the client streams (.gnd/.gat/.act/.str), mixed (0x02) for everything
+//     else. Established by brute-forcing both passes over real archives.
+// ---------------------------------------------------------------------------
+
+// Decrypts a v1 entry name in place: nibble-swap each byte of an 8-byte block,
+// then DES it. Exported for tests.
+export function decodeFilenameV1(buf) {
+  for (let i = 0; i + 8 <= buf.length; i += 8) {
+    for (let j = i; j < i + 8; j++) buf[j] = ((buf[j] << 4) | (buf[j] >> 4)) & 0xff;
+    desDecryptBlock(buf, i);
+  }
+  return buf;
+}
+
+// v1EncryptionFlags derives the DES pass from the extension, because the flags
+// byte in a v1 entry does not carry it — every file reports a plain 0x01. The
+// split is between the formats the client streams and everything else, and was
+// established by brute-forcing both passes over real archives rather than read
+// off a spec. Exported for tests.
+export function v1EncryptionFlags(filename, flags) {
+  const FILE_BIT = 0x01;
+  if (!(flags & FILE_BIT)) return flags; // directory entry: no payload to decrypt
+  const ext = filename.slice(-4).toLowerCase();
+  const headerOnly = ext === ".gnd" || ext === ".gat" || ext === ".act" || ext === ".str";
+  return flags | (headerOnly ? 0x04 /* ENC_HEADER */ : 0x02 /* ENC_MIXED */);
+}
+
+function readFileTableV1(fd, tableStart, fileCount, fileSize) {
+  return parseFileTableV1(readBytes(fd, fileSize - tableStart, tableStart), fileCount);
+}
+
+// parseFileTableV1 is the pure half of readFileTableV1: everything but the read.
+// Split out so the entry layout, the name decryption, the size de-offsetting and
+// the extension-derived DES mode can be tested against a hand-built table,
+// without shipping a real .gpf — this project distributes no game assets.
+export function parseFileTableV1(buf, fileCount) {
+  const files = [];
+  let p = 0;
+  for (let i = 0; i < fileCount && p + 4 <= buf.length; i++) {
+    const len = buf.readUInt32LE(p);
+    p += 4;
+    if (len < 6 || p + len > buf.length) break;
+    // Copy: decodeFilenameV1 decrypts in place and the source buffer is shared.
+    const nameBuf = Buffer.from(buf.subarray(p + 2, p + 2 + len - 6));
+    decodeFilenameV1(nameBuf);
+    // The encrypted name is padded to a multiple of 8, so it can carry trailing
+    // NULs that must not become part of the path.
+    const nul = nameBuf.indexOf(0);
+    const filename = decodeName(nul < 0 ? nameBuf : nameBuf.subarray(0, nul));
+    p += len;
+    if (p + 17 > buf.length) break;
+    const raw1 = buf.readUInt32LE(p);
+    const raw2 = buf.readUInt32LE(p + 4);
+    const uncompSize = buf.readUInt32LE(p + 8);
+    let flags = buf.readUInt8(p + 12);
+    const offset = buf.readUInt32LE(p + 13);
+    p += 17;
+    flags = v1EncryptionFlags(filename, flags);
+    files.push({
+      filename,
+      compSize: raw1 - uncompSize - 715,
+      compSizeAligned: raw2 - 37579,
+      uncompSize,
+      flags,
+      offset,
+    });
   }
   return files;
 }
