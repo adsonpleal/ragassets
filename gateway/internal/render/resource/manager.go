@@ -5,12 +5,15 @@
 // never to the cached structs).
 //
 // spr and act are the two large caches (Spr retains the full file buffer; Act
-// parses into structured frame data). Both are bounded with LRU eviction so the
-// process footprint stays flat under a large working set — otherwise every
-// unique sprite ever requested would sit in memory forever and the container
-// eventually gets OOM-killed on a small host. pal and imf are left uncapped:
-// their total on-disk sets are tiny (~5 MB combined) and cannot grow without
-// bound.
+// parses into structured frame data). Both are bounded by a byte budget with LRU
+// eviction so the process footprint stays flat under a large working set —
+// otherwise every unique sprite ever requested would sit in memory forever and
+// the process eventually gets OOM-killed on a small host.
+//
+// pal and imf are effectively uncapped: the whole palette tree is 20 MB across
+// 4,464 files and the imf tree 3.8 MB across 327, so neither can grow without
+// bound. They still carry a defensive entry ceiling, because "bounded by the size
+// of the library" is only reassuring while the library stays this size.
 package resource
 
 import (
@@ -21,14 +24,36 @@ import (
 	"github.com/ragassets/gateway/internal/render/roformat"
 )
 
-// Default LRU capacities. Sized so the retained cache stays comfortably under
-// GOMEMLIMIT (~500 MiB in prod). spr entries retain the raw file buffer
-// (avg ~39 KB, occasionally several MB for large monster sprites); act entries
-// carry parsed frame data (avg ~15 KB). Callers can override via
-// NewManagerWithLimits — the render engine uses these defaults.
+// Default cache budgets, in bytes. Sized to sit well inside GOMEMLIMIT (~500 MiB
+// in prod) alongside the per-render working set.
+//
+// These are byte budgets, not entry counts, and the difference is not academic.
+// The previous entry-count defaults (2000 spr, 3000 act) implied roughly 219 MB
+// against measured averages of 41.1 KB per .spr (81,040 files) and 45.6 KB per
+// .act (102,345) — already over budget on the 500 MiB box, and far over for a
+// 128 MB Workers isolate. The old doc comment put .act at "~15 KB", which was
+// stale by 3x and is what made the counts look safe.
 const (
-	DefaultSprCacheCap = 2000
-	DefaultActCacheCap = 3000
+	DefaultSprCacheBytes int64 = 96 << 20 // 96 MiB
+	DefaultActCacheBytes int64 = 48 << 20 // 48 MiB
+
+	// maxEntryBytes refuses to retain any single oversized entry. Such a file is
+	// still parsed and served — it just is not kept, so one 19.5 MB monster
+	// cannot evict the entire hot set of ordinary sprites behind it.
+	maxEntryBytes int64 = 2 << 20 // 2 MiB
+
+	// errEntryBytes is the nominal charge for a cached failure. Negative results
+	// are worth caching (they stop a missing file being re-stat'd on every
+	// request) but hold no payload, so they are charged a token amount rather
+	// than zero — otherwise an adversarial miss stream could retain unboundedly
+	// many of them for free.
+	errEntryBytes int64 = 1 << 10 // 1 KiB
+
+	// maxPalEntries / maxImfEntries bound the two uncapped maps. Both ceilings sit
+	// comfortably above the entire on-disk set (4,464 palettes, 327 imf), so in
+	// practice neither is ever reached.
+	maxPalEntries = 6000
+	maxImfEntries = 1000
 )
 
 // Manager locates and caches parsed resources under a root directory.
@@ -63,24 +88,28 @@ type imfEntry struct {
 }
 
 // NewManager returns a Manager rooted at the given resource directory (the
-// directory that contains "data/") using default LRU capacities.
+// directory that contains "data/") using the default cache budgets.
 func NewManager(root string) *Manager {
-	return NewManagerWithLimits(root, DefaultSprCacheCap, DefaultActCacheCap)
+	return NewManagerWithBudget(root, DefaultSprCacheBytes, DefaultActCacheBytes)
 }
 
-// NewManagerWithLimits is NewManager but with explicit LRU capacities for the
-// spr and act caches. Values <= 0 fall back to the defaults.
-func NewManagerWithLimits(root string, sprCap, actCap int) *Manager {
-	if sprCap <= 0 {
-		sprCap = DefaultSprCacheCap
+// NewManagerWithBudget is NewManager but with explicit byte budgets for the spr
+// and act caches. Values <= 0 fall back to the defaults.
+//
+// Named for bytes rather than "limits" deliberately: it replaced an entry-count
+// API, and a caller that had passed a small count would otherwise have silently
+// asked for a few-byte cache instead of a few-entry one.
+func NewManagerWithBudget(root string, sprBytes, actBytes int64) *Manager {
+	if sprBytes <= 0 {
+		sprBytes = DefaultSprCacheBytes
 	}
-	if actCap <= 0 {
-		actCap = DefaultActCacheCap
+	if actBytes <= 0 {
+		actBytes = DefaultActCacheBytes
 	}
 	return &Manager{
 		root: root,
-		spr:  newLRU[sprEntry](sprCap),
-		act:  newLRU[actEntry](actCap),
+		spr:  newLRU[sprEntry](sprBytes),
+		act:  newLRU[actEntry](actBytes),
 		pal:  map[string]palEntry{},
 		imf:  map[string]imfEntry{},
 	}
@@ -89,6 +118,18 @@ func NewManagerWithLimits(root string, sprCap, actCap int) *Manager {
 // path builds the on-disk path for a resolved name under a category folder.
 func (m *Manager) path(folder, name, ext string) string {
 	return filepath.Join(m.root, "data", folder, filepath.FromSlash(name)+"."+ext)
+}
+
+// cacheSize is the budget charge for an entry parsed from src bytes.
+//
+// The source file's length stands in for the retained cost. For .spr that is
+// close to exact (the parsed form keeps the file buffer); for .act it is an
+// approximation of the parsed frame data, which tracks file size closely enough
+// to bound the cache. Entries above maxEntryBytes are reported as oversized so
+// the caller can serve them without retaining them.
+func cacheSize(src []byte) (size int64, oversized bool) {
+	n := int64(len(src))
+	return n, n > maxEntryBytes
 }
 
 // readFile reads a resource file's bytes.
@@ -106,14 +147,18 @@ func (m *Manager) Spr(name string) (*roformat.Spr, error) {
 	m.mu.Unlock()
 
 	var e sprEntry
+	size, oversized := errEntryBytes, false
 	if data, err := m.readFile("sprite", name, "spr"); err != nil {
 		e.err = err
 	} else {
 		e.v, e.err = roformat.ParseSpr(data)
+		size, oversized = cacheSize(data)
 	}
-	m.mu.Lock()
-	m.spr.put(name, e)
-	m.mu.Unlock()
+	if !oversized {
+		m.mu.Lock()
+		m.spr.put(name, e, size)
+		m.mu.Unlock()
+	}
 	return e.v, e.err
 }
 
@@ -127,20 +172,25 @@ func (m *Manager) Act(name string) (*roformat.Act, error) {
 	m.mu.Unlock()
 
 	var e actEntry
+	size, oversized := errEntryBytes, false
 	if data, err := m.readFile("sprite", name, "act"); err != nil {
 		e.err = err
 	} else {
 		e.v, e.err = roformat.ParseAct(data)
+		size, oversized = cacheSize(data)
 	}
-	m.mu.Lock()
-	m.act.put(name, e)
-	m.mu.Unlock()
+	if !oversized {
+		m.mu.Lock()
+		m.act.put(name, e, size)
+		m.mu.Unlock()
+	}
 	return e.v, e.err
 }
 
 // Pal returns the parsed .pal for a resolved palette name (cached, incl. errors).
-// Uncapped: the on-disk .pal set is small (~4 KB per entry, a few thousand total)
-// and cannot grow without bound.
+// Effectively uncapped — the whole palette tree is 20 MB across 4,464 files — but
+// it stops inserting past maxPalEntries so the map cannot outgrow the library it
+// is meant to mirror.
 func (m *Manager) Pal(name string) (roformat.Palette, error) {
 	m.palMu.RLock()
 	e, ok := m.pal[name]
@@ -155,13 +205,16 @@ func (m *Manager) Pal(name string) (roformat.Palette, error) {
 		e2.v, e2.err = roformat.ParsePal(data)
 	}
 	m.palMu.Lock()
-	m.pal[name] = e2
+	if len(m.pal) < maxPalEntries {
+		m.pal[name] = e2
+	}
 	m.palMu.Unlock()
 	return e2.v, e2.err
 }
 
 // Imf returns the parsed .imf for a resolved imf name (cached, incl. errors).
-// Uncapped: only a few hundred imf files exist, all small.
+// Effectively uncapped — 327 files, 3.8 MB total — with the same defensive
+// entry ceiling as Pal.
 func (m *Manager) Imf(name string) (*roformat.Imf, error) {
 	m.imfMu.RLock()
 	e, ok := m.imf[name]
@@ -176,7 +229,9 @@ func (m *Manager) Imf(name string) (*roformat.Imf, error) {
 		e2.v, e2.err = roformat.ParseImf(data)
 	}
 	m.imfMu.Lock()
-	m.imf[name] = e2
+	if len(m.imf) < maxImfEntries {
+		m.imf[name] = e2
+	}
 	m.imfMu.Unlock()
 	return e2.v, e2.err
 }

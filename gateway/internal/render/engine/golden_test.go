@@ -7,14 +7,31 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ragassets/gateway/internal/render/resolve"
 )
 
 // TestGolden renders a set of stills and compares them pixel-for-pixel against
 // committed reference PNGs (themselves validated as pixel-identical to the
 // upstream zrenderer). It guards against future regressions in the engine.
-// Skipped when resources/ is absent.
+//
+// Unlike the rest of this package's tests, it does NOT need the full resources/
+// tree and never skips: it runs against testdata/fixtures, a committed 1.3 MB
+// pack holding exactly the 19 files these six renders read. That matters because
+// resources/ is gitignored, so on a fresh CI runner a resources-gated golden test
+// would pass vacuously — and this comparison is the safety net the whole renderer
+// rests on. It has to actually run.
+//
+// The pack also reproduces the tree's *existence* topology, which is load-bearing:
+// loadGarment and loadHatEffect pick the first candidate whose files both exist,
+// so a probe that must miss (아이템/고글_이펙트.act) is deliberately absent here too.
+//
+// To regenerate after a client update or a resolver change: re-copy every path the
+// six cases touch out of resources/. If a change makes the engine probe a new path
+// that exists in resources/ but not here, this test fails rather than silently
+// diverging — that is the intended behaviour, and the fix is to refresh the pack.
 func TestGolden(t *testing.T) {
-	e := newEngine(t)
+	e := New(filepath.Join("testdata", "fixtures"), resolve.DefaultTables())
 
 	cases := []struct {
 		golden string

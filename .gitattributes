@@ -4,4 +4,7 @@
 *.png binary
 *.spr binary
 *.act binary
+*.imf binary
+*.pal binary
 *.grf binary
+*.gpf binary

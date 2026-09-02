@@ -332,6 +332,56 @@ func TestParseCanvas(t *testing.T) {
 	}
 }
 
+// TestParseCanvasRejects covers the grammar edges the regexp used to enforce, so
+// the hand-written parser that replaced it cannot quietly get looser.
+func TestParseCanvasRejects(t *testing.T) {
+	bad := []string{
+		"garbage",
+		"200x250",          // missing both origins
+		"200x250+100",      // missing one origin
+		"200x250 100+125",  // wrong delimiter
+		"200x250+100+125x", // trailing junk
+		"x250+100+125",     // missing width
+		"200x+100+125",     // missing height
+		"200X250+100+125",  // capital X — the regexp was case-sensitive
+		"200x250100+125",   // unsigned first origin
+		"200x250++100+125",
+		"-200x250+100+125", // signed width
+		"200x250+100+125 ", // trailing space
+		" 200x250+100+125", // leading space
+	}
+	for _, s := range bad {
+		if c, ok := ParseCanvas(s); ok {
+			t.Errorf("ParseCanvas(%q) = %+v, want rejected", s, c)
+		}
+	}
+}
+
+// TestParseCanvasBoundsDimensions guards against a canvas large enough to OOM the
+// process. Width*Height flows into raster.NewRawImage, which allocates 4 bytes a
+// pixel with no ceiling of its own, so an unbounded parse turns one query string
+// into a multi-gigabyte allocation.
+func TestParseCanvasBoundsDimensions(t *testing.T) {
+	huge := []string{
+		"50000x50000+0+0", // ~10 GB
+		"99999x1+0+0",     // over the per-side cap
+		"1x99999+0+0",
+		"4000x4000+0+0",    // within per-side, but 64 MB — over the pixel cap
+		"9999999999x1+0+0", // digit-run overflow
+		"1x1+9999999999+0", // overflow in an origin
+	}
+	for _, s := range huge {
+		if c, ok := ParseCanvas(s); ok {
+			t.Errorf("ParseCanvas(%q) = %+v, want rejected as oversized", s, c)
+		}
+	}
+
+	// The largest canvas that is still allowed must keep working.
+	if c, ok := ParseCanvas("2048x2048+0+0"); !ok || c.Width != 2048 || c.Height != 2048 {
+		t.Errorf("2048x2048 should be accepted, got %+v ok=%v", c, ok)
+	}
+}
+
 // TestGarmentPrefersPerJobAct guards the garment resolution order. A few
 // costumes (wing_of_angel_move / garment 61 among them) ship a complete
 // act+spr pair at the folder root whose offsets place the sprite ~28px too

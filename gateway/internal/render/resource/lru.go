@@ -2,25 +2,34 @@ package resource
 
 import "container/list"
 
-// lru is a tiny fixed-capacity LRU cache: a doubly-linked list of insertion order
-// plus a map from key to list element. get/put are both O(1). Not safe for
-// concurrent use — callers must serialize (Manager holds a single mutex).
+// lru is a byte-budgeted LRU cache: a doubly-linked list in recency order plus a
+// map from key to list element. get/put are both O(1). Not safe for concurrent
+// use — callers must serialize (Manager holds a single mutex).
+//
+// The budget is bytes rather than entries because the sprite library's size
+// distribution has a brutal tail. .spr files average ~41 KB, but
+// data/sprite/몬스터/firepit.spr alone is 19.5 MB and several other monsters clear
+// 10 MB. A count-budgeted cache sized against the average will cheerfully retain
+// twenty of those — hundreds of megabytes — while its entry count still reads as
+// nowhere near the limit. Charging real bytes is the only bound that holds.
 type lru[V any] struct {
-	cap int
-	ll  *list.List
-	m   map[string]*list.Element
+	maxBytes  int64
+	usedBytes int64
+	ll        *list.List
+	m         map[string]*list.Element
 }
 
 type lruEntry[V any] struct {
-	key string
-	val V
+	key  string
+	val  V
+	size int64
 }
 
-func newLRU[V any](cap int) *lru[V] {
+func newLRU[V any](maxBytes int64) *lru[V] {
 	return &lru[V]{
-		cap: cap,
-		ll:  list.New(),
-		m:   make(map[string]*list.Element, cap+1),
+		maxBytes: maxBytes,
+		ll:       list.New(),
+		m:        map[string]*list.Element{},
 	}
 }
 
@@ -33,22 +42,35 @@ func (c *lru[V]) get(key string) (V, bool) {
 	return zero, false
 }
 
-// put inserts or updates key=val and evicts the LRU tail if over capacity.
-func (c *lru[V]) put(key string, val V) {
+// put inserts or updates key=val, charging size bytes against the budget, then
+// evicts from the tail until back inside it.
+func (c *lru[V]) put(key string, val V, size int64) {
 	if el, ok := c.m[key]; ok {
+		e := el.Value.(*lruEntry[V])
+		c.usedBytes += size - e.size
+		e.val, e.size = val, size
 		c.ll.MoveToFront(el)
-		el.Value.(*lruEntry[V]).val = val
+		c.evict()
 		return
 	}
-	el := c.ll.PushFront(&lruEntry[V]{key: key, val: val})
-	c.m[key] = el
-	if c.ll.Len() > c.cap {
+	c.m[key] = c.ll.PushFront(&lruEntry[V]{key: key, val: val, size: size})
+	c.usedBytes += size
+	c.evict()
+}
+
+func (c *lru[V]) evict() {
+	for c.usedBytes > c.maxBytes {
 		tail := c.ll.Back()
-		if tail != nil {
-			c.ll.Remove(tail)
-			delete(c.m, tail.Value.(*lruEntry[V]).key)
+		if tail == nil {
+			return
 		}
+		e := c.ll.Remove(tail).(*lruEntry[V])
+		delete(c.m, e.key)
+		c.usedBytes -= e.size
 	}
 }
 
 func (c *lru[V]) len() int { return c.ll.Len() }
+
+// bytes reports the current charged size, for tests and instrumentation.
+func (c *lru[V]) bytes() int64 { return c.usedBytes }
