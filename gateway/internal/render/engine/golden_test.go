@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ragassets/gateway/internal/render/resolve"
+	"github.com/ragassets/gateway/internal/render/resource"
 )
 
 // TestGolden renders a set of stills and compares them pixel-for-pixel against
@@ -33,19 +34,7 @@ import (
 func TestGolden(t *testing.T) {
 	e := New(filepath.Join("testdata", "fixtures"), resolve.DefaultTables())
 
-	cases := []struct {
-		golden string
-		req    Request
-	}{
-		{"swordman_stand", func() Request { r := baseReq(); r.Frame = 0; return r }()},
-		{"swordman_female", func() Request { r := baseReq(); r.Frame = 0; r.Gender = 0; return r }()},
-		{"swordman_goggles", func() Request { r := baseReq(); r.Frame = 0; r.Headgear = []uint32{1}; return r }()},
-		{"swordman_garment245", func() Request { r := baseReq(); r.Frame = 0; r.Garment = 245; return r }()},
-		{"dragonknight", func() Request { r := baseReq(); r.Frame = 0; r.Job = 4252; return r }()},
-		{"monster_poring", func() Request { r := baseReq(); r.Frame = 0; r.Job = 1002; return r }()},
-	}
-
-	for _, c := range cases {
+	for _, c := range goldenCases() {
 		t.Run(c.golden, func(t *testing.T) {
 			res, err := e.Render(c.req)
 			if err != nil {
@@ -62,6 +51,91 @@ func TestGolden(t *testing.T) {
 			}
 			if !bytes.Equal(got.Pix, want.Pix) {
 				t.Errorf("pixels differ from golden %s — engine output changed", c.golden)
+			}
+		})
+	}
+}
+
+type goldenCase struct {
+	golden string
+	req    Request
+}
+
+// goldenCases is shared by both golden tests so the on-disk and prefetched paths
+// can never drift to covering different renders.
+func goldenCases() []goldenCase {
+	return []goldenCase{
+		{"swordman_stand", func() Request { r := baseReq(); r.Frame = 0; return r }()},
+		{"swordman_female", func() Request { r := baseReq(); r.Frame = 0; r.Gender = 0; return r }()},
+		{"swordman_goggles", func() Request { r := baseReq(); r.Frame = 0; r.Headgear = []uint32{1}; return r }()},
+		{"swordman_garment245", func() Request { r := baseReq(); r.Frame = 0; r.Garment = 245; return r }()},
+		{"dragonknight", func() Request { r := baseReq(); r.Frame = 0; r.Job = 4252; return r }()},
+		{"monster_poring", func() Request { r := baseReq(); r.Frame = 0; r.Job = 1002; return r }()},
+	}
+}
+
+// forbiddenExistence fails the test if anything probes for a file. RenderPlanned
+// must make no existence checks at all — every such decision belongs to
+// BuildPlan — and this is what proves it rather than assuming it.
+type forbiddenExistence struct{ t *testing.T }
+
+func (f forbiddenExistence) Has(key string) bool {
+	f.t.Helper()
+	f.t.Fatalf("RenderPlanned probed for %q; all existence checks belong in BuildPlan", key)
+	return false
+}
+
+// TestGoldenThroughPrefetchedSource is the acceptance test for the split between
+// planning and rendering, and the gate for moving the renderer off a local disk.
+//
+// It renders each golden case the way a Workers build will have to: resolve the
+// plan, fetch exactly the keys the plan names into memory, then render from that
+// map with no filesystem underneath. Passing proves three things at once —
+// Plan.Keys is complete (a missing key fails the render or changes the pixels),
+// RenderPlanned needs no probes, and the result is byte-identical to rendering
+// straight off disk.
+func TestGoldenThroughPrefetchedSource(t *testing.T) {
+	root := filepath.Join("testdata", "fixtures")
+	tables := resolve.DefaultTables()
+
+	// Planning still uses the real tree, exactly as a Worker would consult a
+	// baked existence manifest.
+	planner := New(root, tables)
+
+	for _, c := range goldenCases() {
+		t.Run(c.golden, func(t *testing.T) {
+			p := planner.Plan(c.req)
+			if len(p.Keys) == 0 {
+				t.Fatal("plan resolved no keys")
+			}
+
+			// Fetch only what the plan asked for. Keys that do not exist are
+			// skipped, mirroring a fetcher that filters by its manifest — the
+			// engine already tolerates those misses.
+			fs := resource.FSSource{Root: root}
+			src := resource.MapSource{}
+			for _, k := range p.Keys {
+				if b, err := fs.Get(k); err == nil {
+					src[k] = b
+				}
+			}
+
+			e := NewWithSource(src, forbiddenExistence{t}, tables)
+			res, err := e.RenderPlanned(c.req, p)
+			if err != nil {
+				t.Fatalf("render from prefetched source: %v", err)
+			}
+			if len(res.Frames) != 1 {
+				t.Fatalf("expected 1 frame, got %d", len(res.Frames))
+			}
+
+			got := res.Frames[0].ToNRGBA()
+			want := loadPNG(t, filepath.Join("testdata", "golden", c.golden+".png"))
+			if got.Bounds() != want.Bounds() {
+				t.Fatalf("bounds %v != golden %v", got.Bounds(), want.Bounds())
+			}
+			if !bytes.Equal(got.Pix, want.Pix) {
+				t.Errorf("pixels differ from golden %s when rendered from a prefetched source", c.golden)
 			}
 		})
 	}

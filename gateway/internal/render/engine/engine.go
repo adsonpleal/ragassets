@@ -55,6 +55,7 @@ type Result struct {
 // resource Manager caches immutable parsed assets; per-request state is local).
 type Engine struct {
 	mgr    *resource.Manager
+	ex     resource.Existence
 	res    *resolve.Resolver
 	tables resolve.Tables
 }
@@ -62,18 +63,51 @@ type Engine struct {
 // New builds an Engine reading assets from resourceRoot (the directory holding
 // "data/") and resolving client IDs via tables (use resolve.NopTables{} for none).
 func New(resourceRoot string, tables resolve.Tables) *Engine {
+	return NewWithSource(
+		resource.FSSource{Root: resourceRoot},
+		resource.FSExistence{Root: resourceRoot},
+		tables,
+	)
+}
+
+// NewWithSource builds an Engine over an arbitrary resource Source and Existence.
+// The filesystem case is just New; this is what a build serving from an object
+// store uses, handing in a prefetched MapSource per render.
+func NewWithSource(src resource.Source, ex resource.Existence, tables resolve.Tables) *Engine {
 	if tables == nil {
 		tables = resolve.NopTables{}
 	}
 	return &Engine{
-		mgr:    resource.NewManager(resourceRoot),
+		mgr:    resource.NewManagerWithSource(src, ex, resource.DefaultSprCacheBytes, resource.DefaultActCacheBytes),
+		ex:     ex,
 		res:    resolve.New(tables),
 		tables: tables,
 	}
 }
 
+// Plan resolves what a request needs without reading anything, so a caller can
+// fetch those keys before calling RenderPlanned.
+func (e *Engine) Plan(req Request) Plan {
+	return BuildPlan(req, e.res, e.ex)
+}
+
 // Render produces the frames for a request.
+// Render produces the frames for a request, resolving the plan itself. This is
+// the direct path — it probes for existence as it goes, which is what you want
+// against a local disk.
 func (e *Engine) Render(req Request) (*Result, error) {
+	return e.RenderPlanned(req, e.Plan(req))
+}
+
+// RenderPlanned renders a request against a pre-resolved Plan, so it never probes
+// for a file's existence and never decides which candidate to use — those choices
+// were made in BuildPlan. Every read goes through the Manager's Source, which a
+// caller can have prefilled.
+//
+// Render and RenderPlanned are the same code path: Render just builds the plan
+// first. That is deliberate — a second rendering path would be a second thing to
+// keep pixel-identical, and the golden tests only guard one.
+func (e *Engine) RenderPlanned(req Request, p Plan) (*Result, error) {
 	canvas, ok := ParseCanvas(req.Canvas)
 	if !ok {
 		return nil, fmt.Errorf("invalid canvas %q", req.Canvas)
@@ -88,7 +122,7 @@ func (e *Engine) Render(req Request) (*Result, error) {
 	var err error
 
 	if resolve.IsPlayer(jobID) {
-		sprites, interval, err = e.processPlayer(req, &requestFrame)
+		sprites, interval, err = e.processPlayer(req, p, &requestFrame)
 		if err != nil {
 			return nil, err
 		}
@@ -103,7 +137,7 @@ func (e *Engine) Render(req Request) (*Result, error) {
 		return nil, fmt.Errorf("nothing to render for job %d", jobID)
 	}
 
-	if e.shouldDrawShadow(req.EnableShadow, jobID, req.Action) {
+	if shouldDrawShadowFor(req.EnableShadow, jobID, req.Action) {
 		if sh := e.shadowSprite(jobID); sh != nil {
 			sprites = append(sprites, sh)
 		}
@@ -153,12 +187,12 @@ func (e *Engine) getSprite(actName, sprName string, typ sprite.Type) (*sprite.Sp
 // garment and palettes for a player job. It does NOT collapse animations to a
 // single frame for fixed head directions (the engine pins the head per-frame in
 // drawPlayer instead).
-func (e *Engine) processPlayer(req Request, requestFrame *int) ([]*sprite.Sprite, float32, error) {
+func (e *Engine) processPlayer(req Request, p Plan, requestFrame *int) ([]*sprite.Sprite, float32, error) {
 	jobID := req.Job
 	g := req.Gender
 
-	// Body.
-	bodyName, useOutfit := e.resolveBody(req)
+	// Body — resolved in BuildPlan, along with whether the alternative outfit won.
+	bodyName, useOutfit := p.Body, p.UseOutfit
 	if bodyName == "" {
 		return nil, 0, fmt.Errorf("could not resolve body sprite for job %d", jobID)
 	}
@@ -227,7 +261,7 @@ func (e *Engine) processPlayer(req Request, requestFrame *int) ([]*sprite.Sprite
 			// hat-effect costume's accessory sprite is blank by design, so its
 			// visual would be lost if a failure to load that blank sprite skipped
 			// the effect too.
-			if fx := e.loadHatEffect(id); fx != nil {
+			if fx := e.loadHatEffect(p.HatEffect[h]); fx != nil {
 				fx.TypeOrder = h
 				sprites = append(sprites, fx)
 			}
@@ -251,7 +285,7 @@ func (e *Engine) processPlayer(req Request, requestFrame *int) ([]*sprite.Sprite
 
 	// Garment (robe). Not parented (zrenderer note: garments aren't attached).
 	if req.Garment > 0 && jobID != resolve.NoJobID && !resolve.IsMadogear(jobID) {
-		if gm := e.loadGarment(req); gm != nil {
+		if gm := e.loadGarment(p.Garment); gm != nil {
 			sprites = append(sprites, gm)
 		}
 	}
@@ -275,9 +309,11 @@ const hatEffectYOffset = -50
 // effect at the character's position rather than pinning it to the body's
 // per-frame attach point, so it keeps its own frame timeline and takes a fixed
 // vertical offset instead.
-func (e *Engine) loadHatEffect(headgearID uint32) *sprite.Sprite {
-	name := e.res.HatEffectSprite(headgearID)
-	if name == "" || !e.mgr.ExistsAct(name) || !e.mgr.ExistsSpr(name) {
+//
+// name is the sprite BuildPlan resolved for this headgear slot, or "" when it has
+// none — the existence check happened there.
+func (e *Engine) loadHatEffect(name string) *sprite.Sprite {
+	if name == "" {
 		return nil
 	}
 	fx, err := e.getSprite(name, name, sprite.TypeHatEffect)
@@ -288,48 +324,27 @@ func (e *Engine) loadHatEffect(headgearID uint32) *sprite.Sprite {
 	return fx
 }
 
-// resolveBody picks the body sprite path, preferring an alternative outfit when
-// one exists. Returns "" when unresolved.
-func (e *Engine) resolveBody(req Request) (name string, useOutfit bool) {
-	if req.Outfit > 0 {
-		alt := e.res.PlayerBodyAltSprite(req.Job, req.Gender, req.Outfit, req.Madogear)
-		if alt != "" && e.mgr.ExistsAct(alt) && e.mgr.ExistsSpr(alt) {
-			return alt, true
-		}
-	}
-	return e.res.PlayerBodySprite(req.Job, req.Gender, req.Madogear), false
-}
-
-// loadGarment resolves the garment to the first candidate act/spr pair where
-// both files exist (different garment costumes use different folder layouts, and
-// some pair a per-job act with a shared image bank), and loads it. Falls back to
-// zrenderer's split act/spr probing only if no candidate pair is complete.
-// Returns nil if unavailable.
-func (e *Engine) loadGarment(req Request) *sprite.Sprite {
-	for _, c := range e.res.GarmentCandidates(req.Job, req.Garment, req.Gender) {
-		if e.mgr.ExistsAct(c.Act) && e.mgr.ExistsSpr(c.Spr) {
-			if g, err := e.getSprite(c.Act, c.Spr, sprite.TypeGarment); err == nil {
-				return g
-			}
+// loadGarment loads the first of the planned candidate act/spr pairs that
+// actually parses (different garment costumes use different folder layouts, and
+// some pair a per-job act with a shared image bank). Falls back to zrenderer's
+// split act/spr probing when no candidate is usable. Returns nil if unavailable.
+//
+// The existence filtering happened in BuildPlan; the fall-through on a *parse*
+// failure stays here, because it depends on the bytes.
+func (e *Engine) loadGarment(gp GarmentPlan) *sprite.Sprite {
+	for _, c := range gp.Candidates {
+		if g, err := e.getSprite(c.Act, c.Spr, sprite.TypeGarment); err == nil {
+			return g
 		}
 	}
 
 	// Last resort: zrenderer's korean→english act path + shared-fallback spr (may
 	// pair an act and spr from different folders). Kept so garments that lack a
 	// same-folder pair still render as they did before.
-	actName := e.res.GarmentSprite(req.Job, req.Garment, req.Gender, false, false)
-	if actName == "" {
+	if gp.FallbackAct == "" || gp.FallbackSpr == "" {
 		return nil
 	}
-	sprName := actName
-	if !e.mgr.ExistsAct(actName) {
-		actName = e.res.GarmentSprite(req.Job, req.Garment, req.Gender, true, false)
-		sprName = actName
-	}
-	if !e.mgr.ExistsSpr(sprName) {
-		sprName = e.res.GarmentSprite(req.Job, req.Garment, req.Gender, false, true)
-	}
-	if g, err := e.getSprite(actName, sprName, sprite.TypeGarment); err == nil {
+	if g, err := e.getSprite(gp.FallbackAct, gp.FallbackSpr, sprite.TypeGarment); err == nil {
 		return g
 	}
 	return nil
@@ -506,8 +521,10 @@ func (e *Engine) shadowSprite(jobID uint32) *sprite.Sprite {
 	return sh
 }
 
-// shouldDrawShadow mirrors app.d shouldDrawShadow.
-func (e *Engine) shouldDrawShadow(enable bool, jobID uint32, action uint) bool {
+// shouldDrawShadowFor mirrors app.d shouldDrawShadow. A free function rather than
+// a method because it reads nothing but its arguments, and BuildPlan needs it to
+// decide whether the shadow sprite is worth fetching.
+func shouldDrawShadowFor(enable bool, jobID uint32, action uint) bool {
 	if !enable || jobID == resolve.NoJobID {
 		return false
 	}

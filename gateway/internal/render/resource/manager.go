@@ -17,8 +17,6 @@
 package resource
 
 import (
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/ragassets/gateway/internal/render/roformat"
@@ -56,9 +54,10 @@ const (
 	maxImfEntries = 1000
 )
 
-// Manager locates and caches parsed resources under a root directory.
+// Manager locates and caches parsed resources from a Source.
 type Manager struct {
-	root string
+	src Source
+	ex  Existence
 
 	mu  sync.Mutex // guards spr, act
 	spr *lru[sprEntry]
@@ -100,6 +99,13 @@ func NewManager(root string) *Manager {
 // API, and a caller that had passed a small count would otherwise have silently
 // asked for a few-byte cache instead of a few-entry one.
 func NewManagerWithBudget(root string, sprBytes, actBytes int64) *Manager {
+	return NewManagerWithSource(FSSource{Root: root}, FSExistence{Root: root}, sprBytes, actBytes)
+}
+
+// NewManagerWithSource builds a Manager over an arbitrary Source and Existence —
+// a prefetched MapSource in a Workers build, the filesystem on the server. The
+// caching, parsing and lookup behaviour is identical either way.
+func NewManagerWithSource(src Source, ex Existence, sprBytes, actBytes int64) *Manager {
 	if sprBytes <= 0 {
 		sprBytes = DefaultSprCacheBytes
 	}
@@ -107,17 +113,13 @@ func NewManagerWithBudget(root string, sprBytes, actBytes int64) *Manager {
 		actBytes = DefaultActCacheBytes
 	}
 	return &Manager{
-		root: root,
-		spr:  newLRU[sprEntry](sprBytes),
-		act:  newLRU[actEntry](actBytes),
-		pal:  map[string]palEntry{},
-		imf:  map[string]imfEntry{},
+		src: src,
+		ex:  ex,
+		spr: newLRU[sprEntry](sprBytes),
+		act: newLRU[actEntry](actBytes),
+		pal: map[string]palEntry{},
+		imf: map[string]imfEntry{},
 	}
-}
-
-// path builds the on-disk path for a resolved name under a category folder.
-func (m *Manager) path(folder, name, ext string) string {
-	return filepath.Join(m.root, "data", folder, filepath.FromSlash(name)+"."+ext)
 }
 
 // cacheSize is the budget charge for an entry parsed from src bytes.
@@ -132,9 +134,9 @@ func cacheSize(src []byte) (size int64, oversized bool) {
 	return n, n > maxEntryBytes
 }
 
-// readFile reads a resource file's bytes.
+// readFile reads a resource's bytes through the Source.
 func (m *Manager) readFile(folder, name, ext string) ([]byte, error) {
-	return os.ReadFile(m.path(folder, name, ext))
+	return m.src.Get(Key(folder, name, ext))
 }
 
 // Spr returns the parsed .spr for a resolved sprite name (LRU-cached, incl. errors).
@@ -236,13 +238,8 @@ func (m *Manager) Imf(name string) (*roformat.Imf, error) {
 	return e2.v, e2.err
 }
 
-// ExistsSpr reports whether a .spr file exists for the resolved name.
-func (m *Manager) ExistsSpr(name string) bool { return fileExists(m.path("sprite", name, "spr")) }
+// ExistsSpr reports whether a .spr exists for the resolved name.
+func (m *Manager) ExistsSpr(name string) bool { return m.ex.Has(Key("sprite", name, "spr")) }
 
-// ExistsAct reports whether a .act file exists for the resolved name.
-func (m *Manager) ExistsAct(name string) bool { return fileExists(m.path("sprite", name, "act")) }
-
-func fileExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
-}
+// ExistsAct reports whether a .act exists for the resolved name.
+func (m *Manager) ExistsAct(name string) bool { return m.ex.Has(Key("sprite", name, "act")) }

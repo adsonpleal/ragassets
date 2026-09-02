@@ -407,7 +407,10 @@ func TestGarmentPrefersPerJobAct(t *testing.T) {
 	req := baseReq()
 	req.Job = job
 	req.Garment = garment
-	g := e.loadGarment(req)
+	// Through the plan, so this still exercises the real candidate ordering —
+	// BuildPlan does the existence filtering, loadGarment picks the first that
+	// parses.
+	g := e.loadGarment(e.Plan(req).Garment)
 	if g == nil {
 		t.Fatal("garment 61 did not resolve")
 	}
@@ -543,7 +546,13 @@ func TestHatEffectDrawsInEveryAction(t *testing.T) {
 // effect sprite beside it leaves the render untouched.
 func TestHatEffectOnlyForItsOwnHeadgear(t *testing.T) {
 	e := newEngine(t)
-	if got := e.loadHatEffect(1); got != nil {
+	req := baseReq()
+	req.Headgear = []uint32{1} // goggles
+	p := e.Plan(req)
+	if p.HatEffect[0] != "" {
+		t.Errorf("headgear 1 (goggles) planned a hat effect: %q", p.HatEffect[0])
+	}
+	if got := e.loadHatEffect(p.HatEffect[0]); got != nil {
 		t.Errorf("headgear 1 (goggles) grew a hat effect: %v", got.Act)
 	}
 }

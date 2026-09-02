@@ -14,6 +14,19 @@ import (
 // case-sensitive filesystem, so a lowercased directory index is kept per folder
 // (built lazily, then cached — the resource tree is read-only and only changes on
 // redeploy, which restarts the process).
+//
+// Serving these from an object store instead will not be able to keep resolveCI —
+// there is no ReadDir and no cheap Stat — and will normalise keys to lowercase at
+// upload time, turning resolution into a single lowercase lookup.
+//
+// That substitution is not valid for this filesystem path, and resolveCI must
+// stay. The LATAM client's tree happens to be entirely lowercase (24,624 texture
+// files, no uppercase, no collisions), but extract-grf.mjs preserves whatever the
+// GRF shipped — sanitizePath normalises separators and rejects traversal, it does
+// not lowercase — so a self-hoster's client can legitimately produce mixed-case
+// files that a bare strings.ToLower would fail to find, silently, as 404s.
+// TestTextureTreeHasNoCaseCollisions pins the injectivity the object-store path
+// depends on.
 type Store struct {
 	base string // <resourceDir>/data/texture
 
