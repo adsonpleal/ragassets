@@ -79,7 +79,13 @@ ARGS=(
   --exclude "/raw/**"
   # Compiled into the binary; not read at runtime.
   --exclude "/data/luafiles514/**"
-  # 277k small objects: parallelism dominates, not bandwidth.
+  # An R2 token scoped to one bucket cannot call CreateBucket, which rclone
+  # otherwise attempts before its first upload — it fails with a 403 that reads
+  # like a credentials problem rather than a permissions one. Skipping the check
+  # is correct here: the bucket already exists and this token is not allowed to
+  # make buckets by design.
+  --s3-no-check-bucket
+  # 237k small objects: parallelism dominates, not bandwidth.
   --transfers 32
   --checkers 64
   --s3-chunk-size 32M
