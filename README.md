@@ -824,12 +824,30 @@ ID→sprite-name tables are baked from the client `luafiles514/.lub` into the bi
 by `gateway/cmd/gen-resolver` — re-run it when you update the client (see that
 directory's `dump.lua` and `main.go`).
 
-#### Extracting from a mirrored tree instead of an archive
+#### Patch archives and mirrored trees
 
-Anywhere a mode takes `--grf <file.grf>` it also takes `--grf <directory>` — a
-mirrored client laid out by path (`<dir>/data/...`). Every mode behaves
-identically either way; `--effects` was run both ways over the real client and
-the two outputs are byte-identical across 3,100 files.
+Anywhere a mode takes `--grf <file.grf>` it also takes:
+
+| argument | what it is |
+|---|---|
+| `<file.gpf>` | a patch archive (GRF v0x102), carrying `data\**` |
+| `<file.rgz>` | the loose half of a patch: `System\**` (including `iteminfo_new.lub`), `RagHash.dat`, `Ragexe.exe` |
+| `<directory>` | a mirrored client laid out by path (`<dir>/data/...`) |
+
+The container is detected from its contents, not its extension. A patch release
+ships both kinds, and extracting them into the same directory reproduces the
+client's own layout — which is precisely what makes that directory usable as the
+tree:
+
+```bash
+node extract-grf.mjs --extract client-mirror --grf 2026-09-01_live_client_2021_2021.gpf
+node extract-grf.mjs --extract client-mirror --grf 2026-09-01_live_client_2023_2025.rgz
+node extract-grf.mjs --icons resources/icons --grf client-mirror
+```
+
+Every mode behaves identically against a tree or an archive; `--effects` was run
+both ways over the real client and the two outputs are byte-identical across
+3,100 files.
 
 ```bash
 node extract-grf.mjs --icons resources/icons --grf path/to/client-mirror

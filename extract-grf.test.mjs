@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { gzipSync } from "node:zlib";
 import { join, dirname } from "node:path";
 import {
   LuaTable,
@@ -43,6 +44,8 @@ import {
   v1EncryptionFlags,
   parseFileTableV1,
   openTree,
+  readRgz,
+  rgzData,
   robeTemplateHashes,
 } from "./extract-grf.mjs";
 
@@ -1363,4 +1366,132 @@ test("openTree close is a no-op and safe to call", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// .rgz — the loose-file half of a patch set (System/**, RagHash.dat, Ragexe).
+//
+// Built synthetically: the container is a plain record stream, so a real patch
+// adds nothing a hand-built one does not cover, and this project ships no game
+// data.
+// ---------------------------------------------------------------------------
+
+const RGZ_D = 0x64;
+const RGZ_F = 0x66;
+const RGZ_E = 0x65;
+
+// nameLen counts the trailing NUL, which is what makes the off-by-one here easy
+// to get wrong in both directions.
+function rgzRecord(type, name, payload = null) {
+  const nameBuf = Buffer.concat([Buffer.from(name, "latin1"), Buffer.from([0])]);
+  const head = Buffer.from([type, nameBuf.length]);
+  if (type !== RGZ_F) return Buffer.concat([head, nameBuf]);
+  const size = Buffer.alloc(4);
+  size.writeUInt32LE(payload.length, 0);
+  return Buffer.concat([head, nameBuf, size, payload]);
+}
+
+function rgzStream(...records) {
+  return gzipSync(Buffer.concat(records));
+}
+
+test("readRgz parses directory, file and end records", () => {
+  const buf = rgzStream(
+    rgzRecord(RGZ_D, String.raw`System`),
+    rgzRecord(RGZ_F, String.raw`System\iteminfo_new.lub`, Buffer.from("ITEM")),
+    rgzRecord(RGZ_F, "RagHash.dat", Buffer.from("HASH!")),
+    rgzRecord(RGZ_E, "end"),
+  );
+  const parsed = readRgz(buf);
+  assert.equal(parsed.truncated, false);
+  assert.deepEqual(
+    parsed.entries.map((e) => [e.type, e.name, e.size]),
+    [
+      ["dir", String.raw`System`, 0],
+      ["file", String.raw`System\iteminfo_new.lub`, 4],
+      ["file", "RagHash.dat", 5],
+    ],
+  );
+  assert.equal(rgzData(parsed, parsed.entries[1]).toString(), "ITEM");
+  assert.equal(rgzData(parsed, parsed.entries[2]).toString(), "HASH!");
+});
+
+test("rgzData returns nothing for a directory record", () => {
+  const parsed = readRgz(rgzStream(rgzRecord(RGZ_D, "System"), rgzRecord(RGZ_E, "end")));
+  assert.equal(rgzData(parsed, parsed.entries[0]).length, 0);
+});
+
+test("readRgz stops at the end sentinel and ignores what follows", () => {
+  // Real patches pad after the sentinel; anything past it is not a record.
+  const buf = rgzStream(
+    rgzRecord(RGZ_F, "a.txt", Buffer.from("A")),
+    rgzRecord(RGZ_E, "end"),
+    Buffer.from([0xff, 0xff, 0xff, 0xff]),
+  );
+  const parsed = readRgz(buf);
+  assert.equal(parsed.entries.length, 1);
+  assert.equal(parsed.entries[0].name, "a.txt");
+});
+
+test("readRgz decodes EUC-KR names the same way the GRF reader does", () => {
+  // Korean asset directories appear EUC-KR encoded in both containers, and a
+  // path has to come out identical whichever one delivered it.
+  const euckr = Buffer.from([0xb8, 0xd3, 0xb8, 0xae, 0xc5, 0xeb]); // 머리통
+  // String.fromCharCode(92) rather than an escape: a raw template literal cannot
+  // end in a backslash, and a cooked one hides the character under test.
+  const sep = String.fromCharCode(92);
+  const name = Buffer.concat([Buffer.from("data" + sep, "latin1"), euckr]);
+  const nameBuf = Buffer.concat([name, Buffer.from([0])]);
+  const size = Buffer.alloc(4);
+  size.writeUInt32LE(1, 0);
+  const rec = Buffer.concat([
+    Buffer.from([RGZ_F, nameBuf.length]),
+    nameBuf,
+    size,
+    Buffer.from([7]),
+  ]);
+  const parsed = readRgz(gzipSync(Buffer.concat([rec, rgzRecord(RGZ_E, "end")])));
+  assert.equal(parsed.entries[0].name, String.raw`data\머리통`);
+});
+
+test("readRgz reports a truncated stream instead of throwing", () => {
+  // A partially downloaded patch is worth reporting precisely — the pipeline
+  // retries it — so this must not look like a corrupt archive.
+  // The file record is 20 bytes (type, nameLen, "a.txt\0", u32 size, 8 payload).
+  // Every cut below lands inside it — after the type, mid-name, before the size
+  // field, and mid-payload — so each exercises a different guard.
+  const full = rgzRecord(RGZ_F, "a.txt", Buffer.from("ABCDEFGH"));
+  assert.equal(full.length, 20, "record layout changed; revisit the cuts below");
+  for (const cut of [1, 2, 5, 10, 15]) {
+    const parsed = readRgz(gzipSync(full.subarray(0, cut)));
+    assert.equal(parsed.truncated, true, `cut at ${cut} should report truncated`);
+  }
+});
+
+test("readRgz does not call a complete stream truncated", () => {
+  // The counterpart to the cuts above: a stream whose last record is whole is
+  // fine even if the end sentinel is clipped, so `truncated` stays a signal
+  // about lost data rather than firing on every well-formed patch.
+  const whole = Buffer.concat([
+    rgzRecord(RGZ_F, "a.txt", Buffer.from("ABCDEFGH")),
+    rgzRecord(RGZ_E, "end"),
+  ]);
+  assert.equal(readRgz(gzipSync(whole)).truncated, false);
+  assert.equal(readRgz(gzipSync(whole.subarray(0, whole.length - 4))).truncated, false);
+});
+
+test("readRgz keeps a truncated file's entry so the caller sees what was cut", () => {
+  const full = Buffer.concat([rgzRecord(RGZ_F, "a.txt", Buffer.from("ABCDEFGH"))]);
+  const parsed = readRgz(gzipSync(full.subarray(0, full.length - 4)));
+  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.entries.length, 1);
+  assert.equal(parsed.entries[0].name, "a.txt");
+  assert.equal(parsed.entries[0].size, 8); // declared size, not what survived
+});
+
+test("readRgz throws on an unknown record type", () => {
+  // Anything other than d/f/e means the stream is not what we think it is;
+  // guessing past it would silently produce wrong files.
+  const buf = gzipSync(Buffer.concat([Buffer.from([0x7a, 2]), Buffer.from("x\0")]));
+  assert.throws(() => readRgz(buf), /unknown record type 0x7a/);
 });

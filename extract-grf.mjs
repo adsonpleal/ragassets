@@ -19,10 +19,19 @@
 //   node extract-grf.mjs --effects <out-dir> --grf <file.grf> [--iteminfo <path>]
 //   node extract-grf.mjs --maps <out-dir> --grf <file.grf> [--map <name>]
 //
-// Anywhere a mode takes `--grf <file.grf>` it also takes `--grf <directory>`, a
-// mirrored client tree laid out by path (dir/data/...). Every mode behaves
-// identically either way — verified by running --effects both ways over the real
-// client and diffing 3,100 files byte for byte.
+// Anywhere a mode takes `--grf <file.grf>` it also takes:
+//
+//   --grf <file.gpf>    a patch archive (GRF v0x102), carrying `data\**`
+//   --grf <file.rgz>    the loose half of a patch: System\**, RagHash.dat, Ragexe
+//   --grf <directory>   a mirrored client tree laid out by path (dir/data/...)
+//
+// The container is detected from its contents, not its extension. Extracting a
+// .gpf and a .rgz into the same directory reproduces the client's own layout,
+// which is what makes that directory usable as the tree.
+//
+// Every mode behaves identically against a tree or an archive — verified by
+// running --effects both ways over the real client and diffing 3,100 files byte
+// for byte.
 //
 // That matters for incremental updates. A patch archive carries whole copies of
 // the files it changes, so applying one is a copy — but only --extract is
@@ -95,7 +104,7 @@ import {
 } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
-import { deflateSync, inflateSync } from "node:zlib";
+import { deflateSync, gunzipSync, inflateSync } from "node:zlib";
 import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -377,6 +386,17 @@ function openGrf(path) {
 
   const fd = openSync(path, "r");
   const fileSize = fstatSync(fd).size;
+
+  // A .rgz is a gzip stream, not a GRF. Sniff the magic rather than trusting the
+  // extension: patch filenames follow their own convention and a mislabelled one
+  // should still open. Dispatched here for the same reason directories are —
+  // every mode gets a handle and none of them has to care.
+  const magic2 = Buffer.alloc(2);
+  if (fileSize >= 2) readAt(fd, magic2, 0);
+  if (magic2[0] === 0x1f && magic2[1] === 0x8b) {
+    closeSync(fd);
+    return openRgz(path);
+  }
 
   const header = Buffer.alloc(0x2e);
   readAt(fd, header, 0);
@@ -763,6 +783,130 @@ function desDecodeFull(src, length, entryLength) {
 function desDecodeHeader(src, length) {
   const count = length >> 3;
   for (let i = 0; i < 20 && i < count; ++i) desDecryptBlock(src, i * 8);
+}
+
+// ---------------------------------------------------------------------------
+// .rgz — Gravity's loose-file patch container, the other half of a patch set.
+//
+// A patch release ships .gpf archives carrying `data\**` (the data.grf tree) and
+// .rgz archives carrying everything that lives loose in the client install:
+// `System\**` (iteminfo_new.lub among them), RagHash.dat, Ragexe.exe. That makes
+// it load-bearing here rather than optional — --icons and --raw both key off
+// iteminfo_new.lub, and it only ever arrives this way.
+//
+// A .rgz is a gzip stream; inflated it is a flat sequence of records:
+//
+//   [type:u8][nameLen:u8][name: nameLen bytes, NUL-terminated]
+//   ...and for 'f' only: [size:u32 LE][data: size bytes]
+//
+//   'd' (0x64) directory — name only
+//   'f' (0x66) file      — size and payload follow
+//   'e' (0x65) end       — sentinel, name is literally "end\0"
+//
+// Names are backslash-separated and relative to the CLIENT INSTALL ROOT, not to
+// data.grf — "System\iteminfo_new.lub", not "data\...". Extracting a .gpf and a
+// .rgz into the same directory therefore reproduces the client's own layout,
+// which is exactly what openTree wants to be pointed at.
+// ---------------------------------------------------------------------------
+
+const RGZ_DIR = 0x64; // 'd'
+const RGZ_FILE = 0x66; // 'f'
+const RGZ_END = 0x65; // 'e'
+
+/**
+ * Parse a .rgz buffer into its records.
+ *
+ * Returns { entries, inflated, truncated }. `offset` on a file entry is the
+ * payload's start within `inflated`, so callers slice lazily instead of copying
+ * every file up front. `truncated` reports a stream that ended mid-record rather
+ * than throwing: a partially downloaded patch is worth reporting precisely.
+ */
+export function readRgz(buf) {
+  const inflated = gunzipSync(buf);
+  const entries = [];
+  let p = 0;
+  let truncated = false;
+
+  while (p < inflated.length) {
+    const type = inflated[p++];
+
+    if (type === RGZ_END) {
+      // The sentinel still carries a name field ("end\0"); consume and stop.
+      if (p < inflated.length) p += 1 + inflated[p];
+      break;
+    }
+
+    if (type !== RGZ_DIR && type !== RGZ_FILE) {
+      throw new Error(`rgz: unknown record type 0x${type.toString(16)} at offset ${p - 1}`);
+    }
+
+    if (p >= inflated.length) {
+      truncated = true;
+      break;
+    }
+    const nameLen = inflated[p++];
+    if (p + nameLen > inflated.length) {
+      truncated = true;
+      break;
+    }
+    // nameLen counts the trailing NUL, so drop it.
+    const name = decodeName(inflated.subarray(p, p + nameLen - 1));
+    p += nameLen;
+
+    if (type === RGZ_DIR) {
+      entries.push({ type: "dir", name, size: 0, offset: -1 });
+      continue;
+    }
+
+    if (p + 4 > inflated.length) {
+      truncated = true;
+      break;
+    }
+    const size = inflated.readUInt32LE(p);
+    p += 4;
+    entries.push({ type: "file", name, size, offset: p });
+    if (p + size > inflated.length) {
+      truncated = true;
+      break;
+    }
+    p += size;
+  }
+
+  return { entries, inflated, truncated };
+}
+
+/** Slice one entry's payload out of the inflated stream. */
+export function rgzData(parsed, entry) {
+  if (entry.type !== "file") return Buffer.alloc(0);
+  return parsed.inflated.subarray(entry.offset, entry.offset + entry.size);
+}
+
+// openRgz presents a .rgz with the same shape openGrf returns, so --list,
+// --extract and every other mode work on one unchanged.
+function openRgz(path) {
+  const parsed = readRgz(readFileSync(path));
+  if (parsed.truncated) {
+    console.error("Warning: .rgz stream ends mid-record — the archive is truncated.");
+  }
+  const files = parsed.entries
+    .filter((e) => e.type === "file")
+    .map((e) => ({
+      filename: e.name,
+      rgzEntry: e,
+      flags: 0x01, // plaintext: .rgz carries no per-entry encryption
+      uncompSize: e.size,
+      compSize: e.size,
+      compSizeAligned: e.size,
+      offset: e.offset,
+    }));
+  console.error(`RGZ: ${files.length} file(s), ${parsed.entries.length} record(s)`);
+  return {
+    files,
+    version: 0,
+    read: (entry) =>
+      entry.flags & 0x01 ? rgzData(parsed, entry.rgzEntry) : new Uint8Array(0),
+    close() {},
+  };
 }
 
 // ---------------------------------------------------------------------------
