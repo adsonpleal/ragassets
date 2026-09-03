@@ -17,12 +17,28 @@ import (
 
 // R2Store reads resource keys from an R2 bucket, through the colo edge cache.
 //
-// The cache is not an optimisation here, it is the cost model. A render pulls
-// 7-12 objects and a garment request up to ~41; at roughly 8M renders a month
-// that is on the order of 64M Class B operations, which past the 10M free tier
-// is more than the compute costs. Reading through caches.default collapses that
-// to the misses, and a colo's cache is shared by every isolate in it and
-// survives isolate eviction, which the in-process LRU does not.
+// The cache is not an optimisation here, it is the cost model. A render's plan
+// names 6.47 keys on average and a garment request can reach ~41; without a
+// cache in front, 8M renders a month would be on the order of 52M Class B
+// operations, past the 10M free tier and costing more than the compute.
+//
+// Measured on staging against Cloudflare's own r2OperationsAdaptiveGroups,
+// replaying 150 real production URLs per run:
+//
+//	cold, straight after a deploy bumps the epoch   0.85 GetObject per render
+//	warm, partially primed                          0.58
+//	warm, fully primed                              0.03
+//
+// So a 91-99% hit rate warm, and even the cold case extrapolates to 6.8M
+// operations a month — inside the free tier. The reason it works this well is
+// that /image URLs are ~93% unique but the sprite files behind them are heavily
+// shared, so the colo cache absorbs nearly everything. A colo's cache is also
+// shared by every isolate in it and survives isolate eviction, which the
+// in-process LRU does not.
+//
+// The cold figure is 0.85 rather than 6.47 because within a burst the first
+// render of a job warms the cache for every later one; the full 6.47 applies
+// only to the first handful of requests after a deploy.
 //
 // Two things about the cache are easy to get wrong:
 //
