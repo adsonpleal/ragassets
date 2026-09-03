@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/syumai/workers/cloudflare/cache"
 	"github.com/syumai/workers/cloudflare/r2"
@@ -46,6 +47,39 @@ type R2Store struct {
 	// The stores served straight through — maps/, bgm/, sounds/ — are already
 	// addressed by their full key, so they use a store with an empty prefix.
 	prefix string
+
+	// Counters for the one number that decides this design: how often a read is
+	// answered by the colo cache rather than by R2. A Class B operation is only
+	// charged on the miss path, so hits/(hits+misses) is directly the difference
+	// between a few dollars a month and a few tens.
+	//
+	// Process-wide and cumulative rather than per-request: they are read by
+	// sampling /debug/r2 before and after a batch, which is exact for sequential
+	// traffic and good enough for concurrent.
+	hits      atomic.Int64
+	misses    atomic.Int64
+	bytesHit  atomic.Int64
+	bytesMiss atomic.Int64
+	notFound  atomic.Int64
+}
+
+// Stats reports cumulative read counters for this isolate.
+type Stats struct {
+	Hits      int64 `json:"cacheHits"`
+	Misses    int64 `json:"r2Gets"`
+	NotFound  int64 `json:"r2NotFound"`
+	BytesHit  int64 `json:"bytesFromCache"`
+	BytesMiss int64 `json:"bytesFromR2"`
+}
+
+func (s *R2Store) Stats() Stats {
+	return Stats{
+		Hits:      s.hits.Load(),
+		Misses:    s.misses.Load(),
+		NotFound:  s.notFound.Load(),
+		BytesHit:  s.bytesHit.Load(),
+		BytesMiss: s.bytesMiss.Load(),
+	}
 }
 
 // NewR2Store binds a store to a bucket. epoch changes whenever the assets do —
@@ -73,6 +107,8 @@ func (s *R2Store) Get(key string) ([]byte, error) {
 		b, readErr := io.ReadAll(res.Body)
 		res.Body.Close()
 		if readErr == nil {
+			s.hits.Add(1)
+			s.bytesHit.Add(int64(len(b)))
 			return b, nil
 		}
 		// A truncated cache entry is worth ignoring rather than failing on: R2
@@ -84,6 +120,7 @@ func (s *R2Store) Get(key string) ([]byte, error) {
 		return nil, fmt.Errorf("r2 get %q: %w", key, err)
 	}
 	if obj == nil {
+		s.notFound.Add(1)
 		// Absent, not broken. Wrapping fs.ErrNotExist keeps this
 		// indistinguishable from a filesystem miss, which is what the engine's
 		// negative caching and the speculative loads already handle.
@@ -97,6 +134,8 @@ func (s *R2Store) Get(key string) ([]byte, error) {
 		return nil, fmt.Errorf("r2 read %q: %w", key, err)
 	}
 
+	s.misses.Add(1)
+	s.bytesMiss.Add(int64(len(b)))
 	s.populate(req, b)
 	return b, nil
 }

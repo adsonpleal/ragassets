@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"syscall/js"
+	"time"
 
 	"github.com/syumai/workers"
 	"github.com/syumai/workers/cloudflare/r2"
@@ -112,6 +113,8 @@ func route(w http.ResponseWriter, r *http.Request) {
 	case p == "/":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		io.WriteString(w, api.RootHelp)
+	case p == "/debug/r2":
+		handleDebugR2(w)
 	case p == "/healthz":
 		w.Header().Set("Content-Type", "text/plain")
 		io.WriteString(w, "ok")
@@ -138,6 +141,36 @@ func route(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// isolateID distinguishes one isolate's counters from another's. The counters
+// are process-wide, so a sample taken across an isolate boundary is meaningless;
+// this makes that visible instead of silently wrong.
+var isolateID = fmt.Sprintf("%x", time.Now().UnixNano())
+
+// handleDebugR2 reports cumulative read counters, so cache hit rate and R2
+// operation counts can be measured by sampling before and after a batch of
+// traffic. Counts only — nothing about what was read, or by whom.
+func handleDebugR2(w http.ResponseWriter) {
+	type payload struct {
+		Isolate string         `json:"isolate"`
+		Epoch   string         `json:"epoch"`
+		Data    resource.Stats `json:"data"`
+		Objects resource.Stats `json:"objects"`
+	}
+	out, err := json.Marshal(payload{
+		Isolate: isolateID,
+		Epoch:   deployEpoch,
+		Data:    dataStore.Stats(),
+		Objects: objStore.Stats(),
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	writeBody(w, out)
 }
 
 // handleRender serves /image and /gif, which differ only in the final encode.
