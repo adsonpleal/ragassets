@@ -1,0 +1,160 @@
+name: Apply client patches
+
+on:
+  # Fired by the patch poll in worker/shim.mjs when patch.txt gains a sequence.
+  repository_dispatch:
+    types: [client-patch]
+  workflow_dispatch:
+    inputs:
+      from_seq:
+        description: "Apply patches after this sequence (blank = use the recorded state)"
+        required: false
+      dry_run:
+        description: "Extract and report, but upload nothing and announce nothing"
+        type: boolean
+        default: false
+
+# NEVER add pull_request here. This is a public repository and the job holds R2
+# and Cloudflare credentials.
+permissions:
+  contents: read
+
+concurrency:
+  group: ragassets-update
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: gateway/go.sum
+
+      - name: Install rclone
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+
+      - name: Resolve the starting sequence
+        id: seq
+        env:
+          PAYLOAD_FROM: ${{ github.event.client_payload.fromSeq }}
+          INPUT_FROM: ${{ github.event.inputs.from_seq }}
+        run: |
+          from="${INPUT_FROM:-$PAYLOAD_FROM}"
+          if [ -z "$from" ]; then
+            echo "no starting sequence given; refusing to replay the whole history" >&2
+            exit 1
+          fi
+          echo "from=$from" >> "$GITHUB_OUTPUT"
+          echo "applying patches after seq $from"
+
+      # Patches carry whole copies of the files they change, so applying a run of
+      # them in order is an extraction where later patches overwrite earlier ones.
+      - name: Download and unpack
+        run: node tools/apply-patches.mjs --out patchfiles --from-seq "${{ steps.seq.outputs.from }}"
+
+      # Only the paths the Worker actually serves. A patch also carries Ragexe,
+      # RagHash, PatchClient/** and locale trees, none of which are published.
+      #
+      # This covers the renderer's inputs and the effect textures. The DERIVED
+      # stores — icons, illust, raw, maps, bgm, sounds — are not rebuilt here:
+      # they need a merged view of the whole client (see openTree in
+      # extract-grf.mjs), because --icons resolves item ids through iteminfo and
+      # then looks for each BMP, --maps needs a map's geometry together with the
+      # textures it references, and --illust picks the first card name that
+      # resolves to real art. Running those against a single patch does not merely
+      # come up short: --effects would rewrite its index.json from whatever it
+      # happened to resolve, replacing the whole catalogue. Until the client
+      # mirror exists, a patch that adds an item updates its sprite here but not
+      # its icon.
+      - name: Select the servable files
+        id: select
+        run: |
+          mkdir -p upload
+          found=0
+          for p in data/sprite data/palette data/imf data/texture/effect; do
+            if [ -d "patchfiles/$p" ]; then
+              mkdir -p "upload/$p"
+              cp -al "patchfiles/$p/." "upload/$p/" 2>/dev/null || cp -a "patchfiles/$p/." "upload/$p/"
+              n=$(find "upload/$p" -type f | wc -l)
+              echo "  $p: $n file(s)"
+              found=$((found + n))
+            fi
+          done
+          echo "count=$found" >> "$GITHUB_OUTPUT"
+          echo "servable files: $found"
+
+      - name: Nothing to do
+        if: steps.select.outputs.count == '0'
+        run: echo "This patch run touched nothing the Worker serves. Stopping."
+
+      - name: Upload to R2
+        if: steps.select.outputs.count != '0' && github.event.inputs.dry_run != 'true'
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          rclone copy upload r2:ragassets \
+            --s3-no-check-bucket --transfers 32 --checkers 64 --checksum --stats-one-line
+
+      # Rebuilt from the bucket listing rather than a local tree, because CI has
+      # no extracted client. Verified byte-identical to the tree-walked manifest.
+      - name: Rebuild the existence manifest
+        if: steps.select.outputs.count != '0' && github.event.inputs.dry_run != 'true'
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          : > r2keys.txt
+          for d in sprite palette imf; do
+            rclone lsf -R --files-only "r2:ragassets/data/$d" --s3-no-check-bucket \
+              | sed "s|^|$d/|" >> r2keys.txt
+          done
+          wc -l < r2keys.txt
+          (cd gateway && go run ./cmd/gen-manifest -keys ../r2keys.txt -out ../exists.bin)
+          rclone copyto exists.bin r2:ragassets/manifest/exists.bin --s3-no-check-bucket
+
+      # A deploy is how the edge cache is invalidated: DEPLOY_EPOCH is part of
+      # every cache key, so bumping it drops the whole internal cache at once.
+      # Purge-by-URL is capped at 30 URLs a call and prefix purge is Enterprise,
+      # so this is the only workable invalidation.
+      - name: Redeploy to bump the cache epoch
+        if: steps.select.outputs.count != '0' && github.event.inputs.dry_run != 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: |
+          DEPLOY_EPOCH="$(date +%s)" ./tools/build-worker.sh
+          ./tools/hydrate-assets.sh
+          npx wrangler@4 deploy --env staging
+
+      - name: Announce in Discord
+        if: steps.select.outputs.count != '0' && github.event.inputs.dry_run != 'true'
+        continue-on-error: true
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ vars.DISCORD_CHANNEL_ID }}
+        run: node tools/post-novidades.mjs --report patch-report.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: patch-report
+          path: patch-report.json
+          if-no-files-found: ignore

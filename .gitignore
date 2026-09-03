@@ -39,3 +39,8 @@ gateway/build/
 .wrangler/
 gateway/worker
 /public/
+/patch-report.json
+/patchfiles/
+/upload/
+/r2keys.txt
+/exists.bin

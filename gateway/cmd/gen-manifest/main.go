@@ -48,6 +48,7 @@ func main() {
 	log.SetFlags(0)
 	res := flag.String("resources", "../resources", "resource directory (the one holding data/)")
 	out := flag.String("out", "", "output file (default: <resources>/manifest/exists.bin)")
+	keyList := flag.String("keys", "", "read keys from this file (one per line) instead of walking -resources")
 	flag.Parse()
 
 	dest := *out
@@ -55,11 +56,27 @@ func main() {
 		dest = filepath.Join(*res, "manifest", "exists.bin")
 	}
 
-	keys, counts, err := collectKeys(*res)
+	var (
+		keys   []string
+		counts map[string]int
+		err    error
+	)
+	if *keyList != "" {
+		// The update pipeline has no extracted client — it runs in CI, where the
+		// tree is 16 GB and gitignored. But R2 knows the whole key set, so the
+		// workflow lists the bucket and feeds it here. Reading a list is also
+		// exactly reproducible, which walking a filesystem is not.
+		keys, counts, err = readKeys(*keyList)
+	} else {
+		keys, counts, err = collectKeys(*res)
+	}
 	if err != nil {
 		log.Fatalf("gen-manifest: %v", err)
 	}
 	if len(keys) == 0 {
+		if *keyList != "" {
+			log.Fatalf("gen-manifest: %s listed no keys", *keyList)
+		}
 		log.Fatalf("gen-manifest: no resource files under %s — is it extracted?", *res)
 	}
 
@@ -133,6 +150,42 @@ func collectKeys(resourcesDir string) ([]string, map[string]int, error) {
 		}
 	}
 	return keys, counts, nil
+}
+
+// readKeys loads keys from a file, one per line, and keeps only those the
+// Manager can actually address — the same filter collectKeys applies while
+// walking. A bucket listing carries more than the renderer reads (maps, bgm,
+// sounds, the static mirror), and admitting those would inflate the manifest
+// with keys that can never be probed.
+func readKeys(path string) ([]string, map[string]int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+
+	var keys []string
+	counts := map[string]int{}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		k := strings.TrimSpace(sc.Text())
+		if k == "" {
+			continue
+		}
+		k = strings.TrimPrefix(filepath.ToSlash(k), "data/")
+		folder, _, ok := strings.Cut(k, "/")
+		if !ok {
+			continue
+		}
+		exts, known := folders[folder]
+		if !known || !hasExt(k, exts) {
+			continue
+		}
+		keys = append(keys, k)
+		counts[folder]++
+	}
+	return keys, counts, sc.Err()
 }
 
 func hasExt(p string, exts []string) bool {
