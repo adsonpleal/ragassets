@@ -61,31 +61,30 @@ fi
 echo "Staging ${STORES[*]} -> $OUT"
 mkdir -p "$OUT"
 
-# Try a hardlink first. It is instant and free, but fails across filesystems and
-# on filesystems without link support, so fall back to a copy rather than
-# guessing which case we are in.
-link_or_copy() {
-  ln -f "$1" "$2" 2>/dev/null || cp -f "$1" "$2"
-}
-
-staged=0
+# One `cp -al` per store, not a loop over files. The obvious per-file version —
+# find, then mkdir -p and ln for each — spawns two processes per file, which for
+# 39k files took over ten minutes here before it was abandoned. Recursive
+# hardlinking is four processes total and finishes in seconds.
+#
+# The tree is rebuilt rather than updated in place: hardlinks cost no space and
+# no data movement, so re-linking everything is cheaper than working out what
+# changed, and it cannot leave a file behind that the extraction deleted.
 for s in "${STORES[@]}"; do
-  while IFS= read -r src; do
-    rel="${src#$RESOURCES/}"
-    dest="$OUT/$rel"
-    # Skip anything already staged and unchanged, so a re-run after an
-    # extraction only touches what actually moved.
-    if [ -f "$dest" ] && [ "$dest" -nt "$src" ]; then
-      continue
-    fi
-    mkdir -p "$(dirname "$dest")"
-    link_or_copy "$src" "$dest"
-    staged=$((staged + 1))
-  done < <(find "$RESOURCES/$s" -type f)
+  rm -rf "${OUT:?}/$s"
+  if ! cp -al "$RESOURCES/$s" "$OUT/$s" 2>/dev/null; then
+    # Different filesystem, or one without link support: fall back to a copy.
+    echo "  ($s: hardlinks unavailable, copying)"
+    cp -a "$RESOURCES/$s" "$OUT/$s"
+  fi
 done
 
+# The cache policy travels with the assets. Without it Static Assets serves
+# `public, max-age=0, must-revalidate` and the icons — 69% of traffic, 95% of it
+# repeat URLs — would revalidate on every request instead of being cached.
+cp -f worker/_headers "$OUT/_headers"
+
 n=$(find "$OUT" -type f | wc -l)
-echo "  staged $staged file(s); $OUT now holds $n"
+echo "  $OUT holds $n file(s) (including _headers)"
 if [ "$n" -gt 100000 ]; then
   echo "  OVER the Static Assets limit of 100,000 files per version" >&2
   exit 1

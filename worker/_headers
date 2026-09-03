@@ -1,0 +1,30 @@
+# Cache policy for the stores served by Workers Static Assets.
+#
+# This file is NOT optional. Static Assets defaults to
+# `public, max-age=0, must-revalidate`, which would turn the single most
+# cacheable thing this service serves — 159k icon requests against only 8k
+# distinct URLs in a 6-hour sample, 95% repeats — into 159k revalidations.
+#
+# The policies mirror what the Go server sets (internal/api.CacheImmutable and
+# CacheRevalidate), because clients hold these across the cutover.
+#
+# tools/stage-assets.sh copies this into ./public, which it rebuilds each run.
+
+/icons/*
+  Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: *
+
+/illust/*
+  Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: *
+
+/effects/*
+  Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: *
+
+# The one mutable surface: /raw tables live at stable URLs and are regenerated
+# after a client update, so they get a short TTL plus mandatory revalidation and
+# let the ETag do the real work. Three sibling projects poll these.
+/raw/*
+  Cache-Control: public, max-age=300, must-revalidate
+  Access-Control-Allow-Origin: *

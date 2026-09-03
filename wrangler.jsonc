@@ -1,13 +1,42 @@
 {
   // The Worker is Go compiled to wasm; ./gateway/build is produced by
-  // `npm run build` (workers-assets-gen writes the JS shim, then the Go build
-  // writes app.wasm beside it). See tools/build-worker.sh.
+  // tools/build-worker.sh (workers-assets-gen writes the JS shim, then the Go
+  // build writes app.wasm beside it). ./public is produced by
+  // tools/stage-assets.sh.
   "name": "ragassets",
   "main": "./gateway/build/worker.mjs",
   "compatibility_date": "2026-08-23",
   "compatibility_flags": ["nodejs_compat"],
 
   "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "ragassets" }],
+
+  "assets": {
+    // icons, illust, effects and raw — 39,241 files, 298 MB. Requests to static
+    // assets are free and unmetered, and these are 69% of all traffic by
+    // measurement, so serving them here rather than through the Worker is what
+    // keeps billed Worker requests inside the 10M included each month.
+    //
+    // No `binding`: the Worker never needs to read them. The platform answers
+    // these before the request reaches Go.
+    "directory": "./public",
+
+    // MUST be an array, never `true`. As a boolean this routes EVERY request
+    // through the Worker, which puts all 39k static assets on the Worker request
+    // budget and throws away the entire reason they are here. Both sibling repos
+    // carry this warning after being caught by it.
+    //
+    // Listed here: only paths that render, read R2, or are computed. Everything
+    // else falls through to the free asset path.
+    "run_worker_first": [
+      "/",
+      "/healthz",
+      "/image*",
+      "/gif*",
+      "/maps/*",
+      "/bgm/*",
+      "/effect/*"
+    ]
+  },
 
   "observability": { "logs": { "enabled": true, "invocation_logs": true } },
 
@@ -18,19 +47,22 @@
     "staging": {
       "name": "ragassets-staging",
       "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "ragassets" }],
+      "assets": {
+        "directory": "./public",
+        "run_worker_first": [
+          "/",
+          "/healthz",
+          "/image*",
+          "/gif*",
+          "/maps/*",
+          "/bgm/*",
+          "/effect/*"
+        ]
+      },
       "observability": { "logs": { "enabled": true, "invocation_logs": true } },
       "routes": [
         { "pattern": "assets-next.latam-tools.com.br", "custom_domain": true }
       ]
     }
   }
-
-  // NOT configured yet: Workers Static Assets for icons, illust, effects and raw
-  // (363 MB / ~39k files, 69% of traffic). Those are added once /image is proven
-  // on staging, because they change the deploy shape considerably and are not
-  // needed to measure the cache behaviour this staging environment exists for.
-  //
-  // When adding them, run_worker_first MUST be an array naming only the dynamic
-  // paths. Setting it to `true` puts every static asset behind the Worker request
-  // budget — both sibling repos carry that warning after hitting it.
 }

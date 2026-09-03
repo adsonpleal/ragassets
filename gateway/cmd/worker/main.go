@@ -61,10 +61,17 @@ var (
 	initOnce sync.Once
 	initErr  error
 
-	store  *resource.R2Store
-	exist  resource.Existence
-	eng    *engine.Engine
-	estore *effect.ObjectStore
+	// Two views of the same bucket, differing only in key prefix.
+	//
+	// dataStore serves the renderer, whose keys are relative to the tree's data/
+	// directory ("sprite/<name>.spr"). objStore serves everything addressed by
+	// its full key — maps/, bgm/, sounds/ — and backs the effect store, which
+	// builds "data/texture/..." itself.
+	dataStore *resource.R2Store
+	objStore  *resource.R2Store
+	exist     resource.Existence
+	eng       *engine.Engine
+	estore    *effect.ObjectStore
 )
 
 func setup() {
@@ -78,15 +85,16 @@ func setup() {
 		initErr = fmt.Errorf("load %s: %w", manifestKey, err)
 		return
 	}
-	store = resource.NewR2Store(bucket, deployEpoch)
+	dataStore = resource.NewR2Store(bucket, deployEpoch, "data/")
+	objStore = resource.NewR2Store(bucket, deployEpoch, "")
 	exist = m
 	// One long-lived Engine, so its parse caches survive across requests. The
 	// per-render prefetch warms the colo cache in parallel; the engine's own
 	// reads then land on that cache rather than on R2.
-	eng = engine.NewWithSource(store, exist, resolve.DefaultTables())
+	eng = engine.NewWithSource(dataStore, exist, resolve.DefaultTables())
 	// The effect store reads the same bucket through the same cache; only its
 	// resolution differs (see internal/effect/store_r2.go).
-	estore = effect.NewObjectStore(store.Get)
+	estore = effect.NewObjectStore(objStore.Get)
 }
 
 func main() {
@@ -164,7 +172,7 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	// Fetching lazily mid-render would serialise 7-41 round trips at 20-40 ms
 	// each, against 4-8 ms of actual rendering.
 	plan := eng.Plan(req)
-	store.Prefetch(plan.Keys, exist)
+	dataStore.Prefetch(plan.Keys, exist)
 
 	res, err := eng.RenderPlanned(req, plan)
 	if err != nil {
@@ -269,7 +277,7 @@ func handleEffectSound(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	b, err := store.Get(key)
+	b, err := objStore.Get(key)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -332,7 +340,7 @@ func writeBody(w http.ResponseWriter, body []byte) {
 // (data/{sprite,palette,imf}), so a miss here would not be authoritative — R2
 // itself is the authority for these prefixes.
 func serveObject(w http.ResponseWriter, r *http.Request, key, cacheControl string) {
-	b, err := store.Get(key)
+	b, err := objStore.Get(key)
 	if err != nil {
 		http.NotFound(w, r)
 		return

@@ -34,19 +34,32 @@ type R2Store struct {
 	bucket *r2.Bucket
 	cache  *cache.Cache
 	epoch  string
+	// prefix is prepended to every key before it reaches R2.
+	//
+	// The bucket mirrors the extracted resources tree, so the renderer's inputs
+	// live under "data/" — data/sprite/..., data/palette/..., data/imf/... . The
+	// Go side addresses them without it: resource.Key builds "sprite/<name>.spr"
+	// because FSSource joins root + "data" + key, and cmd/gen-manifest hashes the
+	// same un-prefixed form. Something has to bridge the two, and doing it here
+	// keeps the engine, the plan and the manifest in one key space.
+	//
+	// The stores served straight through — maps/, bgm/, sounds/ — are already
+	// addressed by their full key, so they use a store with an empty prefix.
+	prefix string
 }
 
 // NewR2Store binds a store to a bucket. epoch changes whenever the assets do —
-// it is what makes a redeploy invalidate the edge cache.
-func NewR2Store(bucket *r2.Bucket, epoch string) *R2Store {
-	return &R2Store{bucket: bucket, cache: cache.New(), epoch: epoch}
+// it is what makes a redeploy invalidate the edge cache. prefix is prepended to
+// every key; see the field comment for why the renderer needs "data/".
+func NewR2Store(bucket *r2.Bucket, epoch, prefix string) *R2Store {
+	return &R2Store{bucket: bucket, cache: cache.New(), epoch: epoch, prefix: prefix}
 }
 
 // cacheURL is the synthetic key a resource is cached under. The host is not
 // resolved by anything; the Cache API only needs a well-formed URL, and keeping
 // it off the public origin means a viewer cannot address the cache directly.
 func (s *R2Store) cacheURL(key string) string {
-	return "https://r2.internal/v" + s.epoch + "/" + key
+	return "https://r2.internal/v" + s.epoch + "/" + s.prefix + key
 }
 
 // Get returns a key's bytes, from the edge cache when possible.
@@ -66,7 +79,7 @@ func (s *R2Store) Get(key string) ([]byte, error) {
 		// still has the object, and the entry will be replaced below.
 	}
 
-	obj, err := s.bucket.Get(key)
+	obj, err := s.bucket.Get(s.prefix + key)
 	if err != nil {
 		return nil, fmt.Errorf("r2 get %q: %w", key, err)
 	}
