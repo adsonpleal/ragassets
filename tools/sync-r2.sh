@@ -46,8 +46,16 @@ set -euo pipefail
 RESOURCES="${1:-resources}"
 REMOTE="${2:-r2:ragassets}"
 
-if ! command -v rclone >/dev/null 2>&1; then
-  echo "rclone not found. Install it (winget install Rclone.Rclone, or your package manager)." >&2
+# rclone, from PATH or the local toolchain dir. It is not optional: the R2 REST
+# API that `wrangler r2 object put` uses is rate-limited to ~1200 requests per 5
+# minutes, measured — the first 429 landed after 1,327 requests — which would put
+# this sync at roughly 16 hours. The S3 endpoint rclone speaks has no such limit.
+RCLONE="$(command -v rclone || true)"
+[ -z "$RCLONE" ] && [ -x "_scratch/tools/rclone.exe" ] && RCLONE="_scratch/tools/rclone.exe"
+[ -z "$RCLONE" ] && [ -x "_scratch/tools/rclone" ] && RCLONE="_scratch/tools/rclone"
+if [ -z "$RCLONE" ]; then
+  echo "rclone not found. Install it (winget install Rclone.Rclone) or drop the" >&2
+  echo "binary in _scratch/tools/." >&2
   exit 1
 fi
 
@@ -88,4 +96,4 @@ if [ -n "${DRY_RUN:-}" ]; then
 fi
 
 echo "Syncing $RESOURCES -> $REMOTE"
-rclone "${ARGS[@]}"
+"$RCLONE" "${ARGS[@]}"
