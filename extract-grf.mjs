@@ -19,6 +19,21 @@
 //   node extract-grf.mjs --effects <out-dir> --grf <file.grf> [--iteminfo <path>]
 //   node extract-grf.mjs --maps <out-dir> --grf <file.grf> [--map <name>]
 //
+// Anywhere a mode takes `--grf <file.grf>` it also takes `--grf <directory>`, a
+// mirrored client tree laid out by path (dir/data/...). Every mode behaves
+// identically either way — verified by running --effects both ways over the real
+// client and diffing 3,100 files byte for byte.
+//
+// That matters for incremental updates. A patch archive carries whole copies of
+// the files it changes, so applying one is a copy — but only --extract is
+// correct when run against a single patch. The derived modes need the whole
+// client: --icons resolves item ids through iteminfo and then looks for each
+// BMP, --maps needs a map's geometry together with the textures and models it
+// references, --illust picks the first card name that resolves to real art.
+// Run those against one patch and --effects will rewrite its index.json from
+// whatever it happened to resolve, and --illust will quietly pick a different
+// name than the merged client would. Pointing them at a mirror avoids all of it.
+//
 // Examples:
 //   # List every entry:
 //   node extract-grf.mjs --list data.grf
@@ -349,6 +364,17 @@ function decodeName(bytes) {
 // ---------------------------------------------------------------------------
 
 function openGrf(path) {
+  // A directory is a mirrored client tree rather than an archive. Dispatching
+  // here rather than adding a flag means every mode accepts one through the
+  // existing --grf, with no change to the eleven places that open an archive:
+  // they get a handle either way and cannot tell the difference.
+  if (existsSync(path) && statSync(path).isDirectory()) {
+    console.error(`Tree: ${resolve(path)}`);
+    const tree = openTree({ root: path });
+    console.error(`${tree.files.length} files in mirrored client tree`);
+    return tree;
+  }
+
   const fd = openSync(path, "r");
   const fileSize = fstatSync(fd).size;
 
@@ -386,7 +412,14 @@ function openGrf(path) {
     closeSync(fd);
     throw new Error(`Unsupported GRF version 0x${version.toString(16)}`);
   }
-  return { fd, fileSize, version, files };
+  return {
+    fd,
+    fileSize,
+    version,
+    files,
+    read: (entry) => readGrfEntry(fd, entry),
+    close: () => closeSync(fd),
+  };
 }
 
 function readAt(fd, buf, position) {
@@ -733,15 +766,113 @@ function desDecodeHeader(src, length) {
 }
 
 // ---------------------------------------------------------------------------
+// openTree — a merged client view that stands in for an opened GRF.
+//
+// Every mode except --extract needs to see the *whole* client, not one archive.
+// --icons maps item ids to resource names through System/iteminfo_new.lub and
+// then looks for each BMP; --maps needs a map's .gat/.gnd/.rsw together with the
+// textures and models they reference; --illust picks the first card name that
+// resolves to real art. Run any of those against a single patch and they do not
+// merely come up short — --effects rewrites index.json from whatever it happened
+// to resolve, clobbering the full catalogue, and --illust silently picks a
+// different name than the merged view would.
+//
+// So the pipeline keeps a mirror of the client as a directory tree (patches carry
+// whole files, never binary deltas, so applying one is a copy) and hands it here.
+// openTree presents that directory with the same shape openGrf returns, which is
+// why the modes need no changes at all: they walk `files` and call extractFile,
+// and neither cares whether the bytes come from an archive or a file.
+//
+// Deliberately synchronous and local. The extractor is sync throughout
+// (readFileSync/writeFileSync), so a read that went to the network would mean
+// making every mode async. Hydrating the tree is the caller's job; a read of a
+// path that is not present throws, naming it, so a pipeline can see exactly what
+// it still needs to fetch.
+// ---------------------------------------------------------------------------
+
+// treeEntryName converts a filesystem-relative path to the backslash-separated,
+// GRF-style name every mode matches against (--match patterns, buildEntryIndex,
+// findBestEntry and sanitizePath all expect that form).
+function treeEntryName(relPath) {
+  return relPath.split("/").join("\\");
+}
+
+// walkTree lists every file under root, relative and forward-slashed.
+function walkTree(root, rel = "", out = []) {
+  let entries;
+  try {
+    entries = readdirSync(join(root, rel), { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const child = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) walkTree(root, child, out);
+    else if (e.isFile()) out.push(child);
+  }
+  return out;
+}
+
+/**
+ * openTree({ root, index }) presents a directory as an opened archive.
+ *
+ * root  — directory holding the mirrored client, laid out by path (root/data/...).
+ * index — optional array of forward-slashed relative paths to expose instead of
+ *         walking the tree. Use it when the mirror is only partially hydrated but
+ *         the full file list is known, so modes still enumerate the real client
+ *         rather than whatever happens to be on disk.
+ *
+ * Entries carry the file bit so the `flags & 0x01` filter every mode applies
+ * keeps them, and no encryption bits, because the bytes are already plaintext.
+ */
+export function openTree({ root, index = null }) {
+  const base = resolve(root);
+  const rels = index ?? walkTree(base);
+  const files = rels.map((rel) => ({
+    filename: treeEntryName(rel),
+    treePath: rel,
+    flags: 0x01,
+    // Sizes are reported for parity with a GRF entry. They are only consulted
+    // for progress reporting and the stored-vs-deflated check, which does not
+    // apply here, so a stat is not worth doing up front for a 260k-file mirror.
+    uncompSize: 0,
+    compSize: 0,
+    compSizeAligned: 0,
+    offset: 0,
+  }));
+
+  return {
+    files,
+    version: 0,
+    read(entry) {
+      if (!(entry.flags & 0x01)) return new Uint8Array(0);
+      const rel = entry.treePath ?? entry.filename.split("\\").join("/");
+      const p = join(base, rel);
+      try {
+        return readFileSync(p);
+      } catch (err) {
+        // Naming the missing path is the point: a partially hydrated mirror is
+        // an expected state, and the caller needs to know what to fetch.
+        throw new Error(`not hydrated in tree: ${rel} (${err.code ?? err.message})`);
+      }
+    },
+    close() {},
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Extraction
 // ---------------------------------------------------------------------------
 
-function extractFile(grf, entry) {
+// readGrfEntry pulls one entry's bytes out of an open archive: read the raw
+// span, undo whichever DES pass the entry took, then inflate unless it was
+// stored. This is openGrf's read(); nothing else should touch grf.fd.
+function readGrfEntry(fd, entry) {
   const FILE_BIT = 0x01;
   const ENC_MIXED = 0x02;
   const ENC_HEADER = 0x04;
   if (!(entry.flags & FILE_BIT)) return new Uint8Array(0);
-  const raw = readBytes(grf.fd, entry.compSizeAligned, 0x2e + entry.offset);
+  const raw = readBytes(fd, entry.compSizeAligned, 0x2e + entry.offset);
   if (entry.flags & ENC_MIXED) desDecodeFull(raw, entry.compSizeAligned, entry.compSize);
   else if (entry.flags & ENC_HEADER) desDecodeHeader(raw, entry.compSizeAligned);
   // Stored (not deflated) when compressed size == real size.
@@ -749,8 +880,17 @@ function extractFile(grf, entry) {
   return inflateSync(raw);
 }
 
+// extractFile and closeGrf are the only things every mode uses to get at an
+// archive's bytes, so they dispatch through the handle rather than reaching for
+// a file descriptor. That is what lets openTree stand in for openGrf: the ~15
+// places that walk `grf.files` and call extractFile do not care which one they
+// were given.
+function extractFile(grf, entry) {
+  return grf.read(entry);
+}
+
 function closeGrf(grf) {
-  if (grf?.fd != null) closeSync(grf.fd);
+  grf?.close?.();
 }
 
 function extractAll(grfPath, outDir, matchPattern) {

@@ -1,6 +1,9 @@
 // Tests for extract-grf.mjs pure parsers. Run with: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
 import {
   LuaTable,
   parseAegisMap,
@@ -39,6 +42,7 @@ import {
   decodeFilenameV1,
   v1EncryptionFlags,
   parseFileTableV1,
+  openTree,
   robeTemplateHashes,
 } from "./extract-grf.mjs";
 
@@ -1258,4 +1262,105 @@ test("parseFileTableV1 rejects an impossibly short entry length", () => {
   buf.writeUInt32LE(3, 0);
   assert.doesNotThrow(() => parseFileTableV1(buf, 1));
   assert.equal(parseFileTableV1(buf, 1).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// openTree — a mirrored client directory standing in for an opened archive.
+// ---------------------------------------------------------------------------
+
+function tmpTree(files) {
+  const root = mkdtempSync(join(tmpdir(), "ragassets-tree-"));
+  for (const [rel, body] of Object.entries(files)) {
+    const dest = join(root, rel);
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, body);
+  }
+  return root;
+}
+
+test("openTree lists files under GRF-style backslash names", () => {
+  const root = tmpTree({
+    "data/sprite/a.spr": "one",
+    "data/texture/effect/b.bmp": "two",
+  });
+  try {
+    const tree = openTree({ root });
+    const names = tree.files.map((f) => f.filename).sort();
+    assert.deepEqual(names, [
+      String.raw`data\sprite\a.spr`,
+      String.raw`data\texture\effect\b.bmp`,
+    ]);
+    // Every entry must carry the file bit: each mode filters on flags & 0x01,
+    // and an entry without it is silently skipped.
+    assert.ok(tree.files.every((f) => f.flags & 0x01));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("openTree reads an entry's bytes", () => {
+  const root = tmpTree({ "data/sprite/a.spr": "hello" });
+  try {
+    const tree = openTree({ root });
+    assert.equal(Buffer.from(tree.read(tree.files[0])).toString(), "hello");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("openTree names the path when a file is not hydrated", () => {
+  // A partially hydrated mirror is an expected state for the update pipeline,
+  // so the error has to say which path is missing rather than just failing.
+  const root = tmpTree({ "data/sprite/a.spr": "x" });
+  try {
+    const tree = openTree({ root, index: ["data/sprite/a.spr", "data/sprite/missing.spr"] });
+    assert.equal(tree.files.length, 2);
+    assert.throws(
+      () => tree.read(tree.files[1]),
+      (err) => err.message.includes("not hydrated") && err.message.includes("missing.spr"),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("openTree's index exposes the real client list, not just what is on disk", () => {
+  // The point of the index: modes enumerate and resolve against the whole
+  // client even when only part of it has been fetched, so --icons and friends
+  // make the same decisions the merged archive would.
+  const root = tmpTree({ "data/a.txt": "x" });
+  try {
+    const tree = openTree({ root, index: ["data/a.txt", "data/b.txt", "data/c.txt"] });
+    assert.deepEqual(
+      tree.files.map((f) => f.filename),
+      [String.raw`data\a.txt`, String.raw`data\b.txt`, String.raw`data\c.txt`],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("openTree walks nested directories and ignores empty ones", () => {
+  const root = tmpTree({ "data/x/y/z/deep.txt": "d" });
+  mkdirSync(join(root, "data/empty/dir"), { recursive: true });
+  try {
+    const tree = openTree({ root });
+    assert.deepEqual(
+      tree.files.map((f) => f.filename),
+      [String.raw`data\x\y\z\deep.txt`],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("openTree close is a no-op and safe to call", () => {
+  const root = tmpTree({ "data/a.txt": "x" });
+  try {
+    const tree = openTree({ root });
+    assert.doesNotThrow(() => tree.close());
+    assert.doesNotThrow(() => tree.close());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

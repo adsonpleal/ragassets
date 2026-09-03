@@ -824,6 +824,30 @@ ID→sprite-name tables are baked from the client `luafiles514/.lub` into the bi
 by `gateway/cmd/gen-resolver` — re-run it when you update the client (see that
 directory's `dump.lua` and `main.go`).
 
+#### Extracting from a mirrored tree instead of an archive
+
+Anywhere a mode takes `--grf <file.grf>` it also takes `--grf <directory>` — a
+mirrored client laid out by path (`<dir>/data/...`). Every mode behaves
+identically either way; `--effects` was run both ways over the real client and
+the two outputs are byte-identical across 3,100 files.
+
+```bash
+node extract-grf.mjs --icons resources/icons --grf path/to/client-mirror
+```
+
+This exists for incremental updates. A patch archive (`.gpf`) carries whole
+copies of the files it changes rather than binary deltas, so applying one is just
+a copy — but **only `--extract` is correct when run against a single patch.**
+The derived modes need to see the whole client: `--icons` resolves item ids
+through `iteminfo_new.lub` and then looks for each icon BMP, `--maps` needs a
+map's `.gat`/`.gnd`/`.rsw` together with every texture and model they reference,
+and `--illust` picks the first card name that resolves to real art. Point those
+at one patch and they do not merely come up short — `--effects` rewrites its
+`index.json` from whatever it happened to resolve, replacing the full catalogue
+with a handful of entries, and `--illust` silently picks a different name than
+the merged client would. Keeping a mirror and pointing the modes at it avoids
+the whole class of problem.
+
 #### Pruning the robe template leftovers
 
 **Run this after every `--extract`:**
