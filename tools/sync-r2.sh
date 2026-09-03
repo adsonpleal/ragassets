@@ -103,3 +103,35 @@ fi
 
 echo "Syncing $RESOURCES -> $REMOTE"
 "$RCLONE" "${ARGS[@]}"
+
+# The four Static Assets stores go up a second time, under static/, purely as a
+# source CI can hydrate from.
+#
+# They are NOT served from these keys — the Worker's routes never reach static/,
+# and at request time they come from Workers Static Assets, where requests are
+# free. This copy exists because `wrangler deploy` needs the asset directory
+# present to compute its manifest: deploying with `assets` configured but
+# ./public missing reads as "all 39k assets deleted". CI has no resources/ tree
+# (it is 16 GB and gitignored), so it rebuilds ./public from here instead.
+#
+# 298 MB, about half a cent a month, to make code deploys independent of having
+# the client extracted.
+STATIC_ARGS=(
+  copy "$RESOURCES" "$REMOTE/static"
+  --include "/icons/**"
+  --include "/illust/**"
+  --include "/effects/**"
+  --include "/raw/**"
+  --s3-no-check-bucket
+  --transfers 32
+  --checkers 64
+  --checksum
+  --progress
+  --stats-one-line
+)
+if [ -n "${DRY_RUN:-}" ]; then
+  STATIC_ARGS+=(--dry-run)
+fi
+
+echo "Syncing the Static Assets sources -> $REMOTE/static"
+"$RCLONE" "${STATIC_ARGS[@]}"

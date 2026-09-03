@@ -95,4 +95,112 @@ async function fetch(req, env, ctx) {
   }
 }
 
-export default { fetch };
+// ---------------------------------------------------------------------------
+// The patch poll.
+//
+// Deliberately plain JavaScript rather than Go: it fetches one 70 KB file,
+// compares a string, and maybe POSTs. Routing that through the wasm module would
+// mean instantiating the Go runtime every ten minutes to do nothing, since the
+// answer is "no change" essentially every time.
+// ---------------------------------------------------------------------------
+
+const PATCH_INDEX = "https://ro1patch.gnjoylatam.com/LIVE/patchinfo/patch.txt";
+const STATE_ETAG = "patch_etag";
+const STATE_SEQ = "last_seq";
+
+// parsePatchList reads the index: "<seq> <filename>" per line. A tab-indented
+// line prefixed with // is a patch that was pulled after release — the official
+// patcher skips those and so do we, though the files often still exist on the
+// CDN.
+function parsePatchList(text) {
+  const out = [];
+  for (const raw of text.split(/\r?\n/)) {
+    if (!raw.trim() || /^\s*\/\//.test(raw)) continue;
+    const m = raw.match(/^\s*(\d+)[\s\t]+(\S+)\s*$/);
+    if (m) out.push({ seq: Number(m[1]), file: m[2] });
+  }
+  return out;
+}
+
+async function scheduled(event, env, ctx) {
+  const kv = env.UPDATE_STATE;
+  const prevETag = kv ? await kv.get(STATE_ETAG) : null;
+  const prevSeq = Number((kv ? await kv.get(STATE_SEQ) : 0) || 0);
+
+  // cacheTtl: 0 is load-bearing. patch.txt is served with
+  // Cache-Control: public, max-age=3600, so without this the Worker's own fetch
+  // would happily answer from cache and a ten-minute poll would silently become
+  // an hourly one.
+  const res = await globalThis.fetch(PATCH_INDEX, {
+    headers: prevETag ? { "If-None-Match": prevETag } : {},
+    cf: { cacheTtl: 0, cacheEverything: false },
+  });
+
+  if (res.status === 304) {
+    console.log(`patch poll: 304, unchanged (seq ${prevSeq})`);
+    return;
+  }
+  if (!res.ok) {
+    console.log(`patch poll: HTTP ${res.status} — leaving state untouched`);
+    return;
+  }
+
+  const etag = res.headers.get("etag");
+  const list = parsePatchList(await res.text());
+  const maxSeq = list.reduce((m, p) => Math.max(m, p.seq), 0);
+  const fresh = list.filter((p) => p.seq > prevSeq);
+
+  if (!fresh.length) {
+    // The file changed but carries nothing newer — a retraction, or a rewrite.
+    // Record the new validator so the next poll is a cheap 304 again.
+    if (kv && etag) await kv.put(STATE_ETAG, etag);
+    console.log(`patch poll: index changed but no new patches (seq ${maxSeq})`);
+    return;
+  }
+
+  console.log(`patch poll: ${fresh.length} new patch(es), seq ${prevSeq} -> ${maxSeq}`);
+
+  if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) {
+    // Not configured yet: report and leave the state untouched, so the work is
+    // still pending once it is.
+    console.log("patch poll: GITHUB_TOKEN/GITHUB_REPO unset, not dispatching");
+    return;
+  }
+
+  const dispatch = await globalThis.fetch(
+    `https://api.github.com/repos/${env.GITHUB_REPO}/dispatches`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "ragassets-patch-poll",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        event_type: "client-patch",
+        client_payload: {
+          fromSeq: prevSeq,
+          toSeq: maxSeq,
+          files: fresh.slice(0, 100).map((p) => p.file),
+        },
+      }),
+    },
+  );
+
+  if (!dispatch.ok) {
+    // State is deliberately NOT advanced. A failed dispatch must leave the work
+    // pending, or the patch is skipped forever: the next poll would see the same
+    // index, match on seq, and do nothing.
+    console.log(`patch poll: dispatch failed HTTP ${dispatch.status} — state unchanged, will retry`);
+    return;
+  }
+
+  if (kv) {
+    await kv.put(STATE_SEQ, String(maxSeq));
+    if (etag) await kv.put(STATE_ETAG, etag);
+  }
+  console.log(`patch poll: dispatched, state advanced to seq ${maxSeq}`);
+}
+
+export default { fetch, scheduled };

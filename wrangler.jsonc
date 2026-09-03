@@ -10,6 +10,18 @@
 
   "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "ragassets" }],
 
+  // State for the patch poll: the last patch.txt ETag and the highest patch
+  // sequence already dispatched. Two keys, read every 10 minutes and written
+  // only when something actually changed.
+  "kv_namespaces": [
+    { "binding": "UPDATE_STATE", "id": "ea027318b5124243bbf88f13ab73e0ab" }
+  ],
+
+  // Every 10 minutes. The poll is one conditional GET of a 70 KB index —
+  // measured at 304 in 0 bytes and ~130 ms — so ~4,380 invocations a month,
+  // comfortably inside the 10M included requests.
+  "triggers": { "crons": ["*/10 * * * *"] },
+
   "assets": {
     // icons, illust, effects and raw — 39,241 files, 298 MB. Requests to static
     // assets are free and unmetered, and these are 69% of all traffic by
@@ -48,6 +60,10 @@
     "staging": {
       "name": "ragassets-staging",
       "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "ragassets" }],
+      "kv_namespaces": [
+        { "binding": "UPDATE_STATE", "id": "ea027318b5124243bbf88f13ab73e0ab" }
+      ],
+      "triggers": { "crons": ["*/10 * * * *"] },
       "assets": {
         "directory": "./public",
         "run_worker_first": [

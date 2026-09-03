@@ -1,0 +1,123 @@
+name: Deploy to Cloudflare
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Two overlapping runs would race to activate different asset manifests.
+# Serialising is free. Same group name as the sibling repos.
+concurrency:
+  group: site-deploy
+  cancel-in-progress: false
+
+env:
+  # Deploys to staging until cutover. assets.latam-tools.com.br still points at
+  # the EC2 gateway, so the production env carries no route yet; at cutover this
+  # becomes `production` and the route moves with it.
+  WRANGLER_ENV: staging
+  VERIFY_HOST: https://assets-next.latam-tools.com.br
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # 22, not 20: wrangler refuses to run on anything below v22, and it is the
+      # version that actually publishes. Matches the local toolchain.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: gateway/go.sum
+
+      # The extractor's parsers are pure and need neither a GRF nor resources/,
+      # so they run here in full.
+      - name: Test the extractor
+        run: node --test extract-grf.test.mjs
+
+      # Most Go tests skip without resources/ (16 GB, gitignored) — but not the
+      # golden renders. Those run against a committed fixture pack precisely so
+      # CI cannot pass vacuously on the one thing that guards the renderer.
+      - name: Test the gateway
+        working-directory: gateway
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
+      - name: Check formatting
+        working-directory: gateway
+        run: |
+          unformatted=$(gofmt -l . | grep -v '_gen.go' || true)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+
+      # Cross-compiles the renderer to wasm and writes the JS shim beside it.
+      # Fails the build if the bundle passes the 10 MB gzip limit.
+      - name: Build the Worker
+        run: ./tools/build-worker.sh
+
+      - name: Install rclone
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+
+      # CI has no extracted client, so ./public is rebuilt from the copy in R2.
+      # wrangler needs it present: deploying with `assets` configured and the
+      # directory missing reads as "all 39,241 assets deleted", which would take
+      # the icons offline. hydrate-assets.sh refuses to continue on a short
+      # download for exactly that reason.
+      - name: Hydrate the static assets
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        run: ./tools/hydrate-assets.sh
+
+      # Deliberately NOT cloudflare/wrangler-action: it installs its own wrangler
+      # rather than the repo's, and the sibling project hit an ERESOLVE doing so.
+      # wrangler reads both secrets from the environment.
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler@4 deploy --env "$WRANGLER_ENV"
+
+      # A deploy that serves the wrong thing is worse than one that fails.
+      #
+      # The icon check is the important one. Icons are 69% of traffic and are
+      # only free because they come from Static Assets rather than the Worker;
+      # if run_worker_first were ever set to `true`, or the assets block dropped,
+      # they would still return 200 while quietly moving onto the Worker request
+      # budget and losing their cache policy. Asserting the immutable header
+      # catches both, and it is the one regression that actually costs money.
+      - name: Verify
+        run: |
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$VERIFY_HOST/healthz" || true)
+            [ "$code" = "200" ] && break
+            sleep 5
+          done
+          [ "$code" = "200" ] || { echo "healthz never came up"; exit 1; }
+          echo "healthz ok"
+
+          curl -sf "$VERIFY_HOST/image?job=1&head=1&action=0&frame=0&enableShadow=false" \
+            -o /tmp/render.png
+          head -c 8 /tmp/render.png | grep -q $'\x89PNG' || { echo "not a PNG"; exit 1; }
+          size=$(wc -c < /tmp/render.png)
+          [ "$size" -gt 500 ] || { echo "render suspiciously small: $size bytes"; exit 1; }
+          echo "render ok ($size bytes)"
+
+          cc=$(curl -sI "$VERIFY_HOST/icons/item/501.png" \
+               | tr -d '\r' | grep -i '^cache-control:' || true)
+          echo "icon $cc"
+          echo "$cc" | grep -qi 'immutable' || {
+            echo "icons lost their immutable cache policy — check the assets"
+            echo "block and that run_worker_first is still an ARRAY, not true."
+            exit 1
+          }
