@@ -1,0 +1,36 @@
+{
+  // The Worker is Go compiled to wasm; ./gateway/build is produced by
+  // `npm run build` (workers-assets-gen writes the JS shim, then the Go build
+  // writes app.wasm beside it). See tools/build-worker.sh.
+  "name": "ragassets",
+  "main": "./gateway/build/worker.mjs",
+  "compatibility_date": "2026-08-23",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "ragassets" }],
+
+  "observability": { "logs": { "enabled": true, "invocation_logs": true } },
+
+  "env": {
+    // Staging exists because caches.default is inert on *.workers.dev. Hit rates
+    // and R2 operation counts — the numbers that decide whether this costs ~$6 or
+    // ~$25 a month — can only be measured on a real route.
+    "staging": {
+      "name": "ragassets-staging",
+      "r2_buckets": [{ "binding": "ASSETS", "bucket_name": "ragassets" }],
+      "observability": { "logs": { "enabled": true, "invocation_logs": true } },
+      "routes": [
+        { "pattern": "assets-next.latam-tools.com.br", "custom_domain": true }
+      ]
+    }
+  }
+
+  // NOT configured yet: Workers Static Assets for icons, illust, effects and raw
+  // (363 MB / ~39k files, 69% of traffic). Those are added once /image is proven
+  // on staging, because they change the deploy shape considerably and are not
+  // needed to measure the cache behaviour this staging environment exists for.
+  //
+  // When adding them, run_worker_first MUST be an array naming only the dynamic
+  // paths. Setting it to `true` puts every static asset behind the Worker request
+  // budget — both sibling repos carry that warning after hitting it.
+}

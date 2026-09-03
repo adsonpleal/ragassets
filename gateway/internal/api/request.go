@@ -298,3 +298,13 @@ func parseHexColor(name, s string) (raster.Color, error) {
 	}
 	return raster.Color{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: 0xFF}, nil
 }
+
+// ETagForBytes derives a strong validator from content rather than from mtime
+// and size, which is what the filesystem server uses. R2 has no mtime, and
+// hashing the bytes is stable across re-uploads of identical content — so a
+// re-sync that rewrites an unchanged file does not invalidate anyone's cache,
+// and clients revalidate exactly once at cutover.
+func ETagForBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:16])
+}
