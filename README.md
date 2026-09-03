@@ -932,6 +932,34 @@ The step also reports any folder left with no sprite at all. That garment has no
 artwork anywhere in the client, which means its visual is a `.str` effect —
 see [effect-only costumes](#get-effects--effect-only-costumes).
 
+#### Baking the existence manifest
+
+```bash
+cd gateway && go run ./cmd/gen-manifest -resources ../resources
+```
+
+Writes `resources/manifest/exists.bin` — the FNV-1a 64 hash of every resource key
+the renderer can read, sorted and binary-searched. On this client that is 188,153
+keys in **1.44 MiB**, built in under two seconds.
+
+It exists because the renderer *probes* far more often than it reads. Resolving a
+request tests candidate sprite pairs — `loadGarment` alone can walk a dozen before
+one hits — and against a local disk each is a `stat`, but against object storage
+each would be a network round trip, all before a single byte of sprite is
+fetched. The manifest answers them from memory instead.
+
+Scope is the whole tree the renderer addresses (`data/{sprite,palette,imf}`)
+rather than only the three subtrees that are probed today. Narrowing it would save
+416 KiB and couple the file to which probes exist, so a probe added later would
+get a confident "no" instead of an answer.
+
+The trade is false positives: a hash collision would report a key that is not
+there, and one probe site treats that as fatal. With 188k keys in a 64-bit space a
+single probe collides with probability around 1e-14, and `gen-manifest` refuses to
+emit a manifest whose own keys collide — but it is a trade, not an absence of one.
+
+Rebuild it after any extraction that adds or removes sprites.
+
 #### Regenerating the skin table
 
 The fan-made [skin tone](#skin-tone--a-fan-made-addition) feature needs to know
