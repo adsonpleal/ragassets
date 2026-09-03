@@ -895,6 +895,28 @@ change. It is idempotent, and it runs on the extracted tree rather than inside
 `c_giantcatbag_jp_bl`, `c_ice_wing` — views 97/79/83/100/80/71) and the rest lost
 13–18 job slots each, mostly the mounted variants.
 
+##### Pruning without the sprites
+
+The decision only ever compares hashes, never bytes, so it can be made from a
+recorded index instead of the tree:
+
+```bash
+node extract-grf.mjs --robe-index robe-index.json --grf resources   # once, ~31s
+node extract-grf.mjs --prune-robes resources --index robe-index.json --dry-run
+```
+
+That matters because the robe tree is 134,707 sprites — roughly 4.5 GB, three
+quarters of the whole sprite library — and a CI runner with 14 GB of disk should
+not have to hydrate it to find out what to delete. An upload step already reads
+every file it ships and can record `path → md5` as it goes; from then on pruning
+costs ~0.2s and no sprite bytes at all. Measured on the real tree: 218 folders,
+56,437 sprites, 31.4s to index, 0.21s to plan from the index, with both paths
+producing identical results (verified on a deliberately un-pruned tree, and with
+the sprite files deleted afterwards to confirm the index path never touches them).
+
+The index also yields the delete list directly, which is what lets the update
+pipeline prune object storage where the files are not local at all.
+
 A leftover is identified **by content**, never by position: 201 of the 218 robe
 folders are healthy, and plenty of them (`c_giant_white_rabbit`, `c_niflheim_key`,
 `c_samba_carnival`) ship genuine per-job image banks that differ from their root

@@ -46,6 +46,8 @@ import {
   openTree,
   readRgz,
   rgzData,
+  buildRobeIndex,
+  robePrunePlan,
   robeTemplateHashes,
 } from "./extract-grf.mjs";
 
@@ -1494,4 +1496,131 @@ test("readRgz throws on an unknown record type", () => {
   // guessing past it would silently produce wrong files.
   const buf = gzipSync(Buffer.concat([Buffer.from([0x7a, 2]), Buffer.from("x\0")]));
   assert.throws(() => readRgz(buf), /unknown record type 0x7a/);
+});
+
+// ---------------------------------------------------------------------------
+// Robe pruning: the decision, separated from the pruning.
+//
+// Gravity builds each robe folder by copying the adventurer's backpack folder,
+// replaces the per-job .act files and the folder-root .spr, and leaves the
+// per-job .spr files behind as the backpack's. A leftover is identified by
+// CONTENT — a sprite content shared by ten or more distinct folders cannot be
+// any one garment's artwork — never by position, because plenty of folders ship
+// genuine per-job image banks that must survive.
+//
+// These build the tree that bug produces, so the rule is tested against the
+// shape it exists for rather than against a fixture.
+// ---------------------------------------------------------------------------
+
+const ROBE = "로브"; // 로브
+const MALE = "남"; // 남
+
+function robeTree({ folders, backpackIn, rootSpriteIn = [] }) {
+  const root = mkdtempSync(join(tmpdir(), "ragassets-robe-"));
+  const backpack = Buffer.from("BACKPACK-CONTENT");
+  for (const folder of folders) {
+    const gdir = join(root, "data", "sprite", ROBE, folder, MALE);
+    mkdirSync(gdir, { recursive: true });
+    // Every folder gets one genuine per-job sprite, unique to it.
+    writeFileSync(join(gdir, "swordman.spr"), Buffer.from(`REAL-${folder}`));
+    if (backpackIn.includes(folder)) {
+      writeFileSync(join(gdir, "priest.spr"), backpack);
+    }
+    if (rootSpriteIn.includes(folder)) {
+      writeFileSync(join(root, "data", "sprite", ROBE, folder, `${folder}.spr`), Buffer.from("ROOT"));
+    }
+  }
+  return root;
+}
+
+test("robePrunePlan removes content shared by >= 10 folders and keeps the rest", () => {
+  const folders = Array.from({ length: 12 }, (_, i) => `g${String(i + 1).padStart(2, "0")}`);
+  const backpackIn = folders.slice(0, 11); // 11 folders share it — over the threshold
+  const root = robeTree({ folders, backpackIn, rootSpriteIn: folders });
+  try {
+    const plan = robePrunePlan(buildRobeIndex(root));
+    assert.equal(plan.leftoverHashes, 1);
+    assert.equal(plan.remove.length, 11);
+    // Only the shared content goes; every folder's genuine sprite survives.
+    assert.ok(plan.remove.every((p) => p.endsWith("priest.spr")), plan.remove.join());
+    assert.equal(plan.folders.length, 11);
+    assert.ok(plan.folders.every((f) => f.survivors === 1));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("robePrunePlan leaves a content shared by too few folders alone", () => {
+  // The guard that matters in the other direction: several garments genuinely
+  // ship the same per-job bank, and removing those would delete real artwork.
+  const folders = Array.from({ length: 12 }, (_, i) => `g${String(i + 1).padStart(2, "0")}`);
+  const root = robeTree({ folders, backpackIn: folders.slice(0, 9), rootSpriteIn: folders });
+  try {
+    const plan = robePrunePlan(buildRobeIndex(root));
+    assert.equal(plan.leftoverHashes, 0);
+    assert.deepEqual(plan.remove, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("robePrunePlan reports folders left with no artwork at all", () => {
+  // A folder whose only sprite was a leftover, and which ships no root sprite,
+  // has no artwork anywhere in the client — its costume is a .str world effect.
+  // Surfacing that is how c_snow_powder was found.
+  const folders = Array.from({ length: 11 }, (_, i) => `g${String(i + 1).padStart(2, "0")}`);
+  const root = mkdtempSync(join(tmpdir(), "ragassets-robe-"));
+  try {
+    const backpack = Buffer.from("BACKPACK-CONTENT");
+    for (const folder of folders) {
+      const gdir = join(root, "data", "sprite", ROBE, folder, MALE);
+      mkdirSync(gdir, { recursive: true });
+      writeFileSync(join(gdir, "priest.spr"), backpack); // its ONLY sprite
+    }
+    // Give one folder a root sprite: it still has artwork, so it is not emptied.
+    writeFileSync(join(root, "data", "sprite", ROBE, folders[0], `${folders[0]}.spr`), Buffer.from("ROOT"));
+
+    const plan = robePrunePlan(buildRobeIndex(root));
+    assert.equal(plan.remove.length, 11);
+    assert.equal(plan.emptied.length, 10);
+    assert.ok(!plan.emptied.includes(folders[0]));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("robePrunePlan paths are forward-slashed and relative to the resources root", () => {
+  // They double as object keys for the pipeline's delete list, so the form is
+  // part of the contract rather than incidental.
+  const folders = Array.from({ length: 11 }, (_, i) => `g${String(i + 1).padStart(2, "0")}`);
+  const root = robeTree({ folders, backpackIn: folders, rootSpriteIn: folders });
+  try {
+    for (const p of robePrunePlan(buildRobeIndex(root)).remove) {
+      assert.ok(!p.includes("\\"), `path should be forward-slashed: ${p}`);
+      assert.ok(p.startsWith(`data/sprite/${ROBE}/`), `path should be root-relative: ${p}`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("robePrunePlan refuses an index of an unknown version", () => {
+  // A stale index must fail loudly: a wrong prune list deletes real artwork.
+  assert.throws(() => robePrunePlan({ version: 99, folders: {} }), /rebuild it/);
+  assert.throws(() => robePrunePlan({ folders: {} }), /rebuild it/);
+});
+
+test("buildRobeIndex records the root sprite and every per-job hash", () => {
+  const root = robeTree({ folders: ["a", "b"], backpackIn: ["a"], rootSpriteIn: ["b"] });
+  try {
+    const index = buildRobeIndex(root);
+    assert.equal(index.version, 1);
+    assert.equal(index.folders.a.root, false);
+    assert.equal(index.folders.b.root, true);
+    assert.equal(index.folders.a.sprites.length, 2); // genuine + backpack
+    assert.equal(index.folders.b.sprites.length, 1);
+    assert.ok(index.folders.a.sprites.every((s) => /^[0-9a-f]{32}$/.test(s.hash)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

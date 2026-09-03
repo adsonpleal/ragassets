@@ -120,6 +120,8 @@ function parseArgs(argv) {
     else if (a === "--dump") out.dump = argv[++i];
     else if (a === "--extract") out.extract = argv[++i];
     else if (a === "--prune-robes") out.pruneRobes = argv[++i];
+    else if (a === "--robe-index") out.robeIndex = argv[++i];
+    else if (a === "--index") out.index = argv[++i];
     else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--match") out.match = argv[++i];
     else if (a === "--icons") out.icons = argv[++i];
@@ -145,7 +147,8 @@ function usage() {
       "",
       "  node extract-grf.mjs --list    <file.grf>",
       "  node extract-grf.mjs --extract <out-dir> --grf <file.grf> [--match <regex>]",
-      "  node extract-grf.mjs --prune-robes <resources-dir> [--dry-run]",
+      "  node extract-grf.mjs --prune-robes <resources-dir> [--index <f.json>] [--dry-run]",
+      "  node extract-grf.mjs --robe-index <out.json> --grf <resources-dir>",
       "  node extract-grf.mjs --dump    <file.grf>::<path>",
       "  node extract-grf.mjs --icons   <out-dir> --grf <file.grf> [--iteminfo <path>]",
       "",
@@ -154,6 +157,11 @@ function usage() {
       "",
       "  --prune-robes deletes the adventurer-backpack sprites Gravity leaves in",
       "  every robe folder it copies that folder to make. Run it after --extract.",
+      "",
+      "  --robe-index records path->hash for the robe tree, and --prune-robes",
+      "  --index reuses it. The decision only ever compares hashes, so this lets",
+      "  a pipeline work out which files to drop without the 4.5 GB of sprites:",
+      "  ~31s hashing the tree once versus ~0.2s per run thereafter.",
       "",
       "  --icons extracts item/collection/skill/job icons (keyed by numeric id)",
       "  and char-creation UI elements (keyed by basename) as transparent PNGs.",
@@ -206,7 +214,7 @@ function usage() {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || (!args.list && !args.extract && !args.pruneRobes && !args.dump && !args.icons && !args.illust && !args.effects && !args.maps && !args.bgm && !args.sounds && !args.mobids && !args.raw)) {
+  if (args.help || (!args.list && !args.extract && !args.pruneRobes && !args.robeIndex && !args.dump && !args.icons && !args.illust && !args.effects && !args.maps && !args.bgm && !args.sounds && !args.mobids && !args.raw)) {
     usage();
     process.exit(args.help ? 0 : 1);
   }
@@ -230,8 +238,24 @@ function main() {
   }
 
   if (args.pruneRobes) {
-    pruneRobes(args.pruneRobes, { dryRun: args.dryRun });
+    pruneRobes(args.pruneRobes, { dryRun: args.dryRun, indexPath: args.index });
     process.exit(process.exitCode || 0);
+  }
+
+  if (args.robeIndex) {
+    // --robe-index <out.json> --grf <resources-dir>
+    const src = args.grf;
+    if (!src) {
+      console.error("--robe-index needs --grf <resources-dir>");
+      process.exit(1);
+    }
+    const index = buildRobeIndex(src);
+    const total = Object.values(index.folders).reduce((n, f) => n + f.sprites.length, 0);
+    writeFileSync(args.robeIndex, JSON.stringify(index));
+    console.error(
+      `Wrote ${args.robeIndex}: ${Object.keys(index.folders).length} folders, ${total} sprites.`,
+    );
+    process.exit(0);
   }
 
   if (args.dump) {
@@ -1185,13 +1209,101 @@ function indexRobeSprites(robeRoot) {
 
 // Whether the garment folder still has an image bank of its own after a prune —
 // a folder-root .spr, or a per-job sprite that survived.
-function robeHasSprite(robeRoot, folder, survivors) {
-  if (survivors > 0) return true;
+// hasRobeRootSprite reports whether the folder ships artwork at its root, in
+// either the classic or the nested layout. Captured into the index so the prune
+// decision needs no filesystem.
+function hasRobeRootSprite(robeRoot, folder) {
   const dir = join(robeRoot, folder);
   return existsSync(join(dir, `${folder}.spr`)) || existsSync(join(dir, folder, `${folder}.spr`));
 }
 
-function pruneRobes(resourcesDir, { dryRun = false } = {}) {
+// ---------------------------------------------------------------------------
+// The robe index: the prune decision, separated from the pruning.
+//
+// Identifying a leftover requires comparing file *contents* across folders, and
+// the robe tree is 134,707 sprites / ~4.5 GB — three quarters of the whole
+// sprite library. Hashing it means hydrating all of it, which a CI runner with
+// 14 GB of disk cannot do casually and does not need to: the decision only ever
+// looks at hashes, never at bytes.
+//
+// So the index is the durable artifact. The upload step already reads every file
+// it ships and can record path -> md5 as it goes; from then on pruning is pure
+// arithmetic over that record. It also means the pipeline can compute which
+// object keys to delete without the objects being anywhere near it.
+//
+// ROBE_INDEX_VERSION guards the shape. Bump it if the schema changes, so a stale
+// index is refused rather than silently producing a wrong prune list.
+// ---------------------------------------------------------------------------
+
+const ROBE_INDEX_VERSION = 1;
+
+/**
+ * buildRobeIndex(resourcesDir) reads the robe tree and records what pruning
+ * needs: every per-job sprite's hash, and whether the folder has a root sprite.
+ *
+ * Paths are forward-slashed and relative to resourcesDir, so they map straight
+ * onto object keys as well as onto the tree.
+ */
+export function buildRobeIndex(resourcesDir) {
+  const root = resolve(resourcesDir);
+  const robeRoot = join(root, "data", "sprite", kROBE);
+  const folders = {};
+  for (const [folder, entries] of indexRobeSprites(robeRoot)) {
+    folders[folder] = {
+      // robeHasSprite's filesystem probe, captured once so the decision below
+      // needs no filesystem at all.
+      root: hasRobeRootSprite(robeRoot, folder),
+      sprites: entries.map((e) => ({
+        path: relPosix(root, e.path),
+        hash: e.hash,
+      })),
+    };
+  }
+  return { version: ROBE_INDEX_VERSION, minFolders: ROBE_TEMPLATE_MIN_FOLDERS, folders };
+}
+
+/**
+ * robePrunePlan(index) decides what to remove. Pure — no filesystem, no bytes.
+ *
+ * Returns { remove, folders, emptied }: the paths to delete, a per-folder
+ * summary, and the folders left with no sprite at all.
+ */
+export function robePrunePlan(index) {
+  if (index?.version !== ROBE_INDEX_VERSION) {
+    throw new Error(
+      `robe index version ${index?.version}, expected ${ROBE_INDEX_VERSION} — rebuild it`,
+    );
+  }
+  const minFolders = index.minFolders ?? ROBE_TEMPLATE_MIN_FOLDERS;
+
+  // robeTemplateHashes wants Map<folder, [{hash}]>, which is what it already
+  // gets from the filesystem walk; feed it the recorded hashes instead.
+  const perFolder = new Map(
+    Object.entries(index.folders).map(([folder, f]) => [folder, f.sprites]),
+  );
+  const leftovers = robeTemplateHashes(perFolder, minFolders);
+
+  const remove = [];
+  const folders = [];
+  const emptied = [];
+  for (const [folder, f] of Object.entries(index.folders)) {
+    const hits = f.sprites.filter((s) => leftovers.has(s.hash));
+    if (!hits.length) continue;
+    const survivors = f.sprites.length - hits.length;
+    folders.push({ folder, removed: hits.length, survivors });
+    if (survivors === 0 && !f.root) emptied.push(folder);
+    for (const h of hits) remove.push(h.path);
+  }
+  folders.sort((a, b) => b.removed - a.removed);
+  return { remove, folders, emptied, leftoverHashes: leftovers.size };
+}
+
+// relPosix renders an absolute path relative to root with forward slashes.
+function relPosix(root, p) {
+  return p.slice(root.length).replace(/^[\\/]+/, "").split("\\").join("/");
+}
+
+function pruneRobes(resourcesDir, { dryRun = false, indexPath = null } = {}) {
   const robeRoot = join(resolve(resourcesDir), "data", "sprite", kROBE);
   if (!existsSync(robeRoot)) {
     console.error(`No robe tree at ${robeRoot} — run --extract first.`);
@@ -1199,31 +1311,32 @@ function pruneRobes(resourcesDir, { dryRun = false } = {}) {
     return;
   }
 
-  console.error(`Indexing ${robeRoot}…`);
-  const perFolder = indexRobeSprites(robeRoot);
-  const total = [...perFolder.values()].reduce((n, e) => n + e.length, 0);
-  const leftovers = robeTemplateHashes(perFolder);
+  let index;
+  if (indexPath) {
+    console.error(`Reading robe index ${indexPath}…`);
+    index = JSON.parse(readFileSync(indexPath, "utf8"));
+  } else {
+    console.error(`Indexing ${robeRoot}…`);
+    index = buildRobeIndex(resourcesDir);
+  }
+
+  const folderCount = Object.keys(index.folders).length;
+  const total = Object.values(index.folders).reduce((n, f) => n + f.sprites.length, 0);
+  const plan = robePrunePlan(index);
   console.error(
-    `  ${perFolder.size} folders, ${total} per-job sprites, ` +
-      `${leftovers.size} template content(s) shared by ≥${ROBE_TEMPLATE_MIN_FOLDERS} folders`,
+    `  ${folderCount} folders, ${total} per-job sprites, ` +
+      `${plan.leftoverHashes} template content(s) shared by ≥${index.minFolders ?? ROBE_TEMPLATE_MIN_FOLDERS} folders`,
   );
 
   let removed = 0;
-  const rows = [];
-  const emptied = [];
-  for (const [folder, entries] of perFolder) {
-    const hits = entries.filter((e) => leftovers.has(e.hash));
-    if (!hits.length) continue;
-    const survivors = entries.length - hits.length;
-    rows.push({ folder, removed: hits.length, survivors });
-    if (!robeHasSprite(robeRoot, folder, survivors)) emptied.push(folder);
-    for (const { path } of hits) {
-      if (!dryRun) rmSync(path, { force: true });
-      removed++;
-    }
+  const root = resolve(resourcesDir);
+  for (const rel of plan.remove) {
+    if (!dryRun) rmSync(join(root, rel), { force: true });
+    removed++;
   }
 
-  rows.sort((a, b) => b.removed - a.removed);
+  const rows = plan.folders;
+  const emptied = plan.emptied;
   for (const r of rows) {
     console.error(`  ${r.folder.padEnd(26)} ${String(r.removed).padStart(4)} removed, ${r.survivors} kept`);
   }
