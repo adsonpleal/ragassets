@@ -308,3 +308,27 @@ func ETagForBytes(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:16])
 }
+
+// RootHelp is the plain-text index served at "/". It lives here so the server
+// and the Worker serve identical bytes rather than two copies that drift apart.
+const RootHelp = "ragassets-gateway — renders and serves Ragnarok Online sprites, icons, maps, and BGM.\n\n" +
+	"Try: /image?job=1002            (still image)\n" +
+	"     /image?job=1002&action=0   (animation, APNG)\n" +
+	"     /gif?job=1002&action=0     (same, as an animated GIF)\n" +
+	"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n" +
+	"     /illust/card/4001.png      (a card's full-size artwork)\n" +
+	"     /effects/index.json        (effect-only costume catalogue)\n" +
+	"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n" +
+	"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's per-frame img/delay/offset)\n" +
+	"     /effect/str?file=stormgust  (a skill effect's parsed .str keyframe animation, as JSON)\n" +
+	"     /effect/texture?file=stormgust/storm_ball  (one .str layer texture, colorkeyed PNG)\n" +
+	"     /effect/sound?file=effect/ef_portal  (one sound effect, browser-playable WAV)\n" +
+	"     /effect/sound/index.json   (names present in the extracted sound tree)\n" +
+	"     /effect/skill-map          (skillId → effectId(s) lookup, ported from roBrowser)\n" +
+	"     /effect/table              (effectId → effect parts lookup, ported from roBrowser)\n" +
+	"     /maps/index.json           (world-map catalogue for the map simulator)\n" +
+	"     /maps/prontera/manifest.json  (one map's geometry + shared asset manifest)\n" +
+	"     /bgm/index.json            (per-map background-music catalogue)\n" +
+	"     /bgm/210.mp3               (one background-music track)\n" +
+	"     /raw/mobs.json             (a prebuilt JSON data table)\n\n" +
+	"See the README for every supported parameter.\n"

@@ -69,17 +69,22 @@ func (s *Store) ResolveEffect(file string, exts []string) (string, bool) {
 	return "", false
 }
 
-// Read resolves and reads a file in one call.
-func (s *Store) Read(file string, exts []string) ([]byte, bool, error) {
+// Read resolves and reads a file in one call, returning the resolved name
+// alongside the bytes.
+//
+// The name is returned because callers need the extension — TextureToPNG decides
+// between BMP and TGA from it — and a resolved *path* is not something an object
+// store has. Returning the name keeps both backings answering the same question.
+func (s *Store) Read(file string, exts []string) ([]byte, string, bool, error) {
 	p, ok := s.ResolveEffect(file, exts)
 	if !ok {
-		return nil, false, nil
+		return nil, "", false, nil
 	}
 	data, err := os.ReadFile(p)
 	if err != nil {
-		return nil, false, err
+		return nil, "", false, err
 	}
-	return data, true, nil
+	return data, p, true, nil
 }
 
 // effectRel folds a file token into a slash path under data/texture, constrained

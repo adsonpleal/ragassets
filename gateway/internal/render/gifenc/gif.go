@@ -1,4 +1,4 @@
-// GIF output: the only image processing this gateway does.
+// Package gifenc converts the renderer's PNG/APNG output to GIF.
 //
 // zrenderer always emits PNG/APNG. The /gif endpoint renders the exact same
 // thing, then converts it here so callers that can't use APNG (older tooling,
@@ -10,7 +10,7 @@
 // writes a looping GIF. GIF transparency is a single palette index, so the
 // sprite's soft (antialiased) edges become hard-edged — that's inherent to the
 // format, not a bug.
-package main
+package gifenc
 
 import (
 	"bytes"
@@ -30,10 +30,10 @@ import (
 // transparent GIF index. GIF has no partial transparency, so we pick a 50% cut.
 const gifAlphaThreshold = 0x8000
 
-// apngBytesToGIF decodes PNG/APNG bytes and encodes them as GIF bytes. A
+// FromAPNG decodes PNG/APNG bytes and encodes them as GIF bytes. A
 // single-image PNG yields a one-frame GIF; a multi-frame APNG yields an animated,
 // infinitely-looping GIF.
-func apngBytesToGIF(data []byte) ([]byte, error) {
+func FromAPNG(data []byte) ([]byte, error) {
 	g, err := apngToGIF(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("converting APNG to GIF: %w", err)

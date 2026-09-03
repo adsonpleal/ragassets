@@ -16,12 +16,14 @@
 package main
 
 import (
-	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
+	"syscall/js"
 
 	"github.com/syumai/workers"
 	"github.com/syumai/workers/cloudflare/r2"
@@ -30,6 +32,7 @@ import (
 	"github.com/ragassets/gateway/internal/effect"
 	"github.com/ragassets/gateway/internal/render/encode"
 	"github.com/ragassets/gateway/internal/render/engine"
+	"github.com/ragassets/gateway/internal/render/gifenc"
 	"github.com/ragassets/gateway/internal/render/resolve"
 	"github.com/ragassets/gateway/internal/render/resource"
 )
@@ -58,9 +61,10 @@ var (
 	initOnce sync.Once
 	initErr  error
 
-	store *resource.R2Store
-	exist resource.Existence
-	eng   *engine.Engine
+	store  *resource.R2Store
+	exist  resource.Existence
+	eng    *engine.Engine
+	estore *effect.ObjectStore
 )
 
 func setup() {
@@ -80,6 +84,9 @@ func setup() {
 	// per-render prefetch warms the colo cache in parallel; the engine's own
 	// reads then land on that cache rather than on R2.
 	eng = engine.NewWithSource(store, exist, resolve.DefaultTables())
+	// The effect store reads the same bucket through the same cache; only its
+	// resolution differs (see internal/effect/store_r2.go).
+	estore = effect.NewObjectStore(store.Get)
 }
 
 func main() {
@@ -94,28 +101,39 @@ func route(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch p := r.URL.Path; {
+	case p == "/":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, api.RootHelp)
 	case p == "/healthz":
 		w.Header().Set("Content-Type", "text/plain")
 		io.WriteString(w, "ok")
 	case p == "/image":
-		handleImage(w, r)
+		handleRender(w, r, false)
+	case p == "/gif":
+		handleRender(w, r, true)
 	case p == "/effect/skill-map":
 		serveBytes(w, r, effect.SkillMapJSON, "application/json", api.CacheImmutable)
 	case p == "/effect/table":
 		serveBytes(w, r, effect.EffectTableJSON, "application/json", api.CacheImmutable)
+	case p == "/effect/str":
+		handleEffectStr(w, r)
+	case p == "/effect/texture":
+		handleEffectTexture(w, r)
+	case p == "/effect/sound":
+		handleEffectSound(w, r)
+	case p == "/effect/sound/index.json":
+		serveObject(w, r, "sounds/index.json", api.CacheImmutable)
 	case strings.HasPrefix(p, "/maps/"):
 		serveObject(w, r, strings.TrimPrefix(p, "/"), api.CacheImmutable)
 	case strings.HasPrefix(p, "/bgm/"):
 		serveObject(w, r, strings.TrimPrefix(p, "/"), api.CacheImmutable)
 	default:
-		// /gif and /effect/{str,texture,sound} are not ported yet; see the README
-		// migration notes. Answering explicitly beats a silent 404 that would look
-		// like a missing asset.
-		http.Error(w, "not implemented on the Worker yet: "+p, http.StatusNotImplemented)
+		http.NotFound(w, r)
 	}
 }
 
-func handleImage(w http.ResponseWriter, r *http.Request) {
+// handleRender serves /image and /gif, which differ only in the final encode.
+func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	q := r.URL.Query()
 	req, ext, err := api.BuildRequest(q)
 	if err != nil {
@@ -123,15 +141,21 @@ func handleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ext != ".png" {
+		// A frame archive (zip) is a different response shape; the server still
+		// handles those and the Worker does not yet.
 		http.Error(w, "frame archives are not implemented on the Worker yet", http.StatusNotImplemented)
 		return
 	}
 
-	// The ETag is derived from the query alone, so a conditional request can be
-	// answered before any asset is read — the cheapest possible hit.
+	// The ETag comes from the query alone, so a conditional request is answered
+	// before any asset is read — the cheapest possible hit. /gif must not share
+	// /image's validator for the same query, hence the suffix.
 	etag := api.ETagFor(q)
+	if asGIF {
+		etag += "-gif"
+	}
 	setAssetHeaders(w, etag, api.CacheImmutable)
-	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+	if ifNoneMatch(r, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -152,10 +176,153 @@ func handleImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "encode: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	contentType := "image/png"
+	if asGIF {
+		if out, err = gifenc.FromAPNG(out); err != nil {
+			http.Error(w, "gif: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		contentType = "image/gif"
+	}
 
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
+	writeBody(w, out)
+}
+
+// handleEffectStr parses one .str world/skill effect into JSON.
+func handleEffectStr(w http.ResponseWriter, r *http.Request) {
+	file := r.URL.Query().Get("file")
+	if file == "" {
+		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		return
+	}
+	etag := api.ETagFor(r.URL.Query()) + "-effstr"
+	setAssetHeaders(w, etag, api.CacheImmutable)
+	if ifNoneMatch(r, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	data, _, ok, err := estore.Read(file, []string{".str"})
+	if err != nil || !ok {
+		http.NotFound(w, r)
+		return
+	}
+	parsed, err := effect.ParseStr(data)
+	if err != nil {
+		http.Error(w, "parse: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		http.Error(w, "encode: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
+	writeBody(w, out)
+}
+
+// handleEffectTexture decodes a BMP/TGA effect texture, colour-keys magenta to
+// alpha and re-encodes it as PNG.
+func handleEffectTexture(w http.ResponseWriter, r *http.Request) {
+	file := r.URL.Query().Get("file")
+	if file == "" {
+		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		return
+	}
+	etag := api.ETagFor(r.URL.Query()) + "-efftex"
+	setAssetHeaders(w, etag, api.CacheImmutable)
+	if ifNoneMatch(r, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	data, name, ok, err := estore.Read(file, []string{".bmp", ".tga"})
+	if err != nil || !ok {
+		http.NotFound(w, r)
+		return
+	}
+	// name carries the extension TextureToPNG decides BMP-vs-TGA from.
+	out, err := effect.TextureToPNG(data, name)
+	if err != nil {
+		http.Error(w, "decode: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
-	w.Write(out)
+	writeBody(w, out)
+}
+
+// handleEffectSound serves one WAV from the extracted data/wav tree. `file` is a
+// name relative to it without the extension — the token the effect table's `wav`
+// field carries. A name the client never shipped 404s, which callers treat as
+// "no sound for this effect" and skip, so a wrong sound is never served in place
+// of a missing one.
+func handleEffectSound(w http.ResponseWriter, r *http.Request) {
+	file := r.URL.Query().Get("file")
+	if file == "" {
+		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		return
+	}
+	key, ok := soundKey(file)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	b, err := store.Get(key)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	serveBytes(w, r, b, "audio/wav", api.CacheImmutable)
+}
+
+// soundKey folds a sound token to an object key under sounds/, rejecting any
+// attempt to climb out of that subtree.
+func soundKey(file string) (string, bool) {
+	f := strings.ReplaceAll(file, "\\", "/")
+	if f == "" || strings.HasPrefix(f, "/") {
+		return "", false
+	}
+	if !strings.HasSuffix(strings.ToLower(f), ".wav") {
+		f += ".wav"
+	}
+	clean := path.Clean(f)
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", false
+	}
+	return "sounds/" + clean, true
+}
+
+func ifNoneMatch(r *http.Request, etag string) bool {
+	m := r.Header.Get("If-None-Match")
+	return m != "" && strings.Contains(m, etag)
+}
+
+// rawJSBodyWriter is syumai/workers' escape hatch for handing the runtime a body
+// it already has, instead of streaming one.
+type rawJSBodyWriter interface{ WriteRawJSBody(js.Value) }
+
+// writeBody sends a fully-formed response body.
+//
+// It does not use w.Write, which pipes the bytes through a Go io.Pipe into a
+// Cloudflare FixedLengthStream in 16,640-byte chunks. That writer awaits the
+// stream's `ready` once before its loop and not per chunk, so a body large enough
+// to need many chunks overruns the stream's backpressure queue and the Worker
+// throws — observed as a hard 500 on /effect/table (171,283 bytes, 11 chunks)
+// while /effect/skill-map (30,352 bytes, 2 chunks) was fine.
+//
+// Every response here is already fully in memory — a finished render, or an
+// object read whole from R2 — so there is nothing to stream. Handing the runtime
+// a Uint8Array skips the pipe, the chunking and the extra goroutine entirely.
+func writeBody(w http.ResponseWriter, body []byte) {
+	if rw, ok := w.(rawJSBodyWriter); ok {
+		buf := js.Global().Get("Uint8Array").New(len(body))
+		js.CopyBytesToJS(buf, body)
+		rw.WriteRawJSBody(buf)
+		return
+	}
+	w.Write(body)
 }
 
 // serveObject streams one R2 object straight through, for the stores that are
@@ -182,7 +349,7 @@ func serveBytes(w http.ResponseWriter, r *http.Request, body []byte, contentType
 		return
 	}
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-	io.Copy(w, bytes.NewReader(body))
+	writeBody(w, body)
 }
 
 // contentETag validates static bytes by their content. The server derives these

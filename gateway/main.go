@@ -33,6 +33,7 @@ import (
 	"github.com/ragassets/gateway/internal/api"
 	"github.com/ragassets/gateway/internal/effect"
 	"github.com/ragassets/gateway/internal/render/engine"
+	"github.com/ragassets/gateway/internal/render/gifenc"
 	"github.com/ragassets/gateway/internal/render/resolve"
 )
 
@@ -185,27 +186,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	io.WriteString(w, "ragassets-gateway — renders and serves Ragnarok Online sprites, icons, maps, and BGM.\n\n"+
-		"Try: /image?job=1002            (still image)\n"+
-		"     /image?job=1002&action=0   (animation, APNG)\n"+
-		"     /gif?job=1002&action=0     (same, as an animated GIF)\n"+
-		"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n"+
-		"     /illust/card/4001.png      (a card's full-size artwork)\n"+
-		"     /effects/index.json        (effect-only costume catalogue)\n"+
-		"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n"+
-		"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's per-frame img/delay/offset)\n"+
-		"     /effect/str?file=stormgust  (a skill effect's parsed .str keyframe animation, as JSON)\n"+
-		"     /effect/texture?file=stormgust/storm_ball  (one .str layer texture, colorkeyed PNG)\n"+
-		"     /effect/sound?file=effect/ef_portal  (one sound effect, browser-playable WAV)\n"+
-		"     /effect/sound/index.json   (names present in the extracted sound tree)\n"+
-		"     /effect/skill-map          (skillId → effectId(s) lookup, ported from roBrowser)\n"+
-		"     /effect/table              (effectId → effect parts lookup, ported from roBrowser)\n"+
-		"     /maps/index.json           (world-map catalogue for the map simulator)\n"+
-		"     /maps/prontera/manifest.json  (one map's geometry + shared asset manifest)\n"+
-		"     /bgm/index.json            (per-map background-music catalogue)\n"+
-		"     /bgm/210.mp3               (one background-music track)\n"+
-		"     /raw/mobs.json             (a prebuilt JSON data table)\n\n"+
-		"See the README for every supported parameter.\n")
+	io.WriteString(w, api.RootHelp)
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +267,7 @@ func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		return apngBytesToGIF(png)
+		return gifenc.FromAPNG(png)
 	})
 	if err != nil {
 		log.Printf("gif render/convert failed for %s: %v", r.URL.RawQuery, err)
@@ -567,7 +548,7 @@ func (s *server) handleEffectStr(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, ok, err := s.estore.Read(file, []string{".str"})
+	data, _, ok, err := s.estore.Read(file, []string{".str"})
 	if err != nil {
 		log.Printf("effect str read failed for %q: %v", file, err)
 		http.Error(w, "read failed", http.StatusInternalServerError)
@@ -607,15 +588,14 @@ func (s *server) handleEffectTexture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, ok := s.estore.ResolveEffect(file, []string{".bmp", ".tga"})
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	data, err := os.ReadFile(p)
+	data, p, ok, err := s.estore.Read(file, []string{".bmp", ".tga"})
 	if err != nil {
 		log.Printf("effect texture read failed for %q: %v", file, err)
 		http.Error(w, "read failed", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
 		return
 	}
 

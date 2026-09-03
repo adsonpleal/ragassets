@@ -29,6 +29,17 @@
 import "./wasm_exec.js";
 import { createRuntimeContext, loadModule } from "./runtime.mjs";
 
+// The Go program does not stay alive indefinitely. workers.Serve() parks main on
+// a channel, but Go's js/wasm runtime exits once its event loop has nothing
+// pending — which happens whenever the isolate goes idle between requests. A
+// request that then reaches the dead instance throws "Go program has already
+// exited". Under sustained load this never fires, which is exactly why it has to
+// be handled rather than assumed away: it shows up as intermittent 500s in quiet
+// periods and looks like flakiness.
+//
+// So the instance is cached but treated as disposable. go.run()'s promise
+// resolves when main returns, which is used to drop the cached instance the
+// moment it dies; a request that races that window retries once on a fresh one.
 let mod;
 let booting; // Promise<binding>, shared by every request that arrives during boot
 
@@ -42,7 +53,7 @@ globalThis.tryCatch = (fn) => {
 
 function boot(env, ctx) {
   if (booting) return booting;
-  booting = (async () => {
+  const thisBoot = (async () => {
     if (mod === undefined) mod = await loadModule();
     const binding = {};
     const go = new Go();
@@ -54,22 +65,34 @@ function boot(env, ctx) {
       ...go.importObject,
       workers: { ready: () => ready() },
     });
-    // Not awaited: workers.Serve() never returns, so this promise stays pending
-    // for the life of the isolate. That is what keeps the instance alive.
-    go.run(instance, createRuntimeContext({ env, ctx, binding }));
+    // Resolves when Go's main returns, i.e. when this instance is no longer
+    // usable. Dropping the cache there means the next request boots a fresh one
+    // instead of calling into a corpse.
+    go.run(instance, createRuntimeContext({ env, ctx, binding })).finally(() => {
+      if (booting === thisBoot) booting = undefined;
+    });
     await readyPromise;
     return binding;
   })().catch((e) => {
-    // Let the next request retry rather than wedging the isolate on one failure.
-    booting = undefined;
+    if (booting === thisBoot) booting = undefined;
     throw e;
   });
+  booting = thisBoot;
   return booting;
 }
 
 async function fetch(req, env, ctx) {
-  const binding = await boot(env, ctx);
-  return binding.handleRequest(req);
+  try {
+    const binding = await boot(env, ctx);
+    return await binding.handleRequest(req);
+  } catch (e) {
+    // One retry, for the window between the instance dying and the exit handler
+    // clearing it. A second failure is a real error and belongs to the caller.
+    if (!/already exited/.test(String(e && e.message))) throw e;
+    booting = undefined;
+    const binding = await boot(env, ctx);
+    return await binding.handleRequest(req);
+  }
 }
 
 export default { fetch };
