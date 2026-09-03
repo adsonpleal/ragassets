@@ -22,20 +22,17 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ragassets/gateway/internal/api"
 	"github.com/ragassets/gateway/internal/effect"
 	"github.com/ragassets/gateway/internal/render/engine"
-	"github.com/ragassets/gateway/internal/render/raster"
 	"github.com/ragassets/gateway/internal/render/resolve"
 )
 
@@ -223,13 +220,13 @@ func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 
-	req, ext, err := buildRequest(q)
+	req, ext, err := api.BuildRequest(q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	etag := etagFor(q)
+	etag := api.ETagFor(q)
 	contentType := contentTypeForExt(ext)
 
 	// The ETag is a pure function of the (immutable) query, so a revalidating
@@ -265,7 +262,7 @@ func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query()
 
-	req, ext, err := buildRequest(q)
+	req, ext, err := api.BuildRequest(q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -277,7 +274,7 @@ func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 
 	// A distinct ETag so /gif never collides with /image's validators for the
 	// same query (their bytes differ).
-	etag := etagFor(q) + "-gif"
+	etag := api.ETagFor(q) + "-gif"
 
 	if ifNoneMatch(r, etag) {
 		notModified(w, etag)
@@ -312,16 +309,12 @@ func (s *server) serveBytes(w http.ResponseWriter, r *http.Request, data []byte,
 // exception: they are mutable at a stable URL — regenerated after a Ragnarok
 // client update — so they get a short TTL plus mandatory revalidation, which
 // keeps the ETag doing the real work without pinning stale data for a year.
-const (
-	cacheImmutable  = "public, max-age=31536000, immutable"
-	cacheRevalidate = "public, max-age=300, must-revalidate"
-)
 
 // serveReader is the shared response path for renders (a bytes.Reader) and icons
 // (an open *os.File). It sets the immutable asset cache/CORS headers and lets
 // http.ServeContent handle If-None-Match against our ETag plus range requests.
 func (s *server) serveReader(w http.ResponseWriter, r *http.Request, content io.ReadSeeker, modTime time.Time, etag, contentType string) {
-	s.serveReaderCache(w, r, content, modTime, etag, contentType, cacheImmutable)
+	s.serveReaderCache(w, r, content, modTime, etag, contentType, api.CacheImmutable)
 }
 
 // serveReaderCache is serveReader with an explicit Cache-Control policy, for the
@@ -354,7 +347,7 @@ func fileETag(fi os.FileInfo) string {
 // Only the immutable handlers take this path — /raw's 304 comes out of
 // http.ServeContent, which reuses the headers serveReaderCache already set.
 func notModified(w http.ResponseWriter, etag string) {
-	setAssetHeaders(w, etag, cacheImmutable)
+	setAssetHeaders(w, etag, api.CacheImmutable)
 	w.WriteHeader(http.StatusNotModified)
 }
 
@@ -568,7 +561,7 @@ func (s *server) handleEffectStr(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
 		return
 	}
-	etag := etagFor(r.URL.Query()) + "-effstr"
+	etag := api.ETagFor(r.URL.Query()) + "-effstr"
 	if ifNoneMatch(r, etag) {
 		notModified(w, etag)
 		return
@@ -608,7 +601,7 @@ func (s *server) handleEffectTexture(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
 		return
 	}
-	etag := etagFor(r.URL.Query()) + "-efftex"
+	etag := api.ETagFor(r.URL.Query()) + "-efftex"
 	if ifNoneMatch(r, etag) {
 		notModified(w, etag)
 		return
@@ -902,7 +895,7 @@ func (s *server) handleBgm(w http.ResponseWriter, r *http.Request) {
 // basename whitelist below is what keeps the lookup inside RAW_DIR: one flat
 // lowercase name, a .json extension, no dots and no slashes, hence no traversal.
 //
-// These go out under cacheRevalidate rather than the immutable policy every other
+// These go out under api.CacheRevalidate rather than the immutable policy every other
 // handler uses; the reason is on that constant.
 // ---------------------------------------------------------------------------
 
@@ -933,41 +926,12 @@ func (s *server) handleRaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.serveReaderCache(w, r, f, fi.ModTime(), fileETag(fi), "application/json", cacheRevalidate)
+	s.serveReaderCache(w, r, f, fi.ModTime(), fileETag(fi), "application/json", api.CacheRevalidate)
 }
 
 // ---------------------------------------------------------------------------
 // ETag
 // ---------------------------------------------------------------------------
-
-// etagFor is a stable hash of the (canonicalized) query parameters: keys and
-// repeated values sorted, empty values dropped. Identical query params — in any
-// order — produce the same ETag. A render is fully determined by its query, so
-// this doubles as a content validator for conditional requests.
-func etagFor(q url.Values) string {
-	keys := make([]string, 0, len(q))
-	for k := range q {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var sb strings.Builder
-	for _, k := range keys {
-		vals := append([]string(nil), q[k]...)
-		sort.Strings(vals)
-		for _, v := range vals {
-			if v == "" {
-				continue
-			}
-			sb.WriteString(k)
-			sb.WriteByte('=')
-			sb.WriteString(v)
-			sb.WriteByte('\n')
-		}
-	}
-	sum := sha256.Sum256([]byte(sb.String()))
-	return hex.EncodeToString(sum[:])
-}
 
 // ---------------------------------------------------------------------------
 // Single-flight (stdlib-only): dedup concurrent identical renders
@@ -1014,69 +978,11 @@ func (g *flightGroup) Do(key string, fn func() ([]byte, error)) ([]byte, error) 
 // Small helpers
 // ---------------------------------------------------------------------------
 
-func splitCSV(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func parseInt(name, s string) (int, error) {
-	n, err := strconv.Atoi(strings.TrimSpace(s))
-	if err != nil {
-		return 0, fmt.Errorf("'%s' must be an integer, got %q", name, s)
-	}
-	return n, nil
-}
-
-func parseBool(name, s string) (bool, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "1", "true", "yes", "on":
-		return true, nil
-	case "0", "false", "no", "off":
-		return false, nil
-	}
-	return false, fmt.Errorf("'%s' must be a boolean (true/false), got %q", name, s)
-}
-
 // parseEnum accepts either a friendly name (from names) or a raw allowed int.
-func parseEnum(name, s string, names map[string]int, allowed []int) (int, error) {
-	s = strings.TrimSpace(s)
-	if v, ok := names[strings.ToLower(s)]; ok {
-		return v, nil
-	}
-	if n, err := strconv.Atoi(s); err == nil {
-		for _, a := range allowed {
-			if n == a {
-				return n, nil
-			}
-		}
-	}
-	keys := make([]string, 0, len(names))
-	for k := range names {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return 0, fmt.Errorf("'%s' must be one of %v or %v, got %q", name, keys, allowed, s)
-}
 
 // parseHexColor accepts an opaque RGB colour as six hex digits, with or without a
 // leading '#'. Three-digit shorthand is deliberately not accepted: it would make
 // two spellings of the same colour produce two cache entries for one render.
-func parseHexColor(name, s string) (raster.Color, error) {
-	s = strings.TrimPrefix(strings.TrimSpace(s), "#")
-	if len(s) != 6 {
-		return raster.Color{}, fmt.Errorf("'%s' must be a 6-digit hex colour like 'c9a07f', got %q", name, s)
-	}
-	v, err := strconv.ParseUint(s, 16, 32)
-	if err != nil {
-		return raster.Color{}, fmt.Errorf("'%s' must be a 6-digit hex colour like 'c9a07f', got %q", name, s)
-	}
-	return raster.Color{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: 0xFF}, nil
-}
 
 func contentTypeForExt(ext string) string {
 	switch ext {

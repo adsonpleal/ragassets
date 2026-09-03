@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/ragassets/gateway/internal/api"
 	"github.com/ragassets/gateway/internal/render/raster"
 )
 
@@ -37,7 +38,7 @@ func TestBuildRequest_Skin(t *testing.T) {
 		if err != nil {
 			t.Fatalf("bad test query %q: %v", tc.query, err)
 		}
-		req, _, err := buildRequest(q)
+		req, _, err := api.BuildRequest(q)
 		if tc.wantErr {
 			if err == nil {
 				t.Errorf("%s: expected an error, got none", tc.query)

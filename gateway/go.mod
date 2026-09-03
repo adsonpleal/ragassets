@@ -8,3 +8,5 @@ require (
 )
 
 require golang.org/x/text v0.21.0
+
+require github.com/syumai/workers v0.33.0 // indirect
