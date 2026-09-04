@@ -72,7 +72,12 @@ jobs:
 
       # Cross-compiles the renderer to wasm and writes the JS shim beside it.
       # Fails the build if the bundle passes the 10 MB gzip limit.
+      # run_number rather than the commit count: checkout is shallow, so the
+      # count is 1 on every run. run_number is monotonic per workflow, which is
+      # all the cache key needs — it only has to differ from the last deploy's.
       - name: Build the Worker
+        env:
+          DEPLOY_EPOCH: ${{ github.run_number }}
         run: ./tools/build-worker.sh
 
       - name: Install rclone

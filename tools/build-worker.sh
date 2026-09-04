@@ -12,11 +12,25 @@
 # available: purge-by-URL is capped at 30 URLs a call and ~1,000 a day, and
 # purge-by-prefix is Enterprise-only. Defaults to the commit count, which rises
 # on every deploy without needing to be tracked anywhere.
+#
+# Except under a shallow clone, where the count is 1 on every commit. That is
+# how CI checks out by default, and it fails silently in the worst way: the build
+# succeeds, the deploy succeeds, and every release reuses cache key v1 — so an
+# asset update ships to R2 and the edge keeps serving the bytes it already had.
+# Refuse the default there and make the caller pass one.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-EPOCH="${DEPLOY_EPOCH:-$(git rev-list --count HEAD 2>/dev/null || echo dev)}"
+if [ -n "${DEPLOY_EPOCH:-}" ]; then
+  EPOCH="$DEPLOY_EPOCH"
+elif [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+  echo "This is a shallow clone, so the commit count is not a usable epoch." >&2
+  echo "Set DEPLOY_EPOCH explicitly (CI passes github.run_number)." >&2
+  exit 1
+else
+  EPOCH="$(git rev-list --count HEAD 2>/dev/null || echo dev)"
+fi
 
 echo "Building worker (epoch $EPOCH)"
 cd gateway
