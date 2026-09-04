@@ -66,8 +66,13 @@ type R2Store struct {
 
 	// Counters for the one number that decides this design: how often a read is
 	// answered by the colo cache rather than by R2. A Class B operation is only
-	// charged on the miss path, so hits/(hits+misses) is directly the difference
-	// between a few dollars a month and a few tens.
+	// charged on the miss path, so misses is directly the billed quantity — the
+	// difference between a few dollars a month and a few tens.
+	//
+	// misses is exact. The hits/(hits+misses) ratio is an upper bound rather than
+	// a per-key hit rate, because Prefetch and the render that follows it each
+	// read the same key: a cold key scores one miss and one hit, a warm one scores
+	// two hits. Read misses per render, not the ratio.
 	//
 	// Process-wide and cumulative rather than per-request: they are read by
 	// sampling /debug/r2 before and after a batch, which is exact for sequential
@@ -181,82 +186,40 @@ func (s *R2Store) populate(req *http.Request, body []byte) {
 // rather than about the cap.
 const PrefetchLimit = 16
 
-// PrefetchBudget caps the total bytes a single render may pull into memory. The
-// isolate has 128 MB and the library's size distribution has a long tail —
-// data/sprite/몬스터/firepit.spr alone is 19.5 MB — so a request naming several
-// large monsters could otherwise exhaust it. Over budget, the remaining keys are
-// left out: the engine treats an absent key as a miss and renders what it has,
-// which degrades a frame rather than killing the isolate.
-const PrefetchBudget = 48 << 20
-
-// Prefetch fetches keys concurrently and returns them as a MapSource the engine
-// can read synchronously.
+// Prefetch warms the colo cache for a plan's keys, concurrently.
 //
 // This is the whole reason planning was split from rendering. Go blocks on a JS
 // promise by parking the goroutine, not the runtime, so N goroutines each
-// awaiting an R2 get have N requests in flight at once. Fetching the same keys
-// lazily mid-render would serialise them: 7-41 round trips at 20-40 ms each,
-// against 4-8 ms of actual rendering.
+// awaiting an R2 get have N requests in flight at once. The render that follows
+// reads those same keys through Get and finds them already cached, which is a
+// local lookup. Fetching them lazily mid-render instead would serialise 7-41 R2
+// round trips at 20-40 ms each, against 4-8 ms of actual rendering.
+//
+// The bytes are deliberately not retained. They live in the colo cache, which is
+// shared by every isolate in the colo and survives isolate eviction; holding a
+// second copy of a render's whole working set in the isolate would put it against
+// the 128 MB ceiling for nothing. What the isolate keeps is the Manager's LRU, of
+// parsed sprites, under its own byte budget.
 //
 // Keys the Existence rejects are skipped rather than fetched. The engine probes
-// speculatively and tolerates a miss, so paying a round trip to confirm one
-// would be pure waste.
-func (s *R2Store) Prefetch(keys []string, ex Existence) MapSource {
-	wanted := keys
-	if ex != nil {
-		wanted = wanted[:0:0]
-		for _, k := range keys {
-			if ex.Has(k) {
-				wanted = append(wanted, k)
-			}
+// speculatively and tolerates a miss, so paying a round trip to confirm one would
+// be pure waste.
+func (s *R2Store) Prefetch(keys []string, ex Existence) {
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, PrefetchLimit)
+	for _, k := range keys {
+		if ex != nil && !ex.Has(k) {
+			continue
 		}
-	}
-
-	var (
-		mu    sync.Mutex
-		out   = make(MapSource, len(wanted))
-		bytes int64
-		wg    sync.WaitGroup
-		sem   = make(chan struct{}, PrefetchLimit)
-	)
-	for _, k := range wanted {
 		wg.Add(1)
 		go func(key string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-
-			mu.Lock()
-			over := bytes > PrefetchBudget
-			mu.Unlock()
-			if over {
-				return
-			}
-
-			b, err := s.Get(key)
-			if err != nil {
-				return // absent or unreadable: the engine handles the miss
-			}
-			mu.Lock()
-			out[key] = b
-			bytes += int64(len(b))
-			mu.Unlock()
+			// Absent or unreadable is not an error here: the engine reaches the
+			// same key through Get and handles the miss itself.
+			_, _ = s.Get(key)
 		}(k)
 	}
 	wg.Wait()
-	return out
-}
-
-// LoadManifestFromR2 reads the baked existence manifest out of the bucket. It is
-// fetched once per isolate on cold start rather than compiled in, so shipping new
-// sprites is an upload instead of a Worker redeploy.
-func LoadManifestFromR2(bucket *r2.Bucket, key string) (*Manifest, error) {
-	obj, err := bucket.Get(key)
-	if err != nil {
-		return nil, fmt.Errorf("r2 get %q: %w", key, err)
-	}
-	if obj == nil {
-		return nil, fmt.Errorf("manifest %q not found in bucket", key)
-	}
-	return LoadManifest(obj.Body)
 }

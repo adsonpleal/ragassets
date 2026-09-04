@@ -46,18 +46,7 @@ set -euo pipefail
 RESOURCES="${1:-resources}"
 REMOTE="${2:-r2:ragassets}"
 
-# rclone, from PATH or the local toolchain dir. It is not optional: the R2 REST
-# API that `wrangler r2 object put` uses is rate-limited to ~1200 requests per 5
-# minutes, measured — the first 429 landed after 1,327 requests — which would put
-# this sync at roughly 16 hours. The S3 endpoint rclone speaks has no such limit.
-RCLONE="$(command -v rclone || true)"
-[ -z "$RCLONE" ] && [ -x "_scratch/tools/rclone.exe" ] && RCLONE="_scratch/tools/rclone.exe"
-[ -z "$RCLONE" ] && [ -x "_scratch/tools/rclone" ] && RCLONE="_scratch/tools/rclone"
-if [ -z "$RCLONE" ]; then
-  echo "rclone not found. Install it (winget install Rclone.Rclone) or drop the" >&2
-  echo "binary in _scratch/tools/." >&2
-  exit 1
-fi
+find_rclone
 
 if [ ! -d "$RESOURCES/data" ]; then
   echo "No $RESOURCES/data — run the extraction first (see README)." >&2
@@ -70,42 +59,33 @@ if [ ! -f "$RESOURCES/manifest/exists.bin" ]; then
   exit 1
 fi
 
-ARGS=(
-  copy "$RESOURCES" "$REMOTE"
-  # Served by Workers Static Assets, not R2.
-  --exclude "/icons/**"
-  --exclude "/illust/**"
-  --exclude "/effects/**"
-  --exclude "/raw/**"
-  # Compiled into the binary; not read at runtime.
-  --exclude "/data/luafiles514/**"
-  # An R2 token scoped to one bucket cannot call CreateBucket, which rclone
-  # otherwise attempts before its first upload — it fails with a 403 that reads
-  # like a credentials problem rather than a permissions one. Skipping the check
-  # is correct here: the bucket already exists and this token is not allowed to
-  # make buckets by design.
-  --s3-no-check-bucket
-  # 237k small objects: parallelism dominates, not bandwidth.
-  --transfers 32
-  --checkers 64
-  --s3-chunk-size 32M
-  # Re-runs after a client patch should move only what changed. R2 exposes an
-  # md5 etag, so size+checksum is both cheaper and safer than mtime here —
-  # extraction rewrites files wholesale and mtimes carry no meaning.
-  --checksum
-  --progress
-  --stats-one-line
-)
+# The two copies below differ only in destination and filter set, so they share
+# one invocation. R2_ARGS (tools/lib.sh) carries the flags every transfer needs;
+# --progress and the 32M chunk size are specific to pushing a 15 GB tree.
+copy_to() {
+  local dest="$1"
+  shift
+  "$RCLONE" copy "$RESOURCES" "$dest" "$@" \
+    "${R2_ARGS[@]}" --s3-chunk-size 32M --progress ${DRY_RUN:+--dry-run}
+}
 
-if [ -n "${DRY_RUN:-}" ]; then
-  ARGS+=(--dry-run)
-fi
+# The four stores Workers Static Assets serves, named once. Everything else in
+# the tree goes to R2, and these same four are what the static/ mirror below
+# includes — one list, used in both directions, so they cannot disagree.
+STATIC_STORES=(icons illust effects raw)
+
+main_filters=()
+for store in "${STATIC_STORES[@]}"; do
+  main_filters+=(--exclude "/$store/**")
+done
+# Compiled into the binary by cmd/gen-resolver; never read at runtime.
+main_filters+=(--exclude "/data/luafiles514/**")
 
 echo "Syncing $RESOURCES -> $REMOTE"
-"$RCLONE" "${ARGS[@]}"
+copy_to "$REMOTE" "${main_filters[@]}"
 
-# The four Static Assets stores go up a second time, under static/, purely as a
-# source CI can hydrate from.
+# The Static Assets stores go up a second time, under static/, purely as a source
+# CI can hydrate from.
 #
 # They are NOT served from these keys — the Worker's routes never reach static/,
 # and at request time they come from Workers Static Assets, where requests are
@@ -116,22 +96,10 @@ echo "Syncing $RESOURCES -> $REMOTE"
 #
 # 298 MB, about half a cent a month, to make code deploys independent of having
 # the client extracted.
-STATIC_ARGS=(
-  copy "$RESOURCES" "$REMOTE/static"
-  --include "/icons/**"
-  --include "/illust/**"
-  --include "/effects/**"
-  --include "/raw/**"
-  --s3-no-check-bucket
-  --transfers 32
-  --checkers 64
-  --checksum
-  --progress
-  --stats-one-line
-)
-if [ -n "${DRY_RUN:-}" ]; then
-  STATIC_ARGS+=(--dry-run)
-fi
+static_filters=()
+for store in "${STATIC_STORES[@]}"; do
+  static_filters+=(--include "/$store/**")
+done
 
 echo "Syncing the Static Assets sources -> $REMOTE/static"
-"$RCLONE" "${STATIC_ARGS[@]}"
+copy_to "$REMOTE/static" "${static_filters[@]}"

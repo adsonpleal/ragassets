@@ -16,6 +16,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,13 +55,32 @@ const (
 // built into the key rather than requested afterwards.
 var deployEpoch = "dev"
 
+// sprCacheBytes / actCacheBytes budget the Manager's parse caches for a 128 MB
+// isolate. The package defaults are sized for the server's ~500 MiB and come to
+// 144 MiB between them, which does not fit here: exceeding the ceiling discards
+// the parse caches AND the manifest, so the next request pays a full cold start
+// including a fresh 1.44 MiB manifest read.
+//
+// Budget: ~7 MiB module + 1.44 MiB manifest + 36 MiB here + the per-render
+// working set, inside 128 MiB.
+const (
+	sprCacheBytes int64 = 24 << 20
+	actCacheBytes int64 = 12 << 20
+)
+
 // The runtime bindings are only reachable while a request is in flight, so
 // everything is built on the first one and reused for the isolate's lifetime.
-// That first request also pays for the manifest fetch — one R2 read of 1.44 MiB
-// per cold start.
+//
+// Two stages, because they cost very different amounts. bindOnce is cheap and
+// every route needs it. renderOnce fetches the 1.44 MiB existence manifest, which
+// only /image and /gif consult — folding it into the first stage would block a
+// /healthz or /bgm request on a cold isolate behind a download it never reads.
 var (
-	initOnce sync.Once
+	bindOnce sync.Once
 	initErr  error
+
+	renderOnce sync.Once
+	renderErr  error
 
 	// Two views of the same bucket, differing only in key prefix.
 	//
@@ -75,27 +95,39 @@ var (
 	estore    *effect.ObjectStore
 )
 
-func setup() {
+func bind() {
 	bucket, err := r2.NewBucket(bucketBinding)
 	if err != nil {
 		initErr = fmt.Errorf("r2 binding %q: %w", bucketBinding, err)
 		return
 	}
-	m, err := resource.LoadManifestFromR2(bucket, manifestKey)
-	if err != nil {
-		initErr = fmt.Errorf("load %s: %w", manifestKey, err)
-		return
-	}
 	dataStore = resource.NewR2Store(bucket, deployEpoch, "data/")
 	objStore = resource.NewR2Store(bucket, deployEpoch, "")
+	// The effect store reads the same bucket through the same cache; only its
+	// resolution differs (see internal/effect/store_r2.go).
+	estore = effect.NewObjectStore(objStore.Get)
+}
+
+// setupRender fetches the existence manifest and builds the Engine. The manifest
+// is read through objStore rather than straight off the binding, so it goes
+// through the same epoch-keyed colo cache as everything else: one R2 read per
+// colo per deploy rather than one per isolate cold start, forever.
+func setupRender() {
+	b, err := objStore.Get(manifestKey)
+	if err != nil {
+		renderErr = fmt.Errorf("load %s: %w", manifestKey, err)
+		return
+	}
+	m, err := resource.LoadManifest(bytes.NewReader(b))
+	if err != nil {
+		renderErr = fmt.Errorf("parse %s: %w", manifestKey, err)
+		return
+	}
 	exist = m
 	// One long-lived Engine, so its parse caches survive across requests. The
 	// per-render prefetch warms the colo cache in parallel; the engine's own
 	// reads then land on that cache rather than on R2.
-	eng = engine.NewWithSource(dataStore, exist, resolve.DefaultTables())
-	// The effect store reads the same bucket through the same cache; only its
-	// resolution differs (see internal/effect/store_r2.go).
-	estore = effect.NewObjectStore(objStore.Get)
+	eng = engine.NewWithSourceBudget(dataStore, exist, resolve.DefaultTables(), sprCacheBytes, actCacheBytes)
 }
 
 func main() {
@@ -103,7 +135,7 @@ func main() {
 }
 
 func route(w http.ResponseWriter, r *http.Request) {
-	initOnce.Do(setup)
+	bindOnce.Do(bind)
 	if initErr != nil {
 		http.Error(w, "worker not initialised: "+initErr.Error(), http.StatusInternalServerError)
 		return
@@ -123,20 +155,19 @@ func route(w http.ResponseWriter, r *http.Request) {
 	case p == "/gif":
 		handleRender(w, r, true)
 	case p == "/effect/skill-map":
-		serveBytes(w, r, effect.SkillMapJSON, "application/json", api.CacheImmutable)
+		serveBytes(w, r, effect.SkillMapJSON, skillMapETag(), "application/json", api.CacheImmutable)
 	case p == "/effect/table":
-		serveBytes(w, r, effect.EffectTableJSON, "application/json", api.CacheImmutable)
+		serveBytes(w, r, effect.EffectTableJSON, effectTableETag(), "application/json", api.CacheImmutable)
 	case p == "/effect/str":
-		handleEffectStr(w, r)
+		serveEffectFile(w, r, "-effstr", []string{".str"}, "application/json", strToJSON)
 	case p == "/effect/texture":
-		handleEffectTexture(w, r)
+		// name carries the extension TextureToPNG decides BMP-vs-TGA from.
+		serveEffectFile(w, r, "-efftex", []string{".bmp", ".tga"}, "image/png", effect.TextureToPNG)
 	case p == "/effect/sound":
 		handleEffectSound(w, r)
 	case p == "/effect/sound/index.json":
 		serveObject(w, r, "sounds/index.json", api.CacheImmutable)
-	case strings.HasPrefix(p, "/maps/"):
-		serveObject(w, r, strings.TrimPrefix(p, "/"), api.CacheImmutable)
-	case strings.HasPrefix(p, "/bgm/"):
+	case strings.HasPrefix(p, "/maps/"), strings.HasPrefix(p, "/bgm/"):
 		serveObject(w, r, strings.TrimPrefix(p, "/"), api.CacheImmutable)
 	default:
 		http.NotFound(w, r)
@@ -175,6 +206,12 @@ func handleDebugR2(w http.ResponseWriter) {
 
 // handleRender serves /image and /gif, which differ only in the final encode.
 func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
+	renderOnce.Do(setupRender)
+	if renderErr != nil {
+		http.Error(w, "renderer not initialised: "+renderErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	q := r.URL.Query()
 	req, ext, err := api.BuildRequest(q)
 	if err != nil {
@@ -195,8 +232,8 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	if asGIF {
 		etag += "-gif"
 	}
-	setAssetHeaders(w, etag, api.CacheImmutable)
-	if ifNoneMatch(r, etag) {
+	api.SetAssetHeaders(w, etag, api.CacheImmutable)
+	if api.IfNoneMatch(r, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -231,67 +268,45 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	writeBody(w, out)
 }
 
-// handleEffectStr parses one .str world/skill effect into JSON.
-func handleEffectStr(w http.ResponseWriter, r *http.Request) {
-	file := r.URL.Query().Get("file")
+// serveEffectFile is the shape /effect/str and /effect/texture share: resolve one
+// file out of the effect tree, transform it, send it. They differ only in the
+// ETag suffix, the extensions they accept, the transform and the content type —
+// so keeping one body means their caching and 404 behaviour cannot drift apart.
+func serveEffectFile(w http.ResponseWriter, r *http.Request, etagSuffix string, exts []string, contentType string, convert func(data []byte, name string) ([]byte, error)) {
+	q := r.URL.Query()
+	file := q.Get("file")
 	if file == "" {
 		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
 		return
 	}
-	etag := api.ETagFor(r.URL.Query()) + "-effstr"
-	setAssetHeaders(w, etag, api.CacheImmutable)
-	if ifNoneMatch(r, etag) {
+	etag := api.ETagFor(q) + etagSuffix
+	api.SetAssetHeaders(w, etag, api.CacheImmutable)
+	if api.IfNoneMatch(r, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	data, _, ok, err := estore.Read(file, []string{".str"})
+	data, name, ok, err := estore.Read(file, exts)
 	if err != nil || !ok {
 		http.NotFound(w, r)
 		return
 	}
-	parsed, err := effect.ParseStr(data)
+	out, err := convert(data, name)
 	if err != nil {
-		http.Error(w, "parse: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "convert: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	out, err := json.Marshal(parsed)
-	if err != nil {
-		http.Error(w, "encode: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
 	writeBody(w, out)
 }
 
-// handleEffectTexture decodes a BMP/TGA effect texture, colour-keys magenta to
-// alpha and re-encodes it as PNG.
-func handleEffectTexture(w http.ResponseWriter, r *http.Request) {
-	file := r.URL.Query().Get("file")
-	if file == "" {
-		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
-		return
-	}
-	etag := api.ETagFor(r.URL.Query()) + "-efftex"
-	setAssetHeaders(w, etag, api.CacheImmutable)
-	if ifNoneMatch(r, etag) {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	data, name, ok, err := estore.Read(file, []string{".bmp", ".tga"})
-	if err != nil || !ok {
-		http.NotFound(w, r)
-		return
-	}
-	// name carries the extension TextureToPNG decides BMP-vs-TGA from.
-	out, err := effect.TextureToPNG(data, name)
+// strToJSON parses one .str world/skill effect into JSON.
+func strToJSON(data []byte, _ string) ([]byte, error) {
+	parsed, err := effect.ParseStr(data)
 	if err != nil {
-		http.Error(w, "decode: "+err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
-	writeBody(w, out)
+	return json.Marshal(parsed)
 }
 
 // handleEffectSound serves one WAV from the extracted data/wav tree. `file` is a
@@ -310,22 +325,21 @@ func handleEffectSound(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	b, err := objStore.Get(key)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	serveBytes(w, r, b, "audio/wav", api.CacheImmutable)
+	serveObject(w, r, key, api.CacheImmutable)
 }
 
 // soundKey folds a sound token to an object key under sounds/, rejecting any
 // attempt to climb out of that subtree.
+//
+// The case fold matches the server's soundPath and the bucket, which is
+// lowercased on upload. Without it a mixed-case token — /effect/sound?file=
+// StormGust — 200s on the server and 404s here.
 func soundKey(file string) (string, bool) {
-	f := strings.ReplaceAll(file, "\\", "/")
+	f := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(file, "\\", "/")))
 	if f == "" || strings.HasPrefix(f, "/") {
 		return "", false
 	}
-	if !strings.HasSuffix(strings.ToLower(f), ".wav") {
+	if !strings.HasSuffix(f, ".wav") {
 		f += ".wav"
 	}
 	clean := path.Clean(f)
@@ -333,11 +347,6 @@ func soundKey(file string) (string, bool) {
 		return "", false
 	}
 	return "sounds/" + clean, true
-}
-
-func ifNoneMatch(r *http.Request, etag string) bool {
-	m := r.Header.Get("If-None-Match")
-	return m != "" && strings.Contains(m, etag)
 }
 
 // rawJSBodyWriter is syumai/workers' escape hatch for handing the runtime a body
@@ -373,41 +382,72 @@ func writeBody(w http.ResponseWriter, body []byte) {
 // (data/{sprite,palette,imf}), so a miss here would not be authoritative — R2
 // itself is the authority for these prefixes.
 func serveObject(w http.ResponseWriter, r *http.Request, key, cacheControl string) {
+	// A validator this isolate already knows answers a conditional request
+	// without reading the object at all. That matters most where it costs most: a
+	// BGM track is 2-4 MB, and both the R2 read and the SHA-256 over it would be
+	// thrown away on the 304.
+	if etag, ok := knownETag(key); ok && api.IfNoneMatch(r, etag) {
+		api.SetAssetHeaders(w, etag, cacheControl)
+		w.Header().Set("Content-Type", contentTypeFor(key))
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	b, err := objStore.Get(key)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	serveBytes(w, r, b, contentTypeFor(key), cacheControl)
+	etag := api.ETagForBytes(b)
+	rememberETag(key, etag)
+	serveBytes(w, r, b, etag, contentTypeFor(key), cacheControl)
 }
 
-func serveBytes(w http.ResponseWriter, r *http.Request, body []byte, contentType, cacheControl string) {
-	etag := api.ETagForBytes(body)
-	setAssetHeaders(w, etag, cacheControl)
+// etagByKey memoises content validators per object key, for this isolate. The
+// maps/bgm working set is small (~620 requests per six hours across the whole
+// store), but the ceiling is there so an unusual traffic pattern cannot grow the
+// map without bound.
+const maxETagEntries = 4096
+
+var (
+	etagMu    sync.Mutex
+	etagByKey = map[string]string{}
+)
+
+func knownETag(key string) (string, bool) {
+	etagMu.Lock()
+	defer etagMu.Unlock()
+	e, ok := etagByKey[key]
+	return e, ok
+}
+
+func rememberETag(key, etag string) {
+	etagMu.Lock()
+	defer etagMu.Unlock()
+	if len(etagByKey) >= maxETagEntries {
+		// Dropping the lot is fine: these are a pure optimisation, and the next
+		// request for a key re-derives it.
+		etagByKey = make(map[string]string, maxETagEntries)
+	}
+	etagByKey[key] = etag
+}
+
+// skillMapETag / effectTableETag validate two //go:embed blobs whose bytes are
+// fixed for the life of the build, so they are hashed once per isolate rather
+// than on every request — 171 KB of SHA-256 in wasm is not free.
+var (
+	skillMapETag    = sync.OnceValue(func() string { return api.ETagForBytes(effect.SkillMapJSON) })
+	effectTableETag = sync.OnceValue(func() string { return api.ETagForBytes(effect.EffectTableJSON) })
+)
+
+func serveBytes(w http.ResponseWriter, r *http.Request, body []byte, etag, contentType, cacheControl string) {
+	api.SetAssetHeaders(w, etag, cacheControl)
 	w.Header().Set("Content-Type", contentType)
-	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+	if api.IfNoneMatch(r, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	writeBody(w, body)
-}
-
-// contentETag validates static bytes by their content. The server derives these
-// from mtime+size, which R2 has no equivalent of; hashing the bytes is stable
-// across re-uploads of identical content, so clients revalidate once at cutover
-// and then stop.
-func contentETag(b []byte) string {
-	return api.ETagForBytes(b)
-}
-
-// setAssetHeaders mirrors the server's: the cache policy, a quoted ETag, and the
-// wildcard CORS header every asset carries. The bytes are public and read-only,
-// so any origin may read them and a simple GET needs no preflight.
-func setAssetHeaders(w http.ResponseWriter, etag, cacheControl string) {
-	w.Header().Set("Cache-Control", cacheControl)
-	w.Header().Set("Etag", `"`+etag+`"`)
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 }
 
 func contentTypeFor(key string) string {
@@ -420,6 +460,8 @@ func contentTypeFor(key string) string {
 		return "image/jpeg"
 	case strings.HasSuffix(key, ".mp3"):
 		return "audio/mpeg"
+	case strings.HasSuffix(key, ".wav"):
+		return "audio/wav"
 	default:
 		return "application/octet-stream"
 	}

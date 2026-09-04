@@ -15,8 +15,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -101,8 +99,8 @@ func main() {
 		eng:          engine.New(cfg.resourceDir, resolve.DefaultTables()),
 		flight:       newFlightGroup(),
 		estore:       effect.NewStore(cfg.resourceDir),
-		skillMapETag: hashBytes(effect.SkillMapJSON),
-		effTableETag: hashBytes(effect.EffectTableJSON),
+		skillMapETag: api.ETagForBytes(effect.SkillMapJSON),
+		effTableETag: api.ETagForBytes(effect.EffectTableJSON),
 	}
 
 	if fi, err := os.Stat(cfg.iconsDir); err != nil || !fi.IsDir() {
@@ -212,7 +210,7 @@ func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 
 	// The ETag is a pure function of the (immutable) query, so a revalidating
 	// client that already holds these bytes can be answered without rendering.
-	if ifNoneMatch(r, etag) {
+	if api.IfNoneMatch(r, etag) {
 		notModified(w, etag)
 		return
 	}
@@ -257,7 +255,7 @@ func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 	// same query (their bytes differ).
 	etag := api.ETagFor(q) + "-gif"
 
-	if ifNoneMatch(r, etag) {
+	if api.IfNoneMatch(r, etag) {
 		notModified(w, etag)
 		return
 	}
@@ -284,13 +282,6 @@ func (s *server) serveBytes(w http.ResponseWriter, r *http.Request, data []byte,
 	s.serveReader(w, r, bytes.NewReader(data), time.Time{}, etag, contentType)
 }
 
-// The two cache policies the gateway serves under. Renders, icons, effects, maps
-// and BGM are content-addressed by their ETag (a new build means a new URL or a
-// new validator), so they may be pinned forever. The /raw JSON tables are the
-// exception: they are mutable at a stable URL — regenerated after a Ragnarok
-// client update — so they get a short TTL plus mandatory revalidation, which
-// keeps the ETag doing the real work without pinning stale data for a year.
-
 // serveReader is the shared response path for renders (a bytes.Reader) and icons
 // (an open *os.File). It sets the immutable asset cache/CORS headers and lets
 // http.ServeContent handle If-None-Match against our ETag plus range requests.
@@ -303,17 +294,8 @@ func (s *server) serveReader(w http.ResponseWriter, r *http.Request, content io.
 // before http.ServeContent runs, a 304 it generates carries this same policy.
 func (s *server) serveReaderCache(w http.ResponseWriter, r *http.Request, content io.ReadSeeker, modTime time.Time, etag, contentType, cacheControl string) {
 	w.Header().Set("Content-Type", contentType)
-	setAssetHeaders(w, etag, cacheControl)
+	api.SetAssetHeaders(w, etag, cacheControl)
 	http.ServeContent(w, r, "", modTime, content)
-}
-
-// setAssetHeaders applies the caller's cache policy and the wildcard CORS header
-// shared by every served asset. The bytes are public and read-only, so any origin
-// may read them and a simple GET needs no preflight.
-func setAssetHeaders(w http.ResponseWriter, etag, cacheControl string) {
-	w.Header().Set("Cache-Control", cacheControl)
-	w.Header().Set("Etag", `"`+etag+`"`)
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 }
 
 // fileETag derives a strong validator for a static file from its mtime+size. The
@@ -328,26 +310,8 @@ func fileETag(fi os.FileInfo) string {
 // Only the immutable handlers take this path — /raw's 304 comes out of
 // http.ServeContent, which reuses the headers serveReaderCache already set.
 func notModified(w http.ResponseWriter, etag string) {
-	setAssetHeaders(w, etag, api.CacheImmutable)
+	api.SetAssetHeaders(w, etag, api.CacheImmutable)
 	w.WriteHeader(http.StatusNotModified)
-}
-
-// ifNoneMatch reports whether the request's If-None-Match header already lists
-// our (strong) ETag — i.e. the client holds these exact bytes. Handles a
-// comma-separated list, the "*" wildcard, and a weak "W/" prefix.
-func ifNoneMatch(r *http.Request, etag string) bool {
-	inm := r.Header.Get("If-None-Match")
-	if inm == "" {
-		return false
-	}
-	quoted := `"` + etag + `"`
-	for _, part := range strings.Split(inm, ",") {
-		p := strings.TrimSpace(part)
-		if p == "*" || p == quoted || p == "W/"+quoted {
-			return true
-		}
-	}
-	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -543,7 +507,7 @@ func (s *server) handleEffectStr(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	etag := api.ETagFor(r.URL.Query()) + "-effstr"
-	if ifNoneMatch(r, etag) {
+	if api.IfNoneMatch(r, etag) {
 		notModified(w, etag)
 		return
 	}
@@ -583,7 +547,7 @@ func (s *server) handleEffectTexture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	etag := api.ETagFor(r.URL.Query()) + "-efftex"
-	if ifNoneMatch(r, etag) {
+	if api.IfNoneMatch(r, etag) {
 		notModified(w, etag)
 		return
 	}
@@ -711,17 +675,11 @@ func (s *server) soundPath(name string) (string, bool) {
 // serveEmbeddedJSON serves a fixed embedded JSON blob with the shared immutable
 // cache/CORS headers and conditional-request support against its precomputed ETag.
 func (s *server) serveEmbeddedJSON(w http.ResponseWriter, r *http.Request, data []byte, etag string) {
-	if ifNoneMatch(r, etag) {
+	if api.IfNoneMatch(r, etag) {
 		notModified(w, etag)
 		return
 	}
 	s.serveBytes(w, r, data, etag, "application/json")
-}
-
-// hashBytes is the strong validator for a fixed byte blob (the embedded tables).
-func hashBytes(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
 }
 
 // ---------------------------------------------------------------------------

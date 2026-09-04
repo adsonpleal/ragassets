@@ -118,13 +118,24 @@ func LoadManifest(r io.Reader) (*Manifest, error) {
 	}
 	count := binary.LittleEndian.Uint32(head[len(manifestMagic):])
 
-	body := make([]byte, 8*int(count))
-	if _, err := io.ReadFull(r, body); err != nil {
-		return nil, fmt.Errorf("manifest: read %d hashes: %w", count, err)
-	}
+	// Decoded in chunks straight into hashes rather than through one big
+	// intermediate slice: the manifest is 1.44 MiB, and reading it whole before
+	// converting would peak at ~2.9 MiB for a 1.44 MiB structure — worth avoiding
+	// on a cold start inside a 128 MB isolate.
 	hashes := make([]uint64, count)
-	for i := range hashes {
-		hashes[i] = binary.LittleEndian.Uint64(body[8*i:])
+	var buf [8 << 10]byte
+	for i := 0; i < len(hashes); {
+		n := len(hashes) - i
+		if n > len(buf)/8 {
+			n = len(buf) / 8
+		}
+		if _, err := io.ReadFull(r, buf[:8*n]); err != nil {
+			return nil, fmt.Errorf("manifest: read %d hashes: %w", count, err)
+		}
+		for j := 0; j < n; j++ {
+			hashes[i+j] = binary.LittleEndian.Uint64(buf[8*j:])
+		}
+		i += n
 	}
 	// Sortedness is what the lookup relies on, and a file that lost it would
 	// silently answer "no" for real keys, so check rather than trust.

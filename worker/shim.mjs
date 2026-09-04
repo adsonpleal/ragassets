@@ -28,6 +28,7 @@
 // current request's ctx, not through Go.
 import "./wasm_exec.js";
 import { createRuntimeContext, loadModule } from "./runtime.mjs";
+import { PATCH_INDEX, parsePatchList } from "./patchlist.mjs";
 
 // The Go program does not stay alive indefinitely. workers.Serve() parks main on
 // a channel, but Go's js/wasm runtime exits once its event loop has nothing
@@ -38,10 +39,10 @@ import { createRuntimeContext, loadModule } from "./runtime.mjs";
 // periods and looks like flakiness.
 //
 // So the instance is cached but treated as disposable. go.run()'s promise
-// resolves when main returns, which is used to drop the cached instance the
-// moment it dies; a request that races that window retries once on a fresh one.
+// resolves when main returns, which drops the cached instance the moment it
+// dies, and every dispatch re-checks the runtime's own exit flag first.
 let mod;
-let booting; // Promise<binding>, shared by every request that arrives during boot
+let booting; // Promise<{go, binding}>, shared by every request arriving during boot
 
 globalThis.tryCatch = (fn) => {
   try {
@@ -72,7 +73,9 @@ function boot(env, ctx) {
       if (booting === thisBoot) booting = undefined;
     });
     await readyPromise;
-    return binding;
+    // go travels with the binding so a dispatch can ask the runtime whether it
+    // is still alive, rather than inferring it from a thrown message.
+    return { go, binding };
   })().catch((e) => {
     if (booting === thisBoot) booting = undefined;
     throw e;
@@ -82,16 +85,26 @@ function boot(env, ctx) {
 }
 
 async function fetch(req, env, ctx) {
+  let inst = await boot(env, ctx);
+  // wasm_exec.js sets go.exited synchronously as main returns, and JS here is
+  // single-threaded, so testing it immediately before dispatch closes the window
+  // between the instance dying and go.run()'s .finally clearing the cache. The
+  // alternative — call into the corpse and match the thrown message — depends on
+  // the wording of a string in a generated file that tools/build-worker.sh
+  // re-emits from whatever Go toolchain is present.
+  if (inst.go.exited) {
+    booting = undefined;
+    inst = await boot(env, ctx);
+  }
   try {
-    const binding = await boot(env, ctx);
-    return await binding.handleRequest(req);
+    return await inst.binding.handleRequest(req);
   } catch (e) {
-    // One retry, for the window between the instance dying and the exit handler
-    // clearing it. A second failure is a real error and belongs to the caller.
+    // Backstop for any exit path that does not set the flag before throwing. A
+    // second failure is a real error and belongs to the caller.
     if (!/already exited/.test(String(e && e.message))) throw e;
     booting = undefined;
-    const binding = await boot(env, ctx);
-    return await binding.handleRequest(req);
+    const fresh = await boot(env, ctx);
+    return await fresh.binding.handleRequest(req);
   }
 }
 
@@ -104,23 +117,8 @@ async function fetch(req, env, ctx) {
 // answer is "no change" essentially every time.
 // ---------------------------------------------------------------------------
 
-const PATCH_INDEX = "https://ro1patch.gnjoylatam.com/LIVE/patchinfo/patch.txt";
 const STATE_ETAG = "patch_etag";
 const STATE_SEQ = "last_seq";
-
-// parsePatchList reads the index: "<seq> <filename>" per line. A tab-indented
-// line prefixed with // is a patch that was pulled after release — the official
-// patcher skips those and so do we, though the files often still exist on the
-// CDN.
-function parsePatchList(text) {
-  const out = [];
-  for (const raw of text.split(/\r?\n/)) {
-    if (!raw.trim() || /^\s*\/\//.test(raw)) continue;
-    const m = raw.match(/^\s*(\d+)[\s\t]+(\S+)\s*$/);
-    if (m) out.push({ seq: Number(m[1]), file: m[2] });
-  }
-  return out;
-}
 
 async function scheduled(event, env, ctx) {
   const kv = env.UPDATE_STATE;

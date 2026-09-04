@@ -19,40 +19,20 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+. tools/lib.sh
 
 OUT="${1:-public}"
 REMOTE="${2:-r2:ragassets}"
 
-RCLONE="$(command -v rclone || true)"
-[ -z "$RCLONE" ] && [ -x "_scratch/tools/rclone.exe" ] && RCLONE="_scratch/tools/rclone.exe"
-[ -z "$RCLONE" ] && [ -x "_scratch/tools/rclone" ] && RCLONE="_scratch/tools/rclone"
-if [ -z "$RCLONE" ]; then
-  echo "rclone not found. Install it, or drop the binary in _scratch/tools/." >&2
-  exit 1
-fi
+find_rclone
 
 echo "Hydrating $OUT from $REMOTE/static"
 mkdir -p "$OUT"
-"$RCLONE" copy "$REMOTE/static" "$OUT" \
-  --s3-no-check-bucket \
-  --transfers 32 \
-  --checkers 64 \
-  --checksum \
-  --stats-one-line
+"$RCLONE" copy "$REMOTE/static" "$OUT" "${R2_ARGS[@]}"
 
 # The cache policy is committed, not stored in R2, so it tracks the code rather
 # than the assets. Without it Static Assets serves max-age=0 and the icons —
 # 69% of traffic — revalidate on every request instead of being cached.
 cp -f worker/_headers "$OUT/_headers"
 
-n=$(find "$OUT" -type f | wc -l)
-echo "  $OUT holds $n file(s)"
-if [ "$n" -lt 39000 ]; then
-  echo "  suspiciously few files — expected ~39,241; refusing to let a partial" >&2
-  echo "  hydration deploy and delete live assets." >&2
-  exit 1
-fi
-if [ "$n" -gt 100000 ]; then
-  echo "  OVER the Static Assets limit of 100,000 files per version" >&2
-  exit 1
-fi
+check_asset_count "$OUT" 39000

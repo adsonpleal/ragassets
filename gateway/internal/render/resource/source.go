@@ -14,9 +14,9 @@ import (
 //
 // Splitting them apart is what makes the async case tractable: the caller
 // resolves what a render needs (using Existence, which is cheap and answerable
-// from a baked manifest), fetches those keys in one batch, and hands the engine a
-// MapSource it can read synchronously. The engine, the caches, and every parser
-// below them stay unchanged and unaware.
+// from a baked manifest) and fetches those keys in one concurrent batch before
+// the render starts, so every read the engine then makes is answered locally. The
+// engine, the caches, and every parser below them stay unchanged and unaware.
 //
 // A key is a forward-slashed path relative to the resource tree's data/
 // directory, extension included:
@@ -69,9 +69,9 @@ func (e FSExistence) Has(key string) bool {
 	return err == nil
 }
 
-// MapSource serves keys from memory. It is what a prefetching caller hands the
-// engine once it has gathered a render's bytes, and it is the whole reason the
-// engine never has to know that a fetch might be asynchronous.
+// MapSource serves keys from memory — a Source over bytes a caller already
+// holds. The golden tests use it to drive a render entirely from a fixture set,
+// which is what proves the engine never reaches past its Source.
 //
 // A key that was not prefetched is a miss, not an empty read: returning
 // fs.ErrNotExist rather than nil bytes keeps the failure loud, because a silent
@@ -83,22 +83,4 @@ func (m MapSource) Get(key string) ([]byte, error) {
 		return b, nil
 	}
 	return nil, fmt.Errorf("resource %q not prefetched: %w", key, fs.ErrNotExist)
-}
-
-// MapExistence answers from the same map, for tests and for callers that have
-// already narrowed the candidate set.
-type MapExistence map[string][]byte
-
-func (m MapExistence) Has(key string) bool {
-	_, ok := m[key]
-	return ok
-}
-
-// SetExistence answers from a bare key set — the shape a baked manifest takes,
-// where the keys are known but the bytes are not held.
-type SetExistence map[string]struct{}
-
-func (s SetExistence) Has(key string) bool {
-	_, ok := s[key]
-	return ok
 }

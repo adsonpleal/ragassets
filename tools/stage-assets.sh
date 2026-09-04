@@ -23,14 +23,25 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+. tools/lib.sh
 
 RESOURCES="resources"
 OUT="public"
 CHECK=""
+# Counted by position rather than by "has this still got its default value?" —
+# that test assigned a literal first argument of "resources" to OUT instead.
+npos=0
 for a in "$@"; do
   case "$a" in
     --check) CHECK=1 ;;
-    *) if [ "$RESOURCES" = "resources" ]; then RESOURCES="$a"; else OUT="$a"; fi ;;
+    *)
+      npos=$((npos + 1))
+      case "$npos" in
+        1) RESOURCES="$a" ;;
+        2) OUT="$a" ;;
+        *) echo "unexpected argument: $a" >&2; exit 1 ;;
+      esac
+      ;;
   esac
 done
 
@@ -47,9 +58,10 @@ if [ -n "$CHECK" ]; then
   total=0
   echo "  store      files      bytes  largest"
   for s in "${STORES[@]}"; do
-    n=$(find "$RESOURCES/$s" -type f | wc -l)
-    b=$(find "$RESOURCES/$s" -type f -printf '%s\n' | awk '{t+=$1} END {print t+0}')
-    big=$(find "$RESOURCES/$s" -type f -printf '%s\n' | sort -n | tail -1)
+    # One traversal, three numbers. Walking ~39k files three times per store to
+    # count, sum and max them is twelve passes for four figures.
+    read -r n b big < <(find "$RESOURCES/$s" -type f -printf '%s\n' |
+      awk '{n++; t+=$1; if ($1>m) m=$1} END {print n+0, t+0, m+0}')
     total=$((total + n))
     awk -v s="$s" -v n="$n" -v b="$b" -v big="$big" 'BEGIN {
       printf "  %-8s %7d  %8.1f MB  %.2f MB\n", s, n, b/1048576, big/1048576 }'
@@ -83,9 +95,4 @@ done
 # repeat URLs — would revalidate on every request instead of being cached.
 cp -f worker/_headers "$OUT/_headers"
 
-n=$(find "$OUT" -type f | wc -l)
-echo "  $OUT holds $n file(s) (including _headers)"
-if [ "$n" -gt 100000 ]; then
-  echo "  OVER the Static Assets limit of 100,000 files per version" >&2
-  exit 1
-fi
+check_asset_count "$OUT" 39000

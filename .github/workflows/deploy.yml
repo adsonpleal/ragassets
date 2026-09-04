@@ -12,17 +12,30 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Deploys to staging until cutover. assets.latam-tools.com.br still points at
-  # the EC2 gateway, so the production env carries no route yet; at cutover this
-  # becomes `production` and the route moves with it.
-  WRANGLER_ENV: staging
   VERIFY_HOST: https://assets-next.latam-tools.com.br
 
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
+    # Job-scoped so every rclone step sees them. Repeating the block per step is
+    # how a renamed or added variable gets missed in one copy, and the failure
+    # surfaces as a mid-run 403 that reads like a credentials problem.
+    env:
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
     steps:
       - uses: actions/checkout@v5
+
+      # The wrangler environment to deploy comes from .github/deploy-env, not
+      # from a literal here, because update-assets.yml deploys too. Two copies
+      # would mean that at cutover someone flips this one and the patch pipeline
+      # keeps shipping every client update to staging — production silently stops
+      # receiving new sprites, with both workflows green.
+      - name: Resolve the deploy target
+        run: echo "WRANGLER_ENV=$(cat .github/deploy-env)" >> "$GITHUB_ENV"
 
       # 22, not 20: wrangler refuses to run on anything below v22, and it is the
       # version that actually publishes. Matches the local toolchain.
@@ -65,18 +78,24 @@ jobs:
       - name: Install rclone
         run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone
 
+      # ./public is 298 MB across 39,241 files and only changes when a client
+      # update ships new static assets. Restoring it turns the hydrate below into
+      # a checksum reconcile — a bucket listing and almost no transfer — rather
+      # than a full re-download on every run. rclone still runs either way, so a
+      # stale cache cannot deploy stale assets.
+      - name: Cache the static assets
+        uses: actions/cache@v4
+        with:
+          path: public
+          key: static-assets-${{ github.run_id }}
+          restore-keys: static-assets-
+
       # CI has no extracted client, so ./public is rebuilt from the copy in R2.
       # wrangler needs it present: deploying with `assets` configured and the
       # directory missing reads as "all 39,241 assets deleted", which would take
       # the icons offline. hydrate-assets.sh refuses to continue on a short
       # download for exactly that reason.
       - name: Hydrate the static assets
-        env:
-          RCLONE_CONFIG_R2_TYPE: s3
-          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
-          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
         run: ./tools/hydrate-assets.sh
 
       # Deliberately NOT cloudflare/wrangler-action: it installs its own wrangler

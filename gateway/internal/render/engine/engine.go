@@ -70,15 +70,23 @@ func New(resourceRoot string, tables resolve.Tables) *Engine {
 	)
 }
 
-// NewWithSource builds an Engine over an arbitrary resource Source and Existence.
-// The filesystem case is just New; this is what a build serving from an object
-// store uses, handing in a prefetched MapSource per render.
+// NewWithSource builds an Engine over an arbitrary resource Source and Existence
+// with the default cache budgets. The filesystem case is just New; this is what a
+// build serving from an object store uses.
 func NewWithSource(src resource.Source, ex resource.Existence, tables resolve.Tables) *Engine {
+	return NewWithSourceBudget(src, ex, tables, 0, 0)
+}
+
+// NewWithSourceBudget is NewWithSource with explicit spr/act cache byte budgets,
+// for a build whose memory ceiling is not the server's — the defaults are sized
+// for ~500 MiB and do not fit a 128 MB Workers isolate. Values <= 0 take the
+// defaults.
+func NewWithSourceBudget(src resource.Source, ex resource.Existence, tables resolve.Tables, sprBytes, actBytes int64) *Engine {
 	if tables == nil {
 		tables = resolve.NopTables{}
 	}
 	return &Engine{
-		mgr:    resource.NewManagerWithSource(src, ex, resource.DefaultSprCacheBytes, resource.DefaultActCacheBytes),
+		mgr:    resource.NewManagerWithSource(src, ex, sprBytes, actBytes),
 		ex:     ex,
 		res:    resolve.New(tables),
 		tables: tables,
@@ -91,7 +99,6 @@ func (e *Engine) Plan(req Request) Plan {
 	return BuildPlan(req, e.res, e.ex)
 }
 
-// Render produces the frames for a request.
 // Render produces the frames for a request, resolving the plan itself. This is
 // the direct path — it probes for existence as it goes, which is what you want
 // against a local disk.

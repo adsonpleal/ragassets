@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -332,3 +333,36 @@ const RootHelp = "ragassets-gateway — renders and serves Ragnarok Online sprit
 	"     /bgm/210.mp3               (one background-music track)\n" +
 	"     /raw/mobs.json             (a prebuilt JSON data table)\n\n" +
 	"See the README for every supported parameter.\n"
+
+// IfNoneMatch reports whether the request's If-None-Match header already lists
+// this (strong) ETag — i.e. the client holds these exact bytes. It handles a
+// comma-separated list, the "*" wildcard, and a weak "W/" prefix, and compares
+// against the *quoted* tag.
+//
+// The quoting is what makes it safe to derive one validator from another. /gif's
+// tag is /image's with "-gif" appended, so a substring test would report a match
+// for a client holding "<hash>-gif" that asks for "<hash>" — a 304 for bytes it
+// does not have. Comparing whole quoted entries cannot do that.
+func IfNoneMatch(r *http.Request, etag string) bool {
+	inm := r.Header.Get("If-None-Match")
+	if inm == "" {
+		return false
+	}
+	quoted := `"` + etag + `"`
+	for _, part := range strings.Split(inm, ",") {
+		p := strings.TrimSpace(part)
+		if p == "*" || p == quoted || p == "W/"+quoted {
+			return true
+		}
+	}
+	return false
+}
+
+// SetAssetHeaders applies a cache policy, a quoted ETag, and the wildcard CORS
+// header every served asset carries. The bytes are public and read-only, so any
+// origin may read them and a simple GET needs no preflight.
+func SetAssetHeaders(w http.ResponseWriter, etag, cacheControl string) {
+	w.Header().Set("Cache-Control", cacheControl)
+	w.Header().Set("Etag", `"`+etag+`"`)
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+}

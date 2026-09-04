@@ -26,8 +26,21 @@ concurrency:
 jobs:
   apply:
     runs-on: ubuntu-latest
+    # See the same block in deploy.yml: job-scoped so every rclone step shares
+    # one definition.
+    env:
+      RCLONE_CONFIG_R2_TYPE: s3
+      RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+      RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
     steps:
       - uses: actions/checkout@v5
+
+      # One definition of the deploy target, shared with deploy.yml. See the
+      # comment there for why this is not a literal.
+      - name: Resolve the deploy target
+        run: echo "WRANGLER_ENV=$(cat .github/deploy-env)" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -51,18 +64,15 @@ jobs:
             exit 1
           fi
 
-          # A zero or absurdly low sequence means the poll's KV state was lost or
-          # never seeded, and taking it at face value would replay the entire
-          # patch history — 842 archives and several GB — to rebuild a tree R2
-          # already holds. Seed UPDATE_STATE/last_seq to the current head and
-          # re-run instead.
-          if [ "$from" -lt 1000 ] 2>/dev/null; then
-            echo "starting sequence $from is implausibly low." >&2
-            echo "That replays the whole patch history rather than the new patches." >&2
-            echo "Seed the poll state first:" >&2
-            echo "  wrangler kv key put --namespace-id <ns> last_seq <current head> --remote" >&2
-            exit 1
-          fi
+          # The real guard is in tools/apply-patches.mjs, which refuses to apply
+          # more than MAX_PATCHES archives in one run. That bounds the quantity
+          # this is actually protecting — archives downloaded and extracted —
+          # rather than trusting a sequence number to look sensible, which a
+          # legitimate-looking `from` well behind a moved head does not.
+          #
+          # If it fires, the poll's KV state was lost or never seeded. Seed it to
+          # the current head and re-run:
+          #   wrangler kv key put --namespace-id <ns> last_seq <head> --remote
 
           echo "from=$from" >> "$GITHUB_OUTPUT"
           echo "applying patches after seq $from"
@@ -88,6 +98,8 @@ jobs:
       # its icon.
       - name: Select the servable files
         id: select
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
           mkdir -p upload
           found=0
@@ -103,18 +115,21 @@ jobs:
           echo "count=$found" >> "$GITHUB_OUTPUT"
           echo "servable files: $found"
 
+          # One decision, recorded once. The publish steps below all ask the same
+          # question — is there anything to ship, and are we allowed to ship it —
+          # and repeating the compound condition on each is how they drift.
+          if [ "$found" -gt 0 ] && [ "$DRY_RUN" != "true" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Nothing to do
         if: steps.select.outputs.count == '0'
         run: echo "This patch run touched nothing the Worker serves. Stopping."
 
       - name: Upload to R2
-        if: steps.select.outputs.count != '0' && github.event.inputs.dry_run != 'true'
-        env:
-          RCLONE_CONFIG_R2_TYPE: s3
-          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
-          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        if: steps.select.outputs.proceed == 'true'
         run: |
           rclone copy upload r2:ragassets \
             --s3-no-check-bucket --transfers 32 --checkers 64 --checksum --stats-one-line
@@ -122,13 +137,7 @@ jobs:
       # Rebuilt from the bucket listing rather than a local tree, because CI has
       # no extracted client. Verified byte-identical to the tree-walked manifest.
       - name: Rebuild the existence manifest
-        if: steps.select.outputs.count != '0' && github.event.inputs.dry_run != 'true'
-        env:
-          RCLONE_CONFIG_R2_TYPE: s3
-          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
-          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+        if: steps.select.outputs.proceed == 'true'
         run: |
           : > r2keys.txt
           for d in sprite palette imf; do
@@ -139,27 +148,35 @@ jobs:
           (cd gateway && go run ./cmd/gen-manifest -keys ../r2keys.txt -out ../exists.bin)
           rclone copyto exists.bin r2:ragassets/manifest/exists.bin --s3-no-check-bucket
 
+      # ./public is 298 MB across 39,241 files and only changes when a client
+      # update ships new static assets. Restoring it turns the hydrate below into
+      # a checksum reconcile — a bucket listing and almost no transfer — rather
+      # than a full re-download on every run. rclone still runs either way, so a
+      # stale cache cannot deploy stale assets.
+      - name: Cache the static assets
+        if: steps.select.outputs.proceed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: public
+          key: static-assets-${{ github.run_id }}
+          restore-keys: static-assets-
+
       # A deploy is how the edge cache is invalidated: DEPLOY_EPOCH is part of
       # every cache key, so bumping it drops the whole internal cache at once.
       # Purge-by-URL is capped at 30 URLs a call and prefix purge is Enterprise,
       # so this is the only workable invalidation.
       - name: Redeploy to bump the cache epoch
-        if: steps.select.outputs.count != '0' && github.event.inputs.dry_run != 'true'
+        if: steps.select.outputs.proceed == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          RCLONE_CONFIG_R2_TYPE: s3
-          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
-          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
         run: |
           DEPLOY_EPOCH="$(date +%s)" ./tools/build-worker.sh
           ./tools/hydrate-assets.sh
-          npx wrangler@4 deploy --env staging
+          npx wrangler@4 deploy --env "$WRANGLER_ENV"
 
       - name: Announce in Discord
-        if: steps.select.outputs.count != '0' && github.event.inputs.dry_run != 'true'
+        if: steps.select.outputs.proceed == 'true'
         continue-on-error: true
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}

@@ -29,6 +29,9 @@ go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go
 # re-fetches the existence manifest from R2 every time and throws away the
 # renderer's parse caches. See worker/shim.mjs.
 cp ../worker/shim.mjs ./build/worker.mjs
+# The shim imports patchlist.mjs as a sibling, so it has to land beside it —
+# wrangler bundles from build/worker.mjs and resolves relative imports there.
+cp ../worker/patchlist.mjs ./build/patchlist.mjs
 
 GOOS=js GOARCH=wasm go build \
   -ldflags="-s -w -X main.deployEpoch=$EPOCH" \

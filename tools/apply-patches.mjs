@@ -23,8 +23,16 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 
-const PATCH_INFO = "https://ro1patch.gnjoylatam.com/LIVE/patchinfo/patch.txt";
-const PATCH_FILE = "https://ro1patch.gnjoylatam.com/LIVE/patchfile";
+import { PATCH_INDEX, PATCH_FILE, parsePatchList } from "../worker/patchlist.mjs";
+
+// MAX_PATCHES bounds what one run will apply, unless --max says otherwise.
+//
+// This guards the quantity that actually costs something — archives downloaded
+// and extracted — rather than trusting the starting sequence to be sane. A lost
+// or unseeded poll state asks for everything since patch 0; so does a legitimate
+// -looking `--from-seq 1200` when the head has moved to 5000. Both are the same
+// mistake, and only a cap on the count catches both.
+const MAX_PATCHES = 60;
 
 function parseArgs(argv) {
   const out = {};
@@ -40,23 +48,10 @@ function parseArgs(argv) {
   return out;
 }
 
-// Mirrors the parser in worker/shim.mjs. A tab-indented line prefixed with // is
-// a patch that was pulled after release; the official patcher skips those and so
-// do we, though the files usually still exist on the CDN.
-function parsePatchList(text) {
-  const out = [];
-  for (const raw of text.split(/\r?\n/)) {
-    if (!raw.trim() || /^\s*\/\//.test(raw)) continue;
-    const m = raw.match(/^\s*(\d+)[\s\t]+(\S+)\s*$/);
-    if (m) out.push({ seq: Number(m[1]), file: m[2] });
-  }
-  return out;
-}
-
 async function fetchPatchList() {
   // No conditional request and no cache: this runs once per job and must see
   // the current index, not a cached one.
-  const res = await fetch(PATCH_INFO, { cache: "no-store" });
+  const res = await fetch(PATCH_INDEX, { cache: "no-store" });
   if (!res.ok) throw new Error(`patch.txt: HTTP ${res.status}`);
   return parsePatchList(await res.text());
 }
@@ -73,11 +68,14 @@ async function download(file, dest) {
   return { ok: true, bytes: buf.length };
 }
 
+// walk returns [relativePath, sizeInBytes] for every file under dir. The size
+// comes from the same stat the traversal already needs, so the report does not
+// walk the tree a second time to total it.
 function walk(dir, base = dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
     if (e.isDirectory()) walk(p, base, out);
-    else if (e.isFile()) out.push(p.slice(base.length + 1).split("\\").join("/"));
+    else if (e.isFile()) out.push([p.slice(base.length + 1).split("\\").join("/"), statSync(p).size]);
   }
   return out;
 }
@@ -106,6 +104,15 @@ async function main() {
     return;
   }
   if (!args.out) throw new Error("--out is required");
+  if (wanted.length > MAX_PATCHES) {
+    // Checked after --list-only, so a listing can still show what is pending.
+    throw new Error(
+      `${wanted.length} patches to apply exceeds the cap of ${MAX_PATCHES}. That is ` +
+        `a rebuild, not an update: it would re-download the archive history to ` +
+        `reproduce a tree R2 already holds. Seed the poll state to the current head ` +
+        `and re-run, or pass --max to take a deliberate slice.`,
+    );
+  }
   if (!wanted.length) {
     console.error("nothing to apply");
     writeFileSync("patch-report.json", JSON.stringify({ maxSeq, applied: [], files: [] }, null, 2));
@@ -145,11 +152,14 @@ async function main() {
   }
   rmSync(tmp, { recursive: true, force: true });
 
-  const files = existsSync(out) ? walk(out) : [];
+  const walked = existsSync(out) ? walk(out) : [];
+  const files = walked.map(([f]) => f);
   const byTop = {};
-  for (const f of files) {
+  let bytes = 0;
+  for (const [f, size] of walked) {
     const k = f.split("/").slice(0, 2).join("/");
     byTop[k] = (byTop[k] || 0) + 1;
+    bytes += size;
   }
 
   const report = {
@@ -157,7 +167,7 @@ async function main() {
     applied: applied.map((p) => p.seq),
     skipped: skipped.map((p) => ({ seq: p.seq, file: p.file, status: p.status ?? null })),
     fileCount: files.length,
-    bytes: files.reduce((n, f) => n + statSync(join(out, f)).size, 0),
+    bytes,
     byPrefix: byTop,
     files,
   };

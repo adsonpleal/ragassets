@@ -33,6 +33,9 @@ paths() {
 /healthz
 /effect/table
 /effect/skill-map
+/effect/sound?file=_blind
+/effect/sound?file=_BLIND
+/effect/str?file=stormgust
 /image?job=1&head=1&action=0&frame=0&enableShadow=false
 /image?job=1&head=1&action=0&frame=0&gender=female&enableShadow=false
 /image?job=1&head=1&action=0&frame=0&headgear=1&enableShadow=false
@@ -49,9 +52,12 @@ diff=0
 skip=0
 
 while IFS= read -r p; do
-  curl -s --max-time 90 "$NEW$p" -o "$tmp/new" -w '%{http_code}' > "$tmp/ncode" 2>/dev/null
-  curl -s --max-time 90 "$OLD$p" -o "$tmp/old" -w '%{http_code}' > "$tmp/ocode" 2>/dev/null
-  nc=$(cat "$tmp/ncode"); oc=$(cat "$tmp/ocode")
+  # content_type travels with the body. Comparing only bytes misses a response
+  # that is byte-identical but labelled differently, which a browser treats as a
+  # different resource entirely — exactly how /effect/sound briefly went out as
+  # application/octet-stream instead of audio/wav.
+  read -r nc nt < <(curl -s --max-time 90 "$NEW$p" -o "$tmp/new"     -w '%{http_code} %{content_type}' 2>/dev/null; echo)
+  read -r oc ot < <(curl -s --max-time 90 "$OLD$p" -o "$tmp/old"     -w '%{http_code} %{content_type}' 2>/dev/null; echo)
 
   if [ "$nc" != "$oc" ]; then
     printf '  DIFF  %-60s status %s vs %s\n' "${p:0:60}" "$nc" "$oc"
@@ -61,6 +67,12 @@ while IFS= read -r p; do
   if [ "$nc" != "200" ]; then
     printf '  skip  %-60s both %s\n' "${p:0:60}" "$nc"
     skip=$((skip+1))
+    continue
+  fi
+  if [ "${nt%%;*}" != "${ot%%;*}" ]; then
+    printf '  DIFF  %-60s type %s vs %s
+' "${p:0:60}" "${nt:-none}" "${ot:-none}"
+    diff=$((diff+1))
     continue
   fi
   if cmp -s "$tmp/new" "$tmp/old"; then

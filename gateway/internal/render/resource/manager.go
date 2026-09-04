@@ -103,8 +103,8 @@ func NewManagerWithBudget(root string, sprBytes, actBytes int64) *Manager {
 }
 
 // NewManagerWithSource builds a Manager over an arbitrary Source and Existence —
-// a prefetched MapSource in a Workers build, the filesystem on the server. The
-// caching, parsing and lookup behaviour is identical either way.
+// an object store in a Workers build, the filesystem on the server. The caching,
+// parsing and lookup behaviour is identical either way.
 func NewManagerWithSource(src Source, ex Existence, sprBytes, actBytes int64) *Manager {
 	if sprBytes <= 0 {
 		sprBytes = DefaultSprCacheBytes

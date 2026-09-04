@@ -123,7 +123,7 @@ func BuildPlan(req Request, res *resolve.Resolver, ex resource.Existence) Plan {
 			b.addImf(res.ImfName(jobID, req.Gender, req.Madogear))
 		}
 	} else {
-		b.planNonPlayer(req, &p)
+		b.planNonPlayer(req)
 	}
 
 	// shouldDrawShadow depends only on the job and action, never on file contents.
@@ -205,12 +205,14 @@ func (b *planBuilder) planPlayer(req Request, p *Plan) {
 	}
 }
 
-func (b *planBuilder) planNonPlayer(req Request, p *Plan) {
+// planNonPlayer does not set Plan.Body: only processPlayer reads it, and
+// processNonPlayer resolves the same name for itself. Writing it here would leave
+// a field that is correct only by accident on one of the two paths.
+func (b *planBuilder) planNonPlayer(req Request) {
 	bodyName := b.res.NonPlayerSprite(req.Job)
 	if bodyName == "" {
 		return
 	}
-	p.Body = bodyName
 	b.addSprite(bodyName, bodyName)
 
 	if resolve.IsMercenary(req.Job) {
