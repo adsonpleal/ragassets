@@ -43,6 +43,9 @@
 #   DRY_RUN=1 tools/sync-r2.sh          # show what would transfer
 set -euo pipefail
 
+cd "$(dirname "$0")/.."
+. tools/lib.sh
+
 RESOURCES="${1:-resources}"
 REMOTE="${2:-r2:ragassets}"
 

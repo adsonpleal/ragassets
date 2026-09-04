@@ -1,8 +1,9 @@
 # ragassets — a fast caching image/animation provider for Ragnarok Online sprites
 
 `ragassets` is a thin, fast HTTP layer that renders and serves Ragnarok Online
-sprites as images and animations, with aggressive on-disk caching so repeat
-requests are served instantly. It also serves the client's **item, collection,
+sprites as images and animations. Renders are computed per request and cached by
+the client — every response is immutable and carries an `ETag`, so browsers and
+CDNs keep them forever. It also serves the client's **item, collection,
 skill, class (job) and status-effect (buff/debuff) icons**, and the **full-size
 card artwork**, as static PNGs — those are plain files extracted straight from the
 GRF, no rendering involved.
@@ -51,6 +52,31 @@ monsters. Every one is just a URL — see the [API](#get-image) below.
 
 ## How it works
 
+The renderer is a library (`gateway/internal/render`) with two front ends. Both
+compile the same engine and are pinned to the same output by the golden tests, so
+a render is byte-identical whichever one serves it. The public instance runs the
+Cloudflare one; the plain Go binary is what you get when you self-host.
+
+**On Cloudflare — the engine compiled to WebAssembly:**
+
+```
+                     your domain (proxied)
+                             │
+        ┌────────────────────┴────────────────────┐
+        │  Workers Static Assets                  │  /icons /illust /effects /raw
+        │  requests free and unmetered            │  39k files — 69% of all traffic
+        └────────────────────┬────────────────────┘
+                             │  paths listed in run_worker_first
+        ┌────────────────────┴────────────────────┐
+        │  Worker — Go → wasm (cmd/worker)        │  /image /gif render here
+        │  reads R2 through the colo edge cache   │  /maps /bgm /effect/* from R2
+        └────────────────────┬────────────────────┘
+                             ▼
+                        R2 bucket (data/, maps/, bgm/, sounds/, manifest/)
+```
+
+**Self-hosted — a single Go binary reading a local tree:**
+
 ```
 client ──GET /image?job=1002&...──▶  gateway (Go)
                                        │  render in-process, stream bytes
@@ -59,6 +85,29 @@ client ──GET /image?job=1002&...──▶  gateway (Go)
                                        ▼
                               immutable bytes + ETag → browser/CDN caches them
 ```
+
+The two are held to each other by `tools/diff-origins.sh`, which replays real
+production URLs against both origins and compares bytes and `Content-Type`. That
+is the gate any change to the Worker has to pass.
+
+The split between the two tiers above is a cost decision, not an architectural
+one. Icons are 69% of traffic and 95% of their URLs repeat, so serving them as
+static assets keeps them off the Worker request budget entirely. Renders are the
+opposite — 93% of `/image` URLs are unique, so the CDN cannot help and each one
+has to be cheap to compute.
+
+Two things make the Worker viable, both measured rather than assumed:
+
+- **Reads are planned before they happen.** `BuildPlan` resolves every resource
+  key a render may touch without reading anything, using a baked existence
+  manifest instead of probing. Those keys are then fetched concurrently, so a
+  garment request costs one round trip rather than up to 41 serial ones.
+- **R2 is read through `caches.default`.** The files behind those unique URLs are
+  heavily shared, so the colo cache absorbs nearly all of it: 0.03–0.85 R2
+  GetObject per render depending on cache warmth, against a 6.47-key average
+  plan. The cache key carries a deploy epoch, which is how a deploy invalidates
+  everything at once — purge-by-URL is capped at 30 URLs a call and prefix purge
+  is Enterprise-only.
 
 - **Renders are served directly; caching is delegated to the client.** The
   gateway keeps **no disk cache** — every render is fast and in-process. Each
@@ -772,15 +821,105 @@ docker compose up --build
 - `./resources` is mounted read-only at `/resources` (set via `RESOURCE_DIR`).
   There is no render cache to persist — renders are served directly and cached by
   the client (see [How it works](#how-it-works)).
+- Compose is for local development. The public instance runs the gateway and
+  Caddy as native systemd services; there is no Docker in production.
+
+Every directory is configurable, and each defaults to the compose mount point:
+`RESOURCE_DIR`, `ICONS_DIR`, `ILLUST_DIR`, `EFFECTS_DIR`, `MAPS_DIR`, `BGM_DIR`,
+`SOUNDS_DIR`, `RAW_DIR`, plus `GATEWAY_PORT`.
+
+### Running it on Cloudflare
+
+How the public instance runs: the same renderer compiled to wasm, with assets in
+R2 instead of on disk. `wrangler.jsonc` and `.github/workflows/deploy.yml` are the
+whole configuration — a push to `main` tests, builds and deploys.
+
+Requires the **Workers Paid** plan: the free tier's 10 ms CPU limit cannot fit a
+12-frame APNG, and its 50-subrequest cap is below the garment worst case.
+
+```bash
+# 1. Bake the existence manifest into resources/manifest/exists.bin
+#    (sync-r2.sh refuses to run without it — the Worker cannot resolve a
+#    render's candidates without one)
+(cd gateway && go run ./cmd/gen-manifest -resources ../resources)
+
+# 2. Push resources/ to R2, ~15 GB (needs rclone and an [r2] remote;
+#    see the header of tools/sync-r2.sh for the config)
+tools/sync-r2.sh
+
+# 3. Stage the four Static Assets stores into ./public
+tools/stage-assets.sh
+
+# 4. Build the wasm bundle and deploy
+tools/build-worker.sh
+npx wrangler@4 deploy --env staging
+```
+
+On a machine with no extracted client — CI, for instance — `tools/stage-assets.sh`
+has nothing to read from. `tools/sync-r2.sh` therefore keeps a second copy of the
+four static stores under `static/` in the bucket, and `tools/hydrate-assets.sh`
+rebuilds `./public` from it. Those keys are never served; they exist so a code
+deploy does not require having the client.
+
+Two configuration traps, both documented at their definitions:
+
+- **`run_worker_first` must be an array, never `true`.** As a boolean it routes
+  every request through the Worker, which puts all 39k static assets on the
+  request budget and throws away the reason they are there.
+- **Static Assets defaults to `max-age=0, must-revalidate`.** `worker/_headers`
+  is what stops 159k cacheable icon requests becoming 159k revalidations.
+
+`deploy.yml` asserts both after every deploy by checking that an icon still comes
+back `immutable`.
+
+### Automated asset updates
+
+The game patches two or three times a day. A cron trigger in `worker/shim.mjs`
+polls the LATAM patch index every 10 minutes with a conditional request — a 304
+of 0 bytes when nothing changed — and on a new sequence sends a
+`repository_dispatch` to `.github/workflows/update-assets.yml`, which:
+
+1. downloads the new patches and unpacks them in order (`tools/apply-patches.mjs`);
+2. selects only the paths the Worker serves (`data/sprite`, `palette`, `imf`,
+   `texture/effect`) and uploads them to R2;
+3. rebuilds the existence manifest from the bucket listing;
+4. redeploys with a fresh `DEPLOY_EPOCH`, which invalidates the edge cache;
+5. announces what landed in the `#novidades` Discord channel
+   (`tools/post-novidades.mjs`), posting nothing when nothing user-visible changed.
+
+Run it by hand with `dry_run: true` to exercise everything up to step 2 without
+uploading, deploying or posting.
+
+**What this does not yet rebuild:** the derived stores — icons, illust, raw,
+maps, bgm, sounds. Those need a merged view of the whole client rather than one
+patch (`--icons` resolves ids through `iteminfo`, `--maps` needs a map's geometry
+together with its textures), so until the client mirror exists, a patch that adds
+an item updates its sprite here but not its icon. Re-run those modes locally and
+`tools/sync-r2.sh` as today.
 
 ### Layout
 
 ```
-docker-compose.yml        # the gateway service
+docker-compose.yml        # the gateway service (local development)
+wrangler.jsonc            # the Cloudflare Worker: bindings, routes, static assets
 gateway/                  # the Go gateway + in-process renderer (this project)
 gateway/internal/render/  # the native zrenderer reimplementation (parsers, raster, engine)
+gateway/internal/api/     # the contract the server and the Worker must share (query→request, ETags)
+gateway/cmd/worker/       # the Cloudflare Worker entry point (GOOS=js GOARCH=wasm)
 gateway/cmd/gen-resolver/ # offline tool: bakes id→sprite-name tables from the client .lub
 gateway/cmd/gen-skin-table/ # offline tool: bakes per-sprite skin-ramp palette indices
+gateway/cmd/gen-tables/   # offline tool: turns those JSON tables into Go source (no JSON at startup)
+gateway/cmd/gen-manifest/ # offline tool: bakes the existence manifest the Worker probes instead of R2
+worker/shim.mjs           # Worker entry: boots the wasm instance once per isolate; the patch poll
+worker/_headers           # cache policy for Workers Static Assets (mandatory — see above)
+tools/sync-r2.sh          # push resources/ to R2, plus the static/ mirror CI hydrates from
+tools/stage-assets.sh     # stage icons/illust/effects/raw into ./public for wrangler
+tools/hydrate-assets.sh   # rebuild ./public from R2, for machines with no extracted client
+tools/build-worker.sh     # cross-compile the renderer to wasm and stamp DEPLOY_EPOCH
+tools/diff-origins.sh     # compare two origins byte-for-byte — the cutover gate
+tools/apply-patches.mjs   # download and unpack client patches (.gpf and .rgz)
+tools/post-novidades.mjs  # announce an asset update in #novidades
+.github/workflows/        # deploy.yml (push → Cloudflare) and update-assets.yml (client patches)
 resources/                # YOUR extracted GRF assets (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*
 resources/illust/         # card artwork (extract-grf.mjs --illust), served at /illust/*
