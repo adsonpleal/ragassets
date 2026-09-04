@@ -34,8 +34,20 @@ jobs:
       # would mean that at cutover someone flips this one and the patch pipeline
       # keeps shipping every client update to staging — production silently stops
       # receiving new sprites, with both workflows green.
+      #
+      # "production" means the TOP-LEVEL config, which is why it maps to no --env
+      # flag at all. That config owns the live custom domain; a named
+      # env.production would be a second Worker under a different name competing
+      # for the same hostname.
       - name: Resolve the deploy target
-        run: echo "WRANGLER_ENV=$(cat .github/deploy-env)" >> "$GITHUB_ENV"
+        run: |
+          target="$(cat .github/deploy-env)"
+          echo "WRANGLER_ENV=$target" >> "$GITHUB_ENV"
+          if [ "$target" = "production" ]; then
+            echo "WRANGLER_ENV_FLAG=" >> "$GITHUB_ENV"
+          else
+            echo "WRANGLER_ENV_FLAG=--env $target" >> "$GITHUB_ENV"
+          fi
 
       # 22, not 20: wrangler refuses to run on anything below v22, and it is the
       # version that actually publishes. Matches the local toolchain.
@@ -110,7 +122,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler@4 deploy --env "$WRANGLER_ENV"
+        run: npx wrangler@4 deploy $WRANGLER_ENV_FLAG
 
       # A deploy that serves the wrong thing is worse than one that fails.
       #

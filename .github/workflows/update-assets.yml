@@ -37,10 +37,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # One definition of the deploy target, shared with deploy.yml. See the
-      # comment there for why this is not a literal.
+      # One definition of the deploy target, shared with deploy.yml.
+      #
+      # "production" means the TOP-LEVEL config, which is why it maps to no --env
+      # flag at all. That config owns the live custom domain; a named
+      # env.production would be a second Worker under a different name competing
+      # for the same hostname.
       - name: Resolve the deploy target
-        run: echo "WRANGLER_ENV=$(cat .github/deploy-env)" >> "$GITHUB_ENV"
+        run: |
+          target="$(cat .github/deploy-env)"
+          echo "WRANGLER_ENV=$target" >> "$GITHUB_ENV"
+          if [ "$target" = "production" ]; then
+            echo "WRANGLER_ENV_FLAG=" >> "$GITHUB_ENV"
+          else
+            echo "WRANGLER_ENV_FLAG=--env $target" >> "$GITHUB_ENV"
+          fi
       - uses: actions/setup-node@v5
         with:
           node-version: 22
@@ -173,7 +184,7 @@ jobs:
         run: |
           DEPLOY_EPOCH="$(date +%s)" ./tools/build-worker.sh
           ./tools/hydrate-assets.sh
-          npx wrangler@4 deploy --env "$WRANGLER_ENV"
+          npx wrangler@4 deploy $WRANGLER_ENV_FLAG
 
       - name: Announce in Discord
         if: steps.select.outputs.proceed == 'true'
