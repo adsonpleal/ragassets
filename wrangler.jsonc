@@ -57,6 +57,13 @@
 
   "observability": { "logs": { "enabled": true, "invocation_logs": true } },
 
+  // The live hostname. As a custom domain Cloudflare owns the DNS record and
+  // proxies it, which is what puts the Worker in front of the traffic — before
+  // cutover this name was an unproxied A record straight to the EC2 gateway.
+  "routes": [
+    { "pattern": "assets.latam-tools.com.br", "custom_domain": true }
+  ],
+
   "env": {
     // Staging exists because caches.default is inert on *.workers.dev. Hit rates
     // and R2 operation counts — the numbers that decide whether this costs ~$6 or
@@ -68,6 +75,12 @@
         { "binding": "UPDATE_STATE", "id": "ea027318b5124243bbf88f13ab73e0ab" }
       ],
       "vars": { "GITHUB_REPO": "adsonpleal/ragassets" },
+      // No cron here. triggers IS inherited, and staging shares production's KV
+      // namespace, so leaving it inherited would run two pollers against one
+      // last_seq — both could see the same new patch and dispatch it, or one
+      // could advance the state past work the other never did. Production polls;
+      // staging is for testing renders.
+      "triggers": { "crons": [] },
       // Only the keys Wrangler does NOT inherit are repeated here: r2_buckets,
       // kv_namespaces and vars are per-environment by design, so omitting them
       // would deploy staging with no bindings at all. assets, triggers and

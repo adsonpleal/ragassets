@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  VERIFY_HOST: https://assets-next.latam-tools.com.br
+  VERIFY_HOST: https://assets.latam-tools.com.br
 
 jobs:
   build_and_deploy:
