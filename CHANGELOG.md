@@ -3,6 +3,202 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-09-04
+
+### Fixed
+- **Every CI deploy stamped the same cache epoch.** `DEPLOY_EPOCH` is baked into
+  the wasm binary and forms part of every edge-cache key, so bumping it is how a
+  deploy invalidates the colo cache wholesale — the only invalidation available,
+  since purge-by-URL is capped at 30 URLs a call and roughly 1,000 a day, and
+  purge-by-prefix is Enterprise-only.
+
+  It defaulted to `git rev-list --count HEAD`, which rises on every commit. Except
+  under `actions/checkout`, which clones shallow: the count is **1** on every
+  commit, so the first CI deploy went out as epoch 1 and every later one would
+  have too. The failure is silent in the worst way — the build passes, the deploy
+  passes, and a client patch uploads to R2 while the edge keeps serving the bytes
+  it already had. `deploy.yml` now passes `github.run_number`, and
+  `build-worker.sh` refuses the commit-count default under a shallow clone rather
+  than emitting a number it knows is wrong.
+
+- **A `/gif` validator could win a `304` on `/image`.** The Worker tested
+  `strings.Contains(ifNoneMatch, etag)` — an unquoted substring match. `/gif`'s
+  ETag is `/image`'s with `-gif` appended, so a client holding `"<hash>-gif"` that
+  asked for `"<hash>"` matched, and got a 304 for bytes it does not have. The
+  server's comparison walks the comma-separated list and compares whole quoted
+  entries, which cannot do that; both now share it, in `internal/api`.
+
+- **The two origins published different ETags for identical bytes.** The server
+  hashed the embedded `/effect/table` and `/effect/skill-map` blobs to 64 hex
+  characters, the Worker to 32. Both now use `api.ETagForBytes`.
+
+- **`/effect/sound` did not fold case on the Worker.** `?file=StormGust` resolved
+  on the server and 404'd on the Worker, because the bucket is lowercased on
+  upload and only the server's `soundPath` lowercased the token.
+  `tools/diff-origins.sh` had no `/effect/sound` case and compared only status and
+  bytes, so it could not have caught this — it now compares `Content-Type` too,
+  which immediately caught a second one (`.wav` responses briefly going out as
+  `application/octet-stream`).
+
+- **`tools/*.sh` had never been executable.** Mode 644 since they were added,
+  which never mattered while everything ran as `bash tools/…` locally. The
+  workflows invoke them as `./tools/build-worker.sh`; the first CI run exited 126.
+
+### Changed
+- **A cleanup pass over the migration** — reuse, simplification, efficiency and
+  altitude — with behaviour held fixed by replaying 400 real production URLs
+  against both origins.
+
+  The substantive one: `Prefetch` built a 48 MB `MapSource` and its only caller
+  discarded the return value, so every key was read twice and the isolate briefly
+  held a second copy of the render's whole working set. It is a colo-cache warmer,
+  so it now says so and returns nothing — the mutex, the map and the byte budget
+  go with it. Alongside: the Worker was inheriting the server's cache budgets
+  (144 MiB, inside a 128 MB isolate — now 24/12 MiB); the existence manifest was
+  read straight off the R2 binding rather than through the epoch-keyed cache, one
+  billed operation and 1.44 MiB per isolate cold start rather than per colo per
+  deploy; and `serveObject` hashed a 2–4 MB BGM body before it could answer a
+  conditional request, discarding all of it on the 304.
+
+  `parsePatchList` existed twice — in the poll that decides which sequences are
+  new and in the applier that decides which to fetch. Drift between them either
+  updates nothing or advances `last_seq` past a patch that is then never revisited,
+  so it is now one module both import.
+
+- **The "sequence below 1000" guard was measuring the wrong thing.** It tested the
+  starting sequence as a proxy for how much work a run would do, which fails in
+  both directions: it rejects a legitimate `from=999` and accepts `from=1200` when
+  the head has moved to 5000. `tools/apply-patches.mjs` now caps the number of
+  archives one run will apply (60, `--max` to override deliberately), which is the
+  resource actually at risk.
+
+## 2026-09-03
+
+### Added
+- **The service runs on Cloudflare.** Same renderer, two front ends: a Worker
+  holding the Go engine compiled to WebAssembly, and Workers Static Assets in
+  front of it. Egress was the entire bill — roughly $31 of the ~$50–60/month went
+  on São Paulo bandwidth for ~310 GB across ~27M requests — and Cloudflare charges
+  nothing for it. Measured on staging, the whole thing lands at about **$5/month**,
+  which is the Workers Paid base; everything else is inside an included tier.
+
+  The tiering is a cost decision. Icons are **69% of all traffic** and 95% of their
+  URLs repeat, so they are served as static assets, where requests are free and
+  unmetered, and never reach the Worker's request budget. Renders are the
+  opposite — **93% of `/image` URLs are unique**, so the CDN cannot help and each
+  one has to be cheap to compute.
+
+  What makes R2 affordable is that unique URLs do not imply unique reads: the
+  sprite files behind them are heavily shared, so `caches.default` absorbs nearly
+  everything. Against Cloudflare's own `r2OperationsAdaptiveGroups`, replaying 150
+  real production URLs: **0.85 GetObject per render cold** (straight after a deploy
+  bumps the epoch), 0.58 partially warm, **0.03 fully warm** — against a 6.47-key
+  average plan. Even the cold figure extrapolates to 6.8M operations a month,
+  inside the 10M free tier. A design estimate of ~8 gets per render had put this at
+  $19–25/month and called R2 the dominant cost; the measurement is 9–260× better.
+
+  Two things about that cache are easy to get wrong, and both are now written down
+  where they are relied on: `caches.default` is **inert on `*.workers.dev`**, so a
+  hit rate measured there measures nothing; and the cache key carries a deploy
+  epoch, because there is no workable purge at this scale.
+
+- **`tools/sync-r2.sh`, and what does not belong in R2.** The renderer's inputs,
+  maps, bgm and sounds go to the bucket (~15 GB); icons, illust, effects and raw
+  do not — they are 39,241 files and 298 MB served by Static Assets, which caps at
+  100,000 files and 25 MiB each. `data/luafiles514` is baked into the binary at
+  build time and is mirrored but never read at runtime.
+
+  rclone against the S3 endpoint, not `wrangler r2 object put`: the REST API that
+  uses is rate-limited to about 1,200 requests per 5 minutes — measured, the first
+  429 landed after 1,327 — which would have put a full sync at roughly 16 hours.
+
+- **CI, and an automated update pipeline.** There was no `.github/` at all. A push
+  to `main` now runs both test suites, checks formatting, cross-compiles the
+  renderer to wasm, hydrates the static tree and deploys — then asserts that an
+  icon still comes back `immutable`, which catches both of the configuration traps
+  that cost real money (`run_worker_first` becoming a boolean, and Static Assets'
+  `max-age=0, must-revalidate` default reasserting itself).
+
+  The game patches two or three times a day, and updating assets had been a manual
+  local extraction followed by a sync. A cron trigger polls the LATAM patch index
+  every 10 minutes with a conditional request — 304 in 0 bytes and ~130 ms,
+  ~4,380 invocations a month — and dispatches a workflow that unpacks the new
+  patches, uploads what the Worker serves, rebuilds the manifest, redeploys to bump
+  the epoch, and announces the result. `patch.txt` ships
+  `Cache-Control: max-age=3600`, so the poll's fetch has to opt out explicitly or a
+  ten-minute poll silently becomes hourly.
+
+  The announcer posts to `#novidades` through the Discord bot REST API, like the
+  four sibling projects, but the body is counts computed from what the patch
+  actually delivered rather than hand-written changelog prose — and it posts
+  nothing when nothing user-visible changed.
+
+  **Not yet rebuilt by the pipeline:** icons, illust, raw, maps, bgm and sounds.
+  Those modes need a merged view of the whole client rather than one patch, so for
+  now a patch that adds an item updates its sprite but not its icon.
+
+## 2026-09-02
+
+### Added
+- **The renderer can serve from an object store.** `internal/render/resource` grew
+  a `Source`/`Existence` seam — bytes and existence, separately — with the
+  filesystem behind it on the server and R2 behind it on the Worker. The engine,
+  the caches and every parser below them are unchanged and unaware.
+
+  Splitting existence out is the point. The renderer probes far more often than it
+  reads: resolving a garment alone can test a dozen candidate `act`/`spr` pairs
+  before one hits, and each of those is a stat against a local disk but a network
+  round trip against a bucket. So `BuildPlan` now resolves a request — every key it
+  may touch, plus the three decisions that were being made mid-render by probing —
+  before a single byte is read, and `RenderPlanned` renders against that plan.
+  `Render` is `RenderPlanned(req, Plan(req))`, one code path, so the golden tests
+  still guard the real thing.
+
+- **A baked existence manifest.** 188,153 keys as sorted FNV-1a 64 hashes, 1.44 MiB,
+  binary-searched — `cmd/gen-manifest`. It covers the whole tree the Manager can
+  read rather than only the three subtrees that are probed today, because coupling
+  it to which probes exist would mean a probe added later gets a confident wrong
+  answer. It lives in R2 rather than compiled in, so shipping new sprites is an
+  upload instead of a redeploy.
+
+- **The extractor reads patch archives.** Three formats it could not: **GRF v1**
+  (`0x100`/`0x101`/`0x102`), which is what every `.gpf` patch is — encrypted
+  filenames, extension-derived DES, the `compSize`/`compSizeAligned` fixups;
+  **`.rgz`**, the loose half of a patch set carrying `System/**`, `RagHash.dat` and
+  `Ragexe.exe`; and a **mirrored client directory** presented as if it were an
+  opened archive.
+
+  That last one matters more than it sounds. Only `--extract` is correct when run
+  against a single patch: `--raw` and `--illust` throw without tables the patch
+  does not carry, and `--effects`, `--maps` and `--icons` fail *silently or
+  destructively* — `--effects` rewrites its `index.json` from whatever it happened
+  to resolve, clobbering the whole catalogue. Letting every mode read a merged tree
+  is what makes incremental updates safe rather than a source of quiet corruption.
+
+- **`extract-grf.mjs --robe-index`**, so the robe prune decision can be made from
+  a `path → md5` index instead of hydrating 4.5 GB of sprites to re-derive it.
+
+### Changed
+- **The cache budgets were counts, and the counts implied 219 MB.** 2000 `.spr` and
+  3000 `.act` entries, against measured averages of 41.1 KB across 81,040 sprites
+  and 45.6 KB across 102,345 act files — already over budget on the 500 MiB box and
+  nowhere near a 128 MB isolate. The doc comment putting `.act` at "~15 KB" was
+  stale by 3× and is what made the counts look safe. They are byte budgets now,
+  with a 2 MiB per-entry ceiling so one 19.5 MB monster sprite cannot evict the
+  entire hot set behind it.
+
+- **No JSON parsing and no `regexp` at startup.** The generated lookup tables were
+  352 KB unmarshalled in `init()` — a cost paid on every cold start, and
+  `encoding/json`'s reflection is the single biggest obstacle to compiling for a
+  WebAssembly target. `cmd/gen-tables` now turns the same committed JSON into Go
+  source, so the JSON files stay the reviewable artifact and a client update is
+  still a readable diff. `ParseCanvas` lost its regexp for a hand parser.
+
+- **The golden tests stopped skipping.** They passed vacuously in any tree without
+  the 16 GB `resources/` directory, which is every fresh checkout — so the one
+  safety net guarding a port of the renderer was not running in CI. A minimal
+  committed fixture pack now drives them, and they fail rather than skip.
+
 ## 2026-08-31
 
 ### Added
