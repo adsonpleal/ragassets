@@ -45,6 +45,43 @@ continuously (no version tags), so entries are grouped by date.
   workflows invoke them as `./tools/build-worker.sh`; the first CI run exited 126.
 
 ### Changed
+- **Cutover: `assets.latam-tools.com.br` is served by the Worker.** The hostname
+  was an unproxied `A` record straight to the EC2 box, which is why all ~27M
+  monthly requests reached the origin and why ~$31 of the ~$50–60/month bill was
+  São Paulo egress. It is now a Cloudflare custom domain in front of the Worker,
+  and the bill is the $5/month Workers Paid base — everything else sits inside an
+  included tier.
+
+  Gated on `tools/diff-origins.sh` against the old origin, still reachable at
+  `ragassets.duckdns.org` because Caddy serves both hostnames from the same box:
+  **393 of 400 real production URLs come back byte- and `Content-Type`-identical**,
+  2 are 404 on both, and 5 differ because the EC2 tree is serving sprites older
+  than the ones in the GRF — the Worker is the more correct of the two there.
+  Icons still answer `max-age=31536000, immutable`, which is the check that
+  matters: it confirms they are still coming from Static Assets rather than the
+  Worker, and so are still free and unmetered. `/raw` still answers
+  `max-age=300, must-revalidate`.
+
+  **EC2 is deliberately still running.** Rollback is repointing the hostname at an
+  `A` record for `18.231.251.11`, DNS-only. It should not be decommissioned until
+  a full client patch has run through the new pipeline — as of this entry the poll
+  has had nothing to do, so the upload, manifest-rebuild, redeploy and announce
+  steps have been exercised only by a dry run.
+
+  Two things surfaced during the flip:
+
+  - **`triggers` is inherited by named environments, and both environments share
+    one KV namespace.** Deploying production attached a cron while staging still
+    had one, so for a few minutes two pollers were reading and writing the same
+    `last_seq` — either could dispatch a patch the other had, or advance the state
+    past work neither did. Staging is now pinned to `crons: []`; production is the
+    only poller.
+  - **Production is the top-level config, not a named environment.** That is
+    deliberate: the top-level config owns the custom domain, and an
+    `env.production` would be a second Worker under a different name competing for
+    the same hostname. So deploying production takes no `--env`, and both
+    workflows now map the target name to a flag rather than passing it through.
+
 - **A cleanup pass over the migration** — reuse, simplification, efficiency and
   altitude — with behaviour held fixed by replaying 400 real production URLs
   against both origins.
