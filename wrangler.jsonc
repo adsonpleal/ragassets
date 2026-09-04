@@ -22,6 +22,10 @@
   // comfortably inside the 10M included requests.
   "triggers": { "crons": ["*/10 * * * *"] },
 
+  // Where the patch poll sends repository_dispatch. Not a secret — the token
+  // that authorises it is (wrangler secret put GITHUB_TOKEN).
+  "vars": { "GITHUB_REPO": "adsonpleal/ragassets" },
+
   "assets": {
     // icons, illust, effects and raw — 39,241 files, 298 MB. Requests to static
     // assets are free and unmetered, and these are 69% of all traffic by
@@ -64,6 +68,7 @@
         { "binding": "UPDATE_STATE", "id": "ea027318b5124243bbf88f13ab73e0ab" }
       ],
       "triggers": { "crons": ["*/10 * * * *"] },
+      "vars": { "GITHUB_REPO": "adsonpleal/ragassets" },
       "assets": {
         "directory": "./public",
         "run_worker_first": [

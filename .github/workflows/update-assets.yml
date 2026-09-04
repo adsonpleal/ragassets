@@ -50,6 +50,20 @@ jobs:
             echo "no starting sequence given; refusing to replay the whole history" >&2
             exit 1
           fi
+
+          # A zero or absurdly low sequence means the poll's KV state was lost or
+          # never seeded, and taking it at face value would replay the entire
+          # patch history — 842 archives and several GB — to rebuild a tree R2
+          # already holds. Seed UPDATE_STATE/last_seq to the current head and
+          # re-run instead.
+          if [ "$from" -lt 1000 ] 2>/dev/null; then
+            echo "starting sequence $from is implausibly low." >&2
+            echo "That replays the whole patch history rather than the new patches." >&2
+            echo "Seed the poll state first:" >&2
+            echo "  wrangler kv key put --namespace-id <ns> last_seq <current head> --remote" >&2
+            exit 1
+          fi
+
           echo "from=$from" >> "$GITHUB_OUTPUT"
           echo "applying patches after seq $from"
 
