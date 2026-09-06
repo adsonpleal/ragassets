@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Source and Existence are the seam between the renderer and wherever the asset
@@ -49,6 +50,22 @@ type Existence interface {
 // convention is spelled out.
 func Key(folder, name, ext string) string {
 	return folder + "/" + name + "." + ext
+}
+
+// SplitKey is Key's inverse: it recovers the folder, name and extension a key
+// was built from. Names contain slashes ("인간족/몸통/남/검사_남"), so the split is at the
+// first separator and the last dot, not anywhere in between.
+//
+// It exists so a caller holding a plan's keys can ask the Manager what it has
+// already parsed, which is otherwise unanswerable: the Manager caches per folder
+// and name, and the plan speaks only keys.
+func SplitKey(key string) (folder, name, ext string, ok bool) {
+	slash := strings.IndexByte(key, '/')
+	dot := strings.LastIndexByte(key, '.')
+	if slash <= 0 || dot <= slash+1 || dot == len(key)-1 {
+		return "", "", "", false
+	}
+	return key[:slash], key[slash+1 : dot], key[dot+1:], true
 }
 
 // FSSource reads keys from a resource tree on disk, rooted at the directory that

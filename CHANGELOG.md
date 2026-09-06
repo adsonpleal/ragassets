@@ -3,6 +3,47 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-09-06
+
+### Fixed
+- **Renders were never cached, only their inputs.** Paperdolls came back slower
+  after the Cloudflare cutover than the EC2 gateway they replaced: measured from
+  GRU, an identical `/image` URL took ~160 ms TTFB against ~85 ms to EC2, and a
+  first-seen URL 350-550 ms. Production responses carried no `CF-Cache-Status` at
+  all, which is the whole story — on a Worker route the Worker runs *in front of*
+  the cache, so a response it returns is never stored, and every request
+  re-planned, re-read and re-rendered a paperdoll that had been produced seconds
+  earlier.
+
+  `R2Store` already caches sprite bytes per colo; nothing cached the finished PNG.
+  Now `/image` and `/gif` store their output in the same colo cache, keyed by
+  `api.ETagFor(query)` plus the deploy epoch — the same invalidation contract the
+  resource cache relies on, so new assets mean a new key rather than a stale hit.
+  A repeat is a local read and no wasm CPU.
+
+  The layer matters more than the CPU saving. A colo runs several instances of
+  this Worker at once — five, sampled over ten sequential requests to `/debug/r2`
+  — each with its own parse caches and its own copy of the 1.44 MiB existence
+  manifest, and requests round-robin between them, so the in-isolate LRU only ever
+  sees a fraction of the repeats. The Cache API is per-colo, shared by all of
+  them, and survives isolate eviction: it is the only layer in the stack that sees
+  a repeat as a repeat.
+
+  `handleRender`'s tiers are now ordered by cost, and `setupRender` is no longer
+  first: a 304 or a cache hit is answered without downloading and parsing the
+  manifest an isolate would otherwise pay for on its first render.
+
+- **The prefetch batch re-fetched sprites the isolate had already parsed.**
+  `Prefetch` pulled every key a plan named, unconditionally, so a render whose
+  body and head were already in the Manager's LRU still dragged tens of kilobytes
+  per key back across the JS boundary for the Manager to discard. This is the
+  *different* URL that shares sprites with one already served — every preview on a
+  paperdoll grid shares a body and a head — which is exactly the case the render
+  cache above cannot help with. `resource.Manager.Cached` (and `SplitKey`, its
+  inverse of `Key`) answers what is already held, and `handleRender` drops those
+  keys from the batch. The answer is advisory in one direction only: an eviction
+  between the probe and the render just sends that key down the ordinary path.
+
 ## 2026-09-04
 
 ### Added

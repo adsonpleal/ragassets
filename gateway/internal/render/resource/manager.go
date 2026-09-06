@@ -238,6 +238,46 @@ func (m *Manager) Imf(name string) (*roformat.Imf, error) {
 	return e2.v, e2.err
 }
 
+// Cached reports whether this process already holds key's parsed form, so a
+// caller need not fetch its bytes.
+//
+// It is advisory in one direction only: a true answer can go stale the moment an
+// LRU eviction follows it, and that is harmless — the read still goes through the
+// Source, which is the same path an unprefetched key would take. A false answer
+// is never wrong, only wasteful. So this can be used to skip work, never to
+// decide whether a read will succeed.
+//
+// Palettes and imf are answered too even though they are small: the cost being
+// avoided is a network round trip per key, which does not care how big the file
+// is.
+func (m *Manager) Cached(key string) bool {
+	folder, name, ext, ok := SplitKey(key)
+	if !ok {
+		return false
+	}
+	switch folder + "." + ext {
+	case "sprite.spr":
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.spr.peek(name)
+	case "sprite.act":
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.act.peek(name)
+	case "palette.pal":
+		m.palMu.RLock()
+		defer m.palMu.RUnlock()
+		_, held := m.pal[name]
+		return held
+	case "imf.imf":
+		m.imfMu.RLock()
+		defer m.imfMu.RUnlock()
+		_, held := m.imf[name]
+		return held
+	}
+	return false
+}
+
 // ExistsSpr reports whether a .spr exists for the resolved name.
 func (m *Manager) ExistsSpr(name string) bool { return m.ex.Has(Key("sprite", name, "spr")) }
 

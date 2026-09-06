@@ -99,6 +99,11 @@ func (e *Engine) Plan(req Request) Plan {
 	return BuildPlan(req, e.res, e.ex)
 }
 
+// Cached reports whether the parsed form of a plan key is already held, so a
+// caller prefetching that plan can leave it out of the batch. See
+// resource.Manager.Cached for why the answer may only be used to skip work.
+func (e *Engine) Cached(key string) bool { return e.mgr.Cached(key) }
+
 // Render produces the frames for a request, resolving the plan itself. This is
 // the direct path — it probes for existence as it goes, which is what you want
 // against a local disk.

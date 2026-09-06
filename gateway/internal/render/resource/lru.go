@@ -42,6 +42,15 @@ func (c *lru[V]) get(key string) (V, bool) {
 	return zero, false
 }
 
+// peek reports whether key is held, without promoting it. get would be wrong
+// here: an existence probe is not a use, and letting one reorder recency would
+// let a caller that only ever asks "is this cached?" keep entries alive that
+// nothing actually reads.
+func (c *lru[V]) peek(key string) bool {
+	_, ok := c.m[key]
+	return ok
+}
+
 // put inserts or updates key=val, charging size bytes against the budget, then
 // evicts from the tail until back inside it.
 func (c *lru[V]) put(key string, val V, size int64) {

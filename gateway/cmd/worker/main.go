@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/syumai/workers"
+	"github.com/syumai/workers/cloudflare/cache"
 	"github.com/syumai/workers/cloudflare/r2"
 
 	"github.com/ragassets/gateway/internal/api"
@@ -106,6 +107,9 @@ func bind() {
 	// The effect store reads the same bucket through the same cache; only its
 	// resolution differs (see internal/effect/store_r2.go).
 	estore = effect.NewObjectStore(objStore.Get)
+	// Finished renders go in the same colo cache, under their own key space (see
+	// rendercache.go).
+	renderCache = cache.New()
 }
 
 // setupRender fetches the existence manifest and builds the Engine. The manifest
@@ -184,16 +188,18 @@ var isolateID = fmt.Sprintf("%x", time.Now().UnixNano())
 // traffic. Counts only — nothing about what was read, or by whom.
 func handleDebugR2(w http.ResponseWriter) {
 	type payload struct {
-		Isolate string         `json:"isolate"`
-		Epoch   string         `json:"epoch"`
-		Data    resource.Stats `json:"data"`
-		Objects resource.Stats `json:"objects"`
+		Isolate string           `json:"isolate"`
+		Epoch   string           `json:"epoch"`
+		Data    resource.Stats   `json:"data"`
+		Objects resource.Stats   `json:"objects"`
+		Renders RenderCacheStats `json:"renders"`
 	}
 	out, err := json.Marshal(payload{
 		Isolate: isolateID,
 		Epoch:   deployEpoch,
 		Data:    dataStore.Stats(),
 		Objects: objStore.Stats(),
+		Renders: renderCacheStats(),
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -205,13 +211,19 @@ func handleDebugR2(w http.ResponseWriter) {
 }
 
 // handleRender serves /image and /gif, which differ only in the final encode.
+//
+// Its three tiers are ordered by what they cost, cheapest first, and the ordering
+// is the point: nothing expensive happens until everything cheap has failed to
+// answer.
+//
+//	304 from the ETag     no I/O at all — the validator is a hash of the query
+//	colo cache hit        one local read of a finished render
+//	render                the manifest, an R2 batch, and ~86 ms of wasm CPU
+//
+// setupRender in particular is deliberately not first any more. It downloads and
+// parses the 1.44 MiB existence manifest on an isolate's first render, and a
+// request the first two tiers can answer has no use for it.
 func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
-	renderOnce.Do(setupRender)
-	if renderErr != nil {
-		http.Error(w, "renderer not initialised: "+renderErr.Error(), http.StatusInternalServerError)
-		return
-	}
-
 	q := r.URL.Query()
 	req, ext, err := api.BuildRequest(q)
 	if err != nil {
@@ -238,11 +250,32 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 		return
 	}
 
+	if body, contentType, ok := cachedRender(etag); ok {
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		writeBody(w, body)
+		return
+	}
+	renderCacheMisses.Add(1)
+
+	renderOnce.Do(setupRender)
+	if renderErr != nil {
+		http.Error(w, "renderer not initialised: "+renderErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	// Plan first, then fetch everything the plan names in one parallel batch.
 	// Fetching lazily mid-render would serialise 7-41 round trips at 20-40 ms
 	// each, against 4-8 ms of actual rendering.
+	//
+	// Keys whose parsed form this isolate already holds are dropped from the
+	// batch. That is not the same win as the render cache and does not overlap
+	// with it: this is the *different* URL that shares sprites with one already
+	// served — every preview on a paperdoll grid shares a body and a head — where
+	// the fetch would pull tens of kilobytes across the JS boundary only for the
+	// Manager to discard them and use the struct it already had.
 	plan := eng.Plan(req)
-	dataStore.Prefetch(plan.Keys, exist)
+	dataStore.Prefetch(uncachedKeys(plan.Keys), exist)
 
 	res, err := eng.RenderPlanned(req, plan)
 	if err != nil {
@@ -263,9 +296,25 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 		contentType = "image/gif"
 	}
 
+	putRender(etag, contentType, out)
+
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
 	writeBody(w, out)
+}
+
+// uncachedKeys drops the plan keys the engine has already parsed. The answer is
+// advisory — see resource.Manager.Cached — so a key that is evicted between this
+// call and the render simply reaches R2 through the ordinary path, exactly as a
+// key nobody prefetched would.
+func uncachedKeys(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if !eng.Cached(k) {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // serveEffectFile is the shape /effect/str and /effect/texture share: resolve one

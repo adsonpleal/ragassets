@@ -117,3 +117,68 @@ func TestManagerDoesNotRetainOversized(t *testing.T) {
 		t.Errorf("oversized sprite charged %d bytes against the budget", got)
 	}
 }
+
+// mapExistence answers from the same map a MapSource serves.
+type mapExistence map[string][]byte
+
+func (m mapExistence) Has(key string) bool { _, ok := m[key]; return ok }
+
+func TestSplitKeyRoundTrips(t *testing.T) {
+	for _, tc := range []struct{ folder, name, ext string }{
+		{"sprite", "인간족/몸통/남/검사_남", "spr"},
+		{"palette", "머리/머리1_남_0", "pal"},
+		{"imf", "검사_남", "imf"},
+		// A dot inside the name must not be mistaken for the extension.
+		{"sprite", "아이템/2.5_hat", "act"},
+	} {
+		key := Key(tc.folder, tc.name, tc.ext)
+		folder, name, ext, ok := SplitKey(key)
+		if !ok {
+			t.Fatalf("SplitKey(%q) not ok", key)
+		}
+		if folder != tc.folder || name != tc.name || ext != tc.ext {
+			t.Errorf("SplitKey(%q) = %q/%q/%q, want %q/%q/%q",
+				key, folder, name, ext, tc.folder, tc.name, tc.ext)
+		}
+	}
+
+	// Anything that is not folder/name.ext is rejected rather than guessed at.
+	for _, bad := range []string{"", "sprite", "sprite/", "/name.spr", "sprite/name.", "sprite/.spr"} {
+		if _, _, _, ok := SplitKey(bad); ok {
+			t.Errorf("SplitKey(%q) accepted a malformed key", bad)
+		}
+	}
+}
+
+func TestManagerCachedTracksWhatWasParsed(t *testing.T) {
+	const name = "body"
+	sprKey, actKey := Key("sprite", name, "spr"), Key("sprite", name, "act")
+	// Cached reports what was *attempted*, not what parsed, so unparseable bytes
+	// are a legitimate fixture here — and they keep this test free of the
+	// gitignored resources/ tree.
+	src := mapExistence{sprKey: []byte(sprKey), actKey: []byte(actKey)}
+	m := NewManagerWithSource(MapSource(src), src, 1<<20, 1<<20)
+
+	if m.Cached(sprKey) {
+		t.Error("Cached true before anything was read")
+	}
+	m.Spr(name)
+	if !m.Cached(sprKey) {
+		t.Error("Cached false after Spr")
+	}
+	if m.Cached(actKey) {
+		t.Error("Spr populated the act cache")
+	}
+	m.Act(name)
+	if !m.Cached(actKey) {
+		t.Error("Cached false after Act")
+	}
+
+	// A key that was never asked for, and one in a folder Cached does not track.
+	if m.Cached(Key("sprite", "other", "spr")) {
+		t.Error("Cached true for an unread key")
+	}
+	if m.Cached("wav/thunder.wav") {
+		t.Error("Cached true for a folder the Manager does not hold")
+	}
+}
