@@ -82,18 +82,47 @@ jobs:
             echo "gofmt needed on:"; echo "$unformatted"; exit 1
           fi
 
-      # Cross-compiles the renderer to wasm and writes the JS shim beside it.
-      # Fails the build if the bundle passes the 10 MB gzip limit.
-      # run_number rather than the commit count: checkout is shallow, so the
-      # count is 1 on every run. run_number is monotonic per workflow, which is
-      # all the cache key needs — it only has to differ from the last deploy's.
-      - name: Build the Worker
-        env:
-          DEPLOY_EPOCH: ${{ github.run_number }}
-        run: ./tools/build-worker.sh
-
+      # Needed before the build now, because resolving the asset epoch reads R2.
       - name: Install rclone
         run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+
+      # This deploy ships code, not assets, so it must NOT invent a new asset
+      # epoch — doing that discarded the cached sprites along with the cached
+      # renders, and the first traffic after any deploy was a burst of fully cold
+      # renders at 470-1050 ms with 8 of 60 failing. The current value is whatever
+      # update-assets.yml last stamped into the bucket; read it back and reuse it.
+      #
+      # A missing or empty marker falls back to a fresh timestamp rather than to a
+      # constant. That is the safe direction and the only one: reusing a value we
+      # are not sure of would serve stale sprites indefinitely, while inventing
+      # one costs a cold cache for a few minutes.
+      #
+      # It then seeds the marker, so this path runs once rather than on every
+      # deploy until the next client patch happens to write one. Seeding only when
+      # absent is what keeps it safe — update-assets.yml overwrites unconditionally
+      # whenever it uploads, so this can never pin the epoch across an asset change.
+      - name: Resolve the asset epoch
+        run: |
+          rclone cat r2:ragassets/manifest/epoch --s3-no-check-bucket > epoch.txt 2>/dev/null || true
+          if [ -s epoch.txt ]; then
+            epoch="$(tr -d '[:space:]' < epoch.txt)"
+            echo "reusing asset epoch $epoch — the resource cache survives this deploy"
+          else
+            epoch="$(date +%s)"
+            echo "no asset epoch in the bucket; seeding $epoch (this deploy drops the resource cache)"
+            printf '%s' "$epoch" > epoch.txt
+            rclone copyto epoch.txt r2:ragassets/manifest/epoch --s3-no-check-bucket
+          fi
+          echo "ASSET_EPOCH=$epoch" >> "$GITHUB_ENV"
+
+      # Cross-compiles the renderer to wasm and writes the JS shim beside it.
+      # Fails the build if the bundle passes the 10 MB gzip limit.
+      #
+      # RENDER_EPOCH is left to build-worker.sh, which appends the commit sha to
+      # ASSET_EPOCH: the renders must be invalidated by a code deploy even though
+      # the assets must not.
+      - name: Build the Worker
+        run: ./tools/build-worker.sh
 
       # ./public is 298 MB across 39,241 files and only changes when a client
       # update ships new static assets. Restoring it turns the hydrate below into

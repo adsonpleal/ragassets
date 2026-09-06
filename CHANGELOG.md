@@ -5,6 +5,35 @@ continuously (no version tags), so entries are grouped by date.
 
 ## 2026-09-06
 
+### Changed
+- **One cache epoch became two, so a code deploy stops discarding the sprites.**
+  `DEPLOY_EPOCH` keyed every edge-cache key and rose on every deploy, including
+  one that touched only a README — which threw away the cached *inputs* along with
+  the cached outputs. The first traffic after any deploy was therefore a burst of
+  fully cold renders, each needing ~7 R2 round trips: measured at 470-1050 ms per
+  render with 8 of 60 failing, against 107-211 ms and none once warm. It was the
+  last case still losing requests after the hang fix.
+
+  They are separate now because they answer different questions. `ASSET_EPOCH`
+  keys the R2 resource cache and changes only when the asset pipeline ships a
+  client update; `RENDER_EPOCH` keys the finished renders and is `ASSET_EPOCH`
+  with the commit sha appended, because a render depends on the assets *and* on
+  the renderer — a change to the engine must not keep serving the pixels it
+  replaced.
+
+  The asset epoch lives at `r2:ragassets/manifest/epoch`, beside the assets it
+  describes, since that is what it is a property of — not of a workflow run and
+  not of the repo. `update-assets.yml` is the only thing that overwrites it, and
+  does so unconditionally whenever it uploads; `deploy.yml` reads it back, and
+  seeds it only when absent, so it can never pin the epoch across an asset change.
+
+  Every fallback resolves to a fresh timestamp rather than to anything reused,
+  because the danger is one-sided: invalidating too often costs a cold cache for a
+  few minutes, while an asset epoch that fails to change serves last week's
+  sprites indefinitely. That asymmetry also retires the shallow-clone guard —
+  it existed because the old default (the commit count) silently repeated under
+  CI's checkout, and a default that cannot repeat needs no guard.
+
 ### Fixed
 - **Broken paperdolls on visuais: a render could hang forever.** Reported as
   images that fail and come good on a cache-bypassing reload. It was not a stale

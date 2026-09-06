@@ -60,13 +60,17 @@ func renderCacheStats() RenderCacheStats {
 
 // renderCacheKey is the synthetic URL a finished render is stored under.
 //
-// The ETag is the whole key, which is exactly right: api.ETagFor already hashes
+// renderEpoch rather than assetEpoch, because what is stored here is a render:
+// it changes when the sprites change and also when the renderer does, and a code
+// deploy that alters a pixel must not keep serving the old one.
+//
+// The ETag is the rest of the key, which is exactly right: api.ETagFor already hashes
 // the query canonically — sorted keys, sorted values, empties dropped — so
 // ?job=1&head=2 and ?head=2&job=1 are one entry rather than two. Using the real
 // request URL instead would split them, and would also let a viewer address the
 // cache directly.
 func renderCacheKey(etag string) string {
-	return "https://render.internal/v" + deployEpoch + "/" + etag
+	return "https://render.internal/v" + renderEpoch + "/" + etag
 }
 
 // cachedRender returns a previously rendered body and its content type.

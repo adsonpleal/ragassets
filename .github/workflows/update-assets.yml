@@ -159,6 +159,20 @@ jobs:
           (cd gateway && go run ./cmd/gen-manifest -keys ../r2keys.txt -out ../exists.bin)
           rclone copyto exists.bin r2:ragassets/manifest/exists.bin --s3-no-check-bucket
 
+      # The asset epoch lives beside the assets it describes, because that is what
+      # it is a property of — not of a workflow run, and not of the repo. This is
+      # the ONLY place it changes: deploy.yml reads it back so that a code deploy
+      # keeps the resource cache it would otherwise have thrown away.
+      - name: Stamp the asset epoch
+        if: steps.select.outputs.proceed == 'true'
+        id: epoch
+        run: |
+          epoch="$(date +%s)"
+          printf '%s' "$epoch" > asset-epoch.txt
+          rclone copyto asset-epoch.txt r2:ragassets/manifest/epoch --s3-no-check-bucket
+          echo "value=$epoch" >> "$GITHUB_OUTPUT"
+          echo "asset epoch is now $epoch"
+
       # ./public is 298 MB across 39,241 files and only changes when a client
       # update ships new static assets. Restoring it turns the hydrate below into
       # a checksum reconcile — a bucket listing and almost no transfer — rather
@@ -172,17 +186,19 @@ jobs:
           key: static-assets-${{ github.run_id }}
           restore-keys: static-assets-
 
-      # A deploy is how the edge cache is invalidated: DEPLOY_EPOCH is part of
-      # every cache key, so bumping it drops the whole internal cache at once.
-      # Purge-by-URL is capped at 30 URLs a call and prefix purge is Enterprise,
-      # so this is the only workable invalidation.
+      # A deploy is how the edge cache is invalidated: the epochs are part of
+      # every cache key, so changing one drops that cache at once. Purge-by-URL is
+      # capped at 30 URLs a call and prefix purge is Enterprise, so this is the
+      # only workable invalidation. Here the assets really have changed, so the
+      # asset epoch stamped above is passed through and both caches drop —
+      # which is the case the split epochs are meant to keep, not avoid.
       - name: Redeploy to bump the cache epoch
         if: steps.select.outputs.proceed == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          DEPLOY_EPOCH="$(date +%s)" ./tools/build-worker.sh
+          ASSET_EPOCH="${{ steps.epoch.outputs.value }}" ./tools/build-worker.sh
           ./tools/hydrate-assets.sh
           npx wrangler@4 deploy $WRANGLER_ENV_FLAG
 

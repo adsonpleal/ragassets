@@ -49,12 +49,36 @@ const (
 	manifestKey = "manifest/exists.bin"
 )
 
-// deployEpoch is stamped in at build time (-ldflags "-X main.deployEpoch=..."),
-// and forms part of every edge-cache key. Bumping it is how a deploy invalidates
-// the cache: purge-by-URL is capped at 30 URLs a call and roughly 1,000 a day,
-// and purge-by-prefix is Enterprise-only, so wholesale invalidation has to be
-// built into the key rather than requested afterwards.
-var deployEpoch = "dev"
+// The two cache epochs, stamped in at build time
+// (-ldflags "-X main.assetEpoch=... -X main.renderEpoch=..."). Each forms part of
+// an edge-cache key, and changing one is how a deploy invalidates that cache:
+// purge-by-URL is capped at 30 URLs a call and roughly 1,000 a day, and
+// purge-by-prefix is Enterprise-only, so wholesale invalidation has to be built
+// into the key rather than requested afterwards.
+//
+// They are separate because they answer different questions, and conflating them
+// cost real availability. One epoch meant every deploy — including one that
+// touched only a README — discarded the cached *inputs* as well as the cached
+// outputs, so the first traffic after any deploy was a burst of fully cold
+// renders each needing ~7 R2 round trips. Measured: 470-1050 ms per render and
+// 8 of 60 failing, against 107-211 ms and none once warm.
+//
+//	assetEpoch   keys the R2 resource cache — the sprites, palettes, imf, maps,
+//	             bgm and sounds in the bucket. These bytes change only when the
+//	             asset pipeline ships a client update, so a code deploy must not
+//	             disturb them.
+//
+//	renderEpoch  keys the finished-render cache. A render is a function of the
+//	             assets *and* of the renderer, so this has to change when either
+//	             does — it is assetEpoch with the build stamped on the end.
+//
+// The safe direction is invalidating too often, never too rarely: a stale asset
+// epoch would serve last week's sprites indefinitely. So every fallback in
+// tools/build-worker.sh resolves to something fresh rather than something reused.
+var (
+	assetEpoch  = "dev"
+	renderEpoch = "dev"
+)
 
 // sprCacheBytes / actCacheBytes budget the Manager's parse caches for a 128 MB
 // isolate. The package defaults are sized for the server's ~500 MiB and come to
@@ -102,8 +126,8 @@ func bind() {
 		initErr = fmt.Errorf("r2 binding %q: %w", bucketBinding, err)
 		return
 	}
-	dataStore = resource.NewR2Store(bucket, deployEpoch, "data/")
-	objStore = resource.NewR2Store(bucket, deployEpoch, "")
+	dataStore = resource.NewR2Store(bucket, assetEpoch, "data/")
+	objStore = resource.NewR2Store(bucket, assetEpoch, "")
 	// The effect store reads the same bucket through the same cache; only its
 	// resolution differs (see internal/effect/store_r2.go).
 	estore = effect.NewObjectStore(objStore.Get)
@@ -188,20 +212,22 @@ var isolateID = fmt.Sprintf("%x", time.Now().UnixNano())
 // traffic. Counts only — nothing about what was read, or by whom.
 func handleDebugR2(w http.ResponseWriter) {
 	type payload struct {
-		Isolate  string           `json:"isolate"`
-		Epoch    string           `json:"epoch"`
-		Data     resource.Stats   `json:"data"`
-		Objects  resource.Stats   `json:"objects"`
-		Renders  RenderCacheStats `json:"renders"`
-		Inflight []InflightRender `json:"inflight"`
+		Isolate     string           `json:"isolate"`
+		AssetEpoch  string           `json:"assetEpoch"`
+		RenderEpoch string           `json:"renderEpoch"`
+		Data        resource.Stats   `json:"data"`
+		Objects     resource.Stats   `json:"objects"`
+		Renders     RenderCacheStats `json:"renders"`
+		Inflight    []InflightRender `json:"inflight"`
 	}
 	out, err := json.Marshal(payload{
-		Isolate:  isolateID,
-		Epoch:    deployEpoch,
-		Data:     dataStore.Stats(),
-		Objects:  objStore.Stats(),
-		Renders:  renderCacheStats(),
-		Inflight: inflightRenders(),
+		Isolate:     isolateID,
+		AssetEpoch:  assetEpoch,
+		RenderEpoch: renderEpoch,
+		Data:        dataStore.Stats(),
+		Objects:     objStore.Stats(),
+		Renders:     renderCacheStats(),
+		Inflight:    inflightRenders(),
 	})
 	if err != nil {
 		fail(w, err.Error(), http.StatusInternalServerError)
