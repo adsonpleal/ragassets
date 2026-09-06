@@ -224,6 +224,12 @@ func handleDebugR2(w http.ResponseWriter) {
 // parses the 1.44 MiB existence manifest on an isolate's first render, and a
 // request the first two tiers can answer has no use for it.
 func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
+	kind := "image"
+	if asGIF {
+		kind = "gif"
+	}
+	tr := startTrace(kind)
+
 	q := r.URL.Query()
 	req, ext, err := api.BuildRequest(q)
 	if err != nil {
@@ -254,16 +260,20 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 		return
 	}
 
-	if body, contentType, ok := cachedRender(etag); ok {
+	body, contentType, ok := cachedRender(etag)
+	tr.mark("cache-lookup")
+	if ok {
 		api.SetAssetHeaders(w, etag, api.CacheImmutable)
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 		writeBody(w, body)
+		tr.mark("done-cached")
 		return
 	}
 	renderCacheMisses.Add(1)
 
 	renderOnce.Do(setupRender)
+	tr.mark("setup")
 	if renderErr != nil {
 		fail(w, "renderer not initialised: "+renderErr.Error(), http.StatusInternalServerError)
 		return
@@ -280,19 +290,25 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	// the fetch would pull tens of kilobytes across the JS boundary only for the
 	// Manager to discard them and use the struct it already had.
 	plan := eng.Plan(req)
-	dataStore.Prefetch(uncachedKeys(plan.Keys), exist)
+	keys := uncachedKeys(plan.Keys)
+	tr.mark(fmt.Sprintf("planned n=%d fetch=%d", len(plan.Keys), len(keys)))
+	dataStore.Prefetch(keys, exist)
+	tr.mark("prefetched")
 
 	res, err := eng.RenderPlanned(req, plan)
+	tr.mark("rendered")
 	if err != nil {
 		fail(w, "render: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	out, err := encode.Animation(res.Frames, res.IntervalMs)
+	tr.mark("encoded")
 	if err != nil {
 		fail(w, "encode: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	contentType := "image/png"
+	// contentType is already declared by the cache lookup above.
+	contentType = "image/png"
 	if asGIF {
 		if out, err = gifenc.FromAPNG(out); err != nil {
 			fail(w, "gif: "+err.Error(), http.StatusInternalServerError)
@@ -302,11 +318,13 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	}
 
 	putRender(etag, contentType, out)
+	tr.mark("stored")
 
 	api.SetAssetHeaders(w, etag, api.CacheImmutable)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
 	writeBody(w, out)
+	tr.mark("done")
 }
 
 // uncachedKeys drops the plan keys the engine has already parsed. The answer is

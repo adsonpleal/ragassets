@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>404 — ragassets</title>
+<p>Not found.</p>
+<!--
+  This page exists to keep the Worker out of a miss.
+
+  Static Assets defaults to not_found_handling: "none", which sends anything it
+  cannot find to the Worker. Every request for an icon the client never shipped
+  — /icons/item/400246.png, /icons/item/20094.png, the whole C_Fillet_ family —
+  therefore booted the Go runtime just to fall through route()'s default and
+  answer 404. Those requests are meant to be free and unmetered; instead they
+  were billed Worker invocations, and they were exposed to every failure mode the
+  runtime has. Two of them were caught in production throwing "Go program has
+  already exited".
+
+  With not_found_handling: "404-page" this file is served instead and the Worker
+  is never invoked. Nothing is lost: every path route() actually handles is
+  listed in run_worker_first, so a request that reaches an asset miss was one the
+  Worker would have 404'd anyway.
+-->

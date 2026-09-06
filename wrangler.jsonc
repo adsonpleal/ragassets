@@ -27,6 +27,16 @@
   "vars": { "GITHUB_REPO": "adsonpleal/ragassets" },
 
   "assets": {
+    // Serve ./404.html on a miss instead of falling through to the Worker, which
+    // is the default ("none"). Every request for an icon the client never
+    // shipped was booting the Go runtime just to answer 404 — billed
+    // invocations for requests that are meant to be free, and needless exposure
+    // to the runtime's failure modes (two were caught in production throwing
+    // "Go program has already exited"). Nothing is lost by this: every path
+    // route() handles is listed in run_worker_first below, so anything reaching
+    // an asset miss is something the Worker would have 404'd itself.
+    "not_found_handling": "404-page",
+
     // icons, illust, effects and raw — 39,241 files, 298 MB. Requests to static
     // assets are free and unmetered, and these are 69% of all traffic by
     // measurement, so serving them here rather than through the Worker is what

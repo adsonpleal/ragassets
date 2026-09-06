@@ -95,4 +95,9 @@ done
 # repeat URLs — would revalidate on every request instead of being cached.
 cp -f worker/_headers "$OUT/_headers"
 
+# The 404 page Static Assets serves on a miss (not_found_handling: "404-page").
+# Without it the miss falls through to the Worker, and every icon the client
+# never shipped boots the Go runtime just to answer 404.
+cp -f worker/404.html "$OUT/404.html"
+
 check_asset_count "$OUT" 39000
