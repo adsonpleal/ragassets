@@ -177,6 +177,9 @@ function usage() {
       "  plus a catalogue (index.json). Also reads iteminfo_new.lub. It additionally",
       "  builds a bundle for every in-world map effect (.rsw type-4 .str, e.g.",
       "  bubble1..4) referenced by EFFECT_STR_TABLE (roBrowser's EffectTable.js).",
+      "  It also writes stones.json, the graphic-stone catalogue: each Malangdo",
+      "  visual-enchant stone that plays a .str hat effect, mapped to its bundle",
+      "  key (STONE_HAT_EFFECT → HatEffectInfo.lub → .str).",
       "",
       "  --maps extracts every world map (or one, with --map <name>) for the map",
       "  simulator: per-map <name>/{<name>.gat,.gnd,.rsw,manifest.json} plus shared,",
@@ -1555,7 +1558,7 @@ function execute(proto, globals) {
 
 // Run a Lua 5.1 chunk over an existing globals table (so dependent chunks can
 // share state); runChunk starts from a fresh one.
-function runChunkInto(bytes, globals) {
+export function runChunkInto(bytes, globals) {
   execute(loadChunk(bytes), globals);
   return globals;
 }
@@ -2705,6 +2708,132 @@ const STR_OVERRIDE = {
   teaparty_wonderland: "data/texture/effect/efst_alice_tea/alice02.str", //          HAT_EF_alice_tea
 };
 
+// ---------------------------------------------------------------------------
+// "Pedras Gráficas" — the visual enchants sold at Malangdo's Loja Fashion.
+//
+// A stone is not a costume. It is applied INTO a costume already equipped in a
+// position, and what the player then sees is a *hat effect*: the same .str world
+// effect system the effect-only costumes above use, so the same bundle builder
+// serves it. The client models each stone as two items — the tradeable stone
+// (whose name is the only place the target position is written) and the enchant
+// it becomes once applied, which is the one the server attaches the effect to.
+//
+// The chain is stone → enchant → HAT_EF_* → .str. The client owns the second
+// half of it: HatEffectInfo.lub maps every HAT_EF_* to the .str it plays, and
+// readHatEffectTable reads that live, so a client update repaths these on its
+// own. It does NOT own the first half — nothing in the client links an item id
+// to a HAT_EF_*; the server does, by running the enchant's `hateffect` script.
+// So that link is the table below, transcribed from rAthena's item_db (the
+// public projection of those scripts), keyed by the STONE's id because that is
+// what the consumer lists. Its rows are cross-checked against the enchant's own
+// resourceName wherever that name is specific rather than the generic
+// 블루크리스탈조각 ("blue crystal fragment"): 벚꽃뱃지 → HAT_EF_CHERRYBLOSSOM,
+// C홍염의폭렬파동 → HAT_EF_DOUBLEGUMGANG (both read "crimson explosion wave"),
+// ROS_RedSpirit_Effect → HAT_EF_ROS_RedSpirit, 발자국이펙트 → the FOOTPRINT_EF_*.
+//
+// Roughly half of them name a HAT_EF_* the client compiles into its executable
+// (a hatEffectID row with no resourceFileName — Miniatura, Palidez, Sombra, …).
+// Those have no asset anywhere and are permanently unrenderable; they stay in
+// the table so the report can account for all 29, and drop out on their own
+// because readHatEffectTable gives them no .str.
+export const STONE_HAT_EFFECT = {
+  25058: "HAT_EF_LJOSALFAR", //            Cintilação (Topo)                  enchant 29041
+  25059: "HAT_EF_C_Ghost_Effect", //       Fantasmas (Meio)                   enchant 29040
+  25136: "HAT_EF_Electric", //             Raios Azuis (Meio)                 enchant 29142
+  25137: "HAT_EF_Green_Floor", //          Aura Verde (Baixo)                 enchant 29143
+  25138: "HAT_EF_Shrink", //               Miniatura (Meio)                   enchant 29144
+  25176: "HAT_EF_CIRCLEPOWER", //          Aura Azul (Meio)                   enchant 29160
+  25177: "HAT_EF_KAGEMUSYA", //            Sombra (Meio)                      enchant 29162
+  25178: "HAT_EF_CHERRYBLOSSOM", //        Bolha Rosa (Meio)                  enchant 29161
+  25205: "HAT_EF_Shrink", //               Miniatura (Baixo)                  enchant 29144
+  25224: "HAT_EF_WHITEBODY2", //           Palidez (Meio)                     enchant 29224
+  // Raios Vermelhos is the one row where the client outvotes rAthena, which
+  // says HAT_EF_DOUBLEGUMGANG (effect 418 — a row the effect table doesn't even
+  // have, so nothing would draw). The enchant's own resourceName is
+  // C홍염의폭렬파동, which is exactly the sprite HAT_EF_BAKURETSU_HADOU plays
+  // (effect 1130, see SPR_EFFECT_OVERRIDE) — 폭렬파동 is 爆裂波動, "bakuretsu
+  // hadou" — and that sprite draws red rays, which is what the item is named
+  // and described as. Both readings are a hatEffectID either way, so this
+  // changes the report, not stones.json.
+  25225: "HAT_EF_BAKURETSU_HADOU", //      Raios Vermelhos (Meio)             enchant 29226
+  25226: "HAT_EF_WATER_BELOW4", //         Poça d'Água (Baixo)                enchant 29225
+  1000319: "HAT_EF_Blessing_Of_Angels", // Luz Angelical (Meio)               enchant 300152
+  1000345: "HAT_EF_C_Time_Accessory", //   Relógios (Meio)                    enchant 300157
+  1000365: "HAT_EF_magical_feather", //    Corações (Topo)                    enchant 310322
+  1000875: "HAT_EF_Valhalla_Idol", //      Popstar (Meio)                     enchant 300385
+  1001069: "HAT_EF_Camellia_Hair_Pin", //  Camélia (Topo)                     enchant 300419
+  1001175: "HAT_EF_C_Romance_Rose_TW", //  Rosas Românticas (Meio)            enchant 311926
+  1001252: "HAT_EF_ResonateTaego", //      Dragão Alado (Topo)                enchant 29727
+  1001907: "FOOTPRINT_EF_dumpling", //     Pegada: Bolinhos (Capa)            enchant 313558
+  1001908: "FOOTPRINT_EF_panda_basic", //  Pegada: Pandas (Capa)              enchant 313559
+  1001909: "FOOTPRINT_EF_panda_color", //  Pegada: Pandas Coloridos (Capa)    enchant 313560
+  1002193: "HAT_EF_ROS_BlueSpirit", //     Espírito de Liderança (Meio)       enchant 314094
+  1002194: "HAT_EF_ROS_RedSpirit", //      Espírito de Influência (Meio)      enchant 314095
+  1002239: "FOOTPRINT_EF_dragon_face_2d", // Pegadas do Banguela (Capa)       enchant 314171
+  1002240: "FOOTPRINT_EF_dragon_face_3d", // Pulinhos do Banguela (Capa)      enchant 314172
+  // Ventania and Espaço Digital are the only two stones rAthena has no script
+  // for. Both are read off the enchant's own aegisName instead, which names a
+  // HatEFID constant outright: Golden_Aura_TW → HAT_EF_Golden_Aura_TW (a
+  // constant this client declares but then leaves out of hatEffectTable
+  // entirely — no .str, no built-in id, nothing to draw at all), and
+  // Magic_D_Space_BTM → HAT_EF_Digital_Space (built into the executable).
+  1002293: "HAT_EF_Golden_Aura_TW", //     Ventania (Baixo)                   enchant 314198
+  1002585: "HAT_EF_Digital_Space", //      Espaço Digital (Baixo)             enchant 314802
+  1002642: "FOOTPRINT_EF_phoenix", //      Pegada: Operação Ave de Fogo (Capa) enchant 314813
+};
+
+// Read the client's hat-effect table: HAT_EF_* name → what it plays. The two
+// chunks have to share globals — HatEffectInfo.lub writes its rows as
+// `hatEffectTable[HatEFID.HAT_EF_X]`, so without HatEffectIDs.lub loaded first
+// every key evaluates to nil and the whole table collapses onto one row.
+//
+// A row carries EITHER a `resourceFileName` (the .str it plays, relative to
+// data/texture/effect/) OR a `hatEffectID` (an effect compiled into the client
+// executable, with no asset in the GRF). Footprints live in a second table,
+// FootPrintEffectTable, keyed by the same ids — they are a different animation
+// shape (a decal stamped per footstep, four .str for bottom/top × left/right)
+// rather than one looping effect, so they are reported, not bundled.
+function readHatEffectTable(grf) {
+  const globals = new LuaTable();
+  for (const base of ["HatEffectIDs", "HatEffectInfo", "FootPrintEffectInfo"]) {
+    const bytes = grfLub(grf, `data/luafiles514/lua files/HatEffectInfo/${base}`);
+    if (!bytes) return null;
+    try {
+      runChunkInto(bytes, globals);
+    } catch (err) {
+      console.error(`  ! ${base}.lub: ${err.message}`);
+      return null;
+    }
+  }
+  return hatEffectIndex(
+    globals.get("HatEFID"),
+    globals.get("hatEffectTable"),
+    globals.get("FootPrintEffectTable"),
+  );
+}
+
+// The projection of those three tables: HAT_EF_* name (lowercased — rAthena's
+// script constants and the client's own casing disagree freely) → what it plays.
+// `str` is the GRF path of its .str, `builtin` the executable-compiled effect id
+// it falls back on, `footprint` whether it is a footprint rather than a hat
+// effect. A name declared in HatEFID with no row in either table gets all three
+// null/false — the client can't draw it either.
+export function hatEffectIndex(ids, table, foot) {
+  if (!(ids instanceof LuaTable) || !(table instanceof LuaTable)) return null;
+  const out = new Map();
+  for (const [name, id] of ids.map) {
+    const row = table.get(id);
+    const res = row instanceof LuaTable ? row.get("resourceFileName") : null;
+    out.set(String(name).toLowerCase(), {
+      id,
+      str: typeof res === "string" && res ? normalize(`data/texture/effect/${res}`) : null,
+      builtin: row instanceof LuaTable ? (row.get("hatEffectID") ?? null) : null,
+      footprint: foot instanceof LuaTable && foot.map.has(id),
+    });
+  }
+  return out;
+}
+
 // The STR_OVERRIDE of the SPR side: effect ids whose ported `file` names an asset
 // this client does not ship, mapped to the GRF path holding the same effect.
 const SPR_EFFECT_OVERRIDE = {
@@ -2750,7 +2879,7 @@ export function sprEffectCandidates(id, file) {
 // Most resource names are already ASCII; the Korean-named ones aren't, so we fall
 // back to the .str folder name (minus the efst_ prefix), e.g.
 // efst_angel_fluttering → "angel_fluttering", then the .str basename.
-function effectKey(res, strPath) {
+export function effectKey(res, strPath) {
   const k = normRes(res);
   if (/^[a-z0-9_]+$/.test(k)) return k;
   const segs = strPath.split("/");
@@ -2760,6 +2889,9 @@ function effectKey(res, strPath) {
 }
 
 const strBase = (p) => p.slice(p.lastIndexOf("/") + 1).replace(/\.str$/, "");
+// The gateway only serves [a-z0-9_] keys (see handleEffect), so a key it would
+// reject is a bundle nobody could fetch — the caller reports it instead.
+const effectKeyOk = (key) => /^[a-z0-9_]+$/.test(key);
 const isMinStr = (p) => strBase(p).startsWith("min_"); // low-spec "minimized" variant
 
 // Map a resource name → a .str path in the GRF. Returns { str } on success, or
@@ -2957,7 +3089,7 @@ function extractEffects(grfPath, outBase, args) {
         continue;
       }
       const key = effectKey(eff.res, r.str);
-      if (!/^[a-z0-9_]+$/.test(key)) {
+      if (!effectKeyOk(key)) {
         // The key is the /effects/{key}/ URL segment; the gateway only serves
         // [a-z0-9_] keys. A non-ASCII .str folder would yield an unservable
         // bundle — flag it for a romanized override instead of writing it.
@@ -2990,13 +3122,84 @@ function extractEffects(grfPath, outBase, args) {
       .sort((a, b) => a.id - b.id);
     writeFileSync(join(root, "index.json"), JSON.stringify({ items }));
 
+    // Every key produced so far. The costume pass owns a key outright: the map
+    // and stone passes below reuse a bundle it already built rather than
+    // rewriting it, so one .str is only ever extracted once.
+    const producedKeys = new Set(resolved.map((e) => e.key));
+
+    // Graphic stones (see STONE_HAT_EFFECT): stone item id → the .str its hat
+    // effect plays, resolved through the client's own HatEffectInfo table, and
+    // built into the same /effects/<key>/ bundles. Keyed by the STONE's id —
+    // the tradeable item the consumer lists — not the enchant's.
+    console.error("\nGraphic stones…");
+    const hatEffects = readHatEffectTable(grf);
+    const stoneItems = [];
+    const stoneBuiltin = [];
+    const stoneFootprint = [];
+    const stoneUnresolved = [];
+    for (const [idText, hatEf] of Object.entries(STONE_HAT_EFFECT)) {
+      const id = Number(idText);
+      const row = hatEffects?.get(hatEf.toLowerCase());
+      if (!row) {
+        stoneUnresolved.push({ id, hatEf, why: hatEffects ? "not in HatEFID" : "hat-effect table unreadable" });
+        continue;
+      }
+      if (row.footprint) {
+        stoneFootprint.push({ id, hatEf });
+        continue;
+      }
+      if (!row.str) {
+        // No .str, so nothing to bundle either way — but the two reasons differ.
+        // A hatEffectID is the client saying "I draw this myself"; no id at all
+        // (HAT_EF_Golden_Aura_TW) is a constant declared and then never given a
+        // row, which the client can't draw either. Split them so the report can.
+        (row.builtin == null ? stoneUnresolved : stoneBuiltin).push({
+          id,
+          hatEf,
+          ...(row.builtin == null ? { why: "no hatEffectTable row" } : { effect: row.builtin }),
+        });
+        continue;
+      }
+      // No resource name to key on — the .str folder is the key, exactly as it
+      // is for the Korean-named costumes (see effectKey).
+      const key = effectKey("", row.str);
+      if (!effectKeyOk(key)) {
+        stoneUnresolved.push({ id, hatEf, why: `unservable key ${JSON.stringify(key)}` });
+        console.error(`  ! ${id} ${hatEf}: non-ASCII key ${JSON.stringify(key)}`);
+        continue;
+      }
+      if (!producedKeys.has(key)) {
+        const outDir = join(root, key);
+        rmSync(outDir, { recursive: true, force: true });
+        mkdirSync(outDir, { recursive: true });
+        try {
+          const info = buildEffect(grf, row.str, key, outDir);
+          const roundTrip = info.bytesRead === info.total ? "" : ` (! str bytesRead ${info.bytesRead}/${info.total})`;
+          console.error(
+            `  ✓ ${key} (stone ${id}, ${hatEf}) → ${info.layers} layers, ${info.textures} textures` +
+              (info.texMissing ? ` (${info.texMissing} missing)` : "") + roundTrip,
+          );
+          producedKeys.add(key);
+        } catch (err) {
+          rmSync(outDir, { recursive: true, force: true });
+          stoneUnresolved.push({ id, hatEf, why: err.message });
+          console.error(`  ! ${key} (stone ${id}): ${err.message}`);
+          continue;
+        }
+      } else {
+        console.error(`  ✓ ${key} (stone ${id}, ${hatEf}) → reused`);
+      }
+      stoneItems.push({ id, effect: key });
+    }
+    stoneItems.sort((a, b) => a.id - b.id);
+    writeFileSync(join(root, "stones.json"), JSON.stringify({ items: stoneItems }));
+
     // In-world map effects: build a /effects/<key>/ bundle for every servable STR
     // effect in the ported EffectTable, so any map's manifest `effects[].str` keys
     // (e.g. iz_dun03's bubble1..bubble4) resolve. The table is the bounded authority,
     // so this is independent of which maps are extracted. Costume keys win on a
     // collision (already produced above). Each key picks the first id-path that
     // exists in the GRF (handles a basename shared across ids, e.g. safetywall).
-    const producedKeys = new Set(resolved.map((e) => e.key));
     const keyPaths = new Map(); // key -> ordered unique candidate paths
     for (const id of Object.keys(EFFECT_STR_TABLE)) {
       for (const { key, path } of effectStrRefs(Number(id))) {
@@ -3104,6 +3307,33 @@ function extractEffects(grfPath, outBase, args) {
     console.error(`  map effects: ${mapBuilt} built` + (mapMissing.length ? `, ${mapMissing.length} not in GRF` : "") + (mapFailed.length ? `, ${mapFailed.length} failed` : ""));
     console.error(`  sprite effects: ${spritesBuilt} built` + (spriteFailed.length ? `, ${spriteFailed.length} failed: [${spriteFailed.join(", ")}]` : "") + ` → sprites/`);
     console.error(`  catalogue:  index.json (${items.length} items)`);
+    console.error(
+      `  stones:     ${stoneItems.length} bundled, ${stoneBuiltin.length} built into the client, ` +
+        `${stoneFootprint.length} footprints (not bundled), ${stoneUnresolved.length} unresolved` +
+        ` → stones.json`,
+    );
+    if (stoneBuiltin.length) {
+      // Most of these have no asset at all (the client draws them procedurally,
+      // or tints the body). A couple name an effect id the table does give a
+      // played sprite, which the SPR pass above has already bundled — that is
+      // not a .str, so it can't be a stones.json key, but it is not nothing
+      // either and the report should not call it unrenderable.
+      console.error(`\n  Stones skipped (effect compiled into the client, so there is no .str):`);
+      for (const x of stoneBuiltin) {
+        const spr = existsSync(join(spritesRoot, `eff_${x.effect}`)) ? `\tsprites/eff_${x.effect}/` : "\tno asset";
+        console.error(`    ${x.id}\t${x.hatEf}\teffect ${x.effect}${spr}`);
+      }
+    }
+    if (stoneFootprint.length) {
+      console.error(`
+  Stones skipped (footprints — a per-step decal, not one looping effect):`);
+      for (const x of stoneFootprint) console.error(`    ${x.id}	${x.hatEf}`);
+    }
+    if (stoneUnresolved.length) {
+      console.error(`
+  Stones unresolved:`);
+      for (const x of stoneUnresolved) console.error(`    ${x.id}	${x.hatEf}	${x.why}`);
+    }
     if (unresolved.length) {
       console.error(`\n  Unresolved (need a manual STR_OVERRIDE entry):`);
       for (const u of unresolved) {

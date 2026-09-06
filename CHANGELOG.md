@@ -5,6 +5,44 @@ continuously (no version tags), so entries are grouped by date.
 
 ## 2026-09-04
 
+### Added
+- **`/effects/stones.json` — the graphic stones.** The *Pedras Gráficas* from
+  Malangdo's Loja Fashion are not costumes: a stone goes *inside* a costume
+  already equipped in a position, and what it plays is a hat effect — the same
+  `.str` system `--effects` already extracts. `--effects` now writes a catalogue
+  of them next to `index.json`, keyed by the **stone's** item id (the tradeable
+  one a shop lists, not the enchant it becomes), and builds the bundles it names.
+  12 of the 29 stones resolve; a stone with no entry means "no preview", which
+  the consumer already treats as such.
+
+  The chain is stone → enchant → `HAT_EF_*` → `.str` and the client owns only
+  half of it. `HatEffectInfo.lub` maps every `HAT_EF_*` to the file it plays, so
+  that half is read live and a client update repaths it (reading it needs
+  `HatEffectIDs.lub` loaded into the same Lua globals first, or every row keys on
+  `nil` and the table collapses onto one). Nothing in the client links an item id
+  to a `HAT_EF_*` — the server does, running the enchant's `hateffect` script — so
+  that half is the hand-written `STONE_HAT_EFFECT`, transcribed from rAthena's
+  `item_db` and cross-checked against each enchant's own `resourceName` where that
+  name is specific rather than the generic `블루크리스탈조각`. Six of its rows are
+  confirmed by eye against the extracted textures, because an effect's *name* is
+  no guide to what it draws: `HAT_EF_magical_feather` draws hearts (*Corações*),
+  `HAT_EF_LJOSALFAR` sparkles (*Cintilação*), `HAT_EF_ResonateTaego` a dragon
+  (*Dragão Alado*), `HAT_EF_C_Time_Accessory` a clock face and hand (*Relógios*),
+  `HAT_EF_WATER_BELOW4` a pool of water (*Poça d'Água*), and *Fantasmas* is
+  `HAT_EF_C_Ghost_Effect`, whose texture is a ghost.
+
+  The 17 that produce nothing split three ways, and the distinction is the point
+  of the report. **10 are compiled into the client** — a `hatEffectID` row with no
+  `resourceFileName`, so no `.str` exists. Eight of those have no asset at all;
+  the other two, *Raios Vermelhos* and *Espaço Digital*, name a played sprite the
+  same run already bundles at `/effects/sprites/eff_<id>/`, which the report now
+  points at rather than calling them unrenderable — a different bundle shape, so
+  not a `stones.json` key as the file stands. **6 are footprints**, a decal
+  stamped per footstep out of two `.str` plus placement, which one bundle key
+  cannot describe, so they are reported rather than forced into the same shape.
+  And *Ventania* declares `HAT_EF_Golden_Aura_TW` in `HatEffectIDs.lub`, then
+  gives it no row in any table and ships no `.str`.
+
 ### Fixed
 - **Every CI deploy stamped the same cache epoch.** `DEPLOY_EPOCH` is baked into
   the wasm binary and forms part of every edge-cache key, so bumping it is how a

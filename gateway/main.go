@@ -118,7 +118,7 @@ func main() {
 	if fi, err := os.Stat(cfg.effectsDir); err != nil || !fi.IsDir() {
 		log.Printf("effects: %s not found — /effects/* will return 404 (run extract-grf.mjs --effects)", cfg.effectsDir)
 	} else {
-		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png}, /effects/sprites/{key}/{sprite.json,N.png} and /effects/index.json", cfg.effectsDir)
+		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png}, /effects/sprites/{key}/{sprite.json,N.png}, /effects/index.json and /effects/stones.json", cfg.effectsDir)
 	}
 
 	if fi, err := os.Stat(filepath.Join(cfg.resourceDir, "data", "texture", "effect")); err != nil || !fi.IsDir() {
@@ -385,6 +385,7 @@ func (s *server) servePNGByKind(w http.ResponseWriter, r *http.Request, prefix, 
 // extract-grf.mjs --effects produces for the latamvisuais map simulator:
 //
 //   /effects/index.json              the costume catalogue ({items:[{id,name,slots,effect}]})
+//   /effects/stones.json             the graphic-stone catalogue ({items:[{id,effect}]})
 //   /effects/{key}/effect.json       the parsed .str keyframe animation
 //   /effects/{key}/tex_N.png         that effect's layer textures
 //   /effects/sprites/{key}/sprite.json   a sprite map-effect's per-frame play list ({frames:[{img,delay,offset}]})
@@ -408,7 +409,7 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/effects/")
 	rel := rest // the catalogue, served as-is
 	switch {
-	case rest == "index.json":
+	case rest == "index.json", rest == "stones.json":
 		// served as-is
 	case strings.HasPrefix(rest, "sprites/"):
 		parts := strings.Split(rest, "/") // sprites/{key}/{file}

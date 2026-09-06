@@ -436,9 +436,64 @@ not a `HAT_EF` id → item map. Joining the two by number produces plausible
 nonsense — `HAT_EF_Blossom_Fluttering` lands on `20522` *Miaura* while the item
 that really is `흩날리는벚꽃` sits one row later. Match by resource name instead.
 
+#### Graphic stones
+
+The **Pedras Gráficas** (*Encantamento de Visual*, the Malangdo Loja Fashion)
+are not costumes: a stone is applied *into* a costume already equipped in a
+position, and what the player sees is a hat effect — the same `.str` system, so
+the same bundles. The client models each as two items, the tradeable **stone**
+(whose name is the only place the target position is written) and the **enchant**
+it becomes once applied. `--effects` writes `stones.json` alongside `index.json`,
+keyed by the *stone's* id because that is the item a shop lists.
+
+The chain is stone → enchant → `HAT_EF_*` → `.str`, and the client owns only its
+second half: `HatEffectInfo.lub` maps every `HAT_EF_*` to the file it plays, read
+live so a client update repaths them. Nothing in the client links an item id to a
+`HAT_EF_*` — the server does, by running the enchant's `hateffect` script — so
+that half is the hand-written `STONE_HAT_EFFECT` table, transcribed from
+rAthena's `item_db` and cross-checked against each enchant's own `resourceName`
+wherever that name is specific rather than the generic `블루크리스탈조각`. One row
+overrides rAthena on that evidence: *Raios Vermelhos* is `HAT_EF_BAKURETSU_HADOU`
+and not `HAT_EF_DOUBLEGUMGANG`, because its enchant's `resourceName` is exactly
+the sprite the former plays and the latter's effect id isn't in the effect table
+at all. Two more come from the enchant's `aegisName`, which rAthena has no script
+for (`Golden_Aura_TW`, `Magic_D_Space_BTM`).
+
+Only 12 of the 29 stones produce a bundle, and the ways of missing are worth
+telling apart:
+
+- **10 are built into the client**: their `hatEffectTable` row carries a
+  `hatEffectID` instead of a `resourceFileName`, so there is no `.str` to bundle.
+  Eight of those ids have no asset at all — the client draws them procedurally or
+  just tints the body (Miniatura, Palidez, Sombra, Aura Verde, …) — and are
+  permanently unrenderable. The other two, *Raios Vermelhos* (effect `1130`) and
+  *Espaço Digital* (effect `1240`), name a played **sprite** that the same
+  `--effects` run already bundles at `/effects/sprites/eff_<id>/`; the report
+  points at it. That is a different bundle shape from a `.str`, so it can't be a
+  `stones.json` key as the file stands — showing those two would need the
+  catalogue (and the consumer) to carry a sprite reference as well.
+- **6 are footprints**, and a footprint is a different animation shape: a decal
+  stamped once per footstep *while the character walks*, out of a separate table
+  (`FootPrintEffectTable`) with four `.str` slots — bottom and top × left and
+  right, the same file in both left/right slots for all six of these — plus the
+  placement they need (`Scale_Bottom`, `Scale_Top`, `Height_Top`, `Stride`,
+  `Gap`). One bundle key cannot describe that, so they are reported rather than
+  forced into the same shape; the assets are all in the GRF, under
+  `data/texture/effect/footprint*/`.
+
+The last one out is *Ventania* (`HAT_EF_Golden_Aura_TW`): this client declares the
+constant in `HatEffectIDs.lub` and then gives it no row in either table and ships
+no matching `.str` — nothing to draw, and nothing to draw it from.
+
+A stone has no resource name to key on, so its bundle key is derived from the
+`.str` folder alone (`efst_ljosalfar/ljosalfar.str` → `ljosalfar`), the same
+fallback the Korean-named costumes take. A stone that plays a `.str` a costume
+already produced reuses that bundle rather than writing a second copy.
+
 | Path | What you get |
 |---|---|
 | `GET /effects/index.json` | Catalogue: `{"items":[{"id","name","slots","effect"}]}` — one entry per effect-only costume (`effect` is the bundle key; there is no character `view`). |
+| `GET /effects/stones.json` | Graphic-stone catalogue: `{"items":[{"id","effect"}]}` — `id` is the **stone's** item id, `effect` its bundle key. Only the stones that play a `.str` appear; a missing stone means "no preview", not an error (see [Graphic stones](#graphic-stones)). |
 | `GET /effects/{key}/effect.json` | The parsed `.str` animation: `{"key","fps","maxKey","layers":[{"textures":[…],"anims":[…]}]}`. |
 | `GET /effects/{key}/tex_N.png` | That effect's layer textures (TGA alpha kept; BMP magenta-keyed → alpha). |
 | `GET /effects/sprites/{key}/sprite.json` | A sprite-based effect's play list: `{"frames":[{"img":"0.png","delay":96,"offset":[x,y]},…]}` — frames in play order, per-frame `delay` in ms, and `offset` (RO px, +x right / +y down) the composited image centre relative to the effect's placement origin. `key` is a map effect's slug (`torch_01`) or `eff_<id>` for the skill/hat effects the replay viewer plays by effect id. |
@@ -446,6 +501,7 @@ that really is `흩날리는벚꽃` sits one row later. Match by resource name i
 
 ```
 /effects/index.json
+/effects/stones.json
 /effects/c_spot_light/effect.json
 /effects/c_spot_light/tex_0.png
 /effects/sprites/torch_01/sprite.json
@@ -923,7 +979,7 @@ tools/post-novidades.mjs  # announce an asset update in #novidades
 resources/                # YOUR extracted GRF assets (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*
 resources/illust/         # card artwork (extract-grf.mjs --illust), served at /illust/*
-resources/effects/        # effect-only costume bundles (extract-grf.mjs --effects), served at /effects/*
+resources/effects/        # effect-only costume + graphic-stone bundles (extract-grf.mjs --effects), served at /effects/*
 resources/maps/           # world-map bundles (extract-grf.mjs --maps), served at /maps/*
 resources/bgm/            # per-map background music (extract-grf.mjs --bgm), served at /bgm/*
 resources/sounds/         # skill/effect/monster sound effects (extract-grf.mjs --sounds), served at /effect/sound
@@ -1199,6 +1255,12 @@ the **sprite-based** map effects (`SPRITE_EFFECT_TABLE`: `EF_TORCH`/`EF_SMOKE`/
 `EF_BANJJAKII`) into `resources/effects/sprites/<key>/` — one composited `N.png` per
 `.act` frame plus a `sprite.json` `{frames:[{img, delay, offset}]}` play list — so a
 map's `sprite` effect references resolve.
+
+Last, it writes `resources/effects/stones.json`: the **graphic stones** (see
+[Graphic stones](#graphic-stones)) that play a `.str` hat effect, each mapped to
+its bundle key — reusing a costume's bundle where the two play the same file. The
+report accounts for all 29: bundled, built into the client (no asset exists),
+footprints (a different animation shape, deliberately not bundled), unresolved.
 
 To serve the world maps (`/maps/*`), run the map extraction step:
 

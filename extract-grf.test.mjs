@@ -37,6 +37,9 @@ import {
   decodeClientString,
   actDrawsNothing,
   hatEffectSprite,
+  hatEffectIndex,
+  STONE_HAT_EFFECT,
+  effectKey,
   sprEffectCandidates,
   parseCardIllustTable,
   pickCardIllust,
@@ -1623,4 +1626,84 @@ test("buildRobeIndex records the root sprite and every per-job hash", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+
+// ---------------------------------------------------------------------------
+// Graphic stones (--effects → stones.json)
+// ---------------------------------------------------------------------------
+
+// A HatEFID name reaches one of three fates, and the stones pass branches on
+// exactly this: a .str to extract, an executable-compiled id with no asset, or
+// a footprint (a per-step decal built from four .str, not one looping effect).
+// A name declared and then never given a row is a fourth — the client draws
+// nothing for it either, so it must not look like a built-in.
+test("hatEffectIndex separates .str effects, built-ins, footprints and dead names", () => {
+  const tbl = (obj) => {
+    const t = new LuaTable();
+    for (const [k, v] of Object.entries(obj)) t.set(Number.isNaN(Number(k)) ? k : Number(k), v);
+    return t;
+  };
+  const ids = tbl({
+    HAT_EF_LJOSALFAR: 4,
+    HAT_EF_Shrink: 17,
+    FOOTPRINT_EF_phoenix: 287,
+    HAT_EF_Golden_Aura_TW: 278,
+  });
+  const table = tbl({
+    // the client writes Windows separators and mixed case; both are normalized
+    4: tbl({ resourceFileName: "efst_Ljosalfar\\ljosalfar.str" }),
+    17: tbl({ hatEffectID: 421 }),
+  });
+  const foot = tbl({ 287: tbl({ Type: 4 }) });
+  const idx = hatEffectIndex(ids, table, foot);
+
+  assert.deepEqual(idx.get("hat_ef_ljosalfar"), {
+    id: 4,
+    str: "data/texture/effect/efst_ljosalfar/ljosalfar.str",
+    builtin: null,
+    footprint: false,
+  });
+  assert.deepEqual(idx.get("hat_ef_shrink"), { id: 17, str: null, builtin: 421, footprint: false });
+  assert.deepEqual(idx.get("footprint_ef_phoenix"), { id: 287, str: null, builtin: null, footprint: true });
+  // declared, never given a row: nothing to draw, and not a built-in either
+  assert.deepEqual(idx.get("hat_ef_golden_aura_tw"), { id: 278, str: null, builtin: null, footprint: false });
+
+  // Lookup is by lowercased name because rAthena's script constants and the
+  // client's own HatEFID casing disagree (HAT_EF_VALHALLA_IDOL vs _Valhalla_Idol).
+  assert.equal(idx.get("HAT_EF_LJOSALFAR"), undefined);
+
+  assert.equal(hatEffectIndex(null, table, foot), null);
+  assert.equal(hatEffectIndex(ids, undefined, foot), null);
+});
+
+// The stone → HAT_EF_* link is the one part of the chain the client does not
+// own (the server runs the enchant's hateffect script), so it is transcribed by
+// hand and nothing downstream can catch a typo. Pin its shape: the 29 stones
+// the Loja Fashion sells, every value a constant name the client could declare,
+// and the six garment stones the footprint ones.
+test("STONE_HAT_EFFECT covers the 29 graphic stones with well-formed effect names", () => {
+  const ids = Object.keys(STONE_HAT_EFFECT).map(Number);
+  assert.equal(ids.length, 29);
+  assert.ok(ids.every((id) => Number.isInteger(id) && id > 0));
+  for (const [id, name] of Object.entries(STONE_HAT_EFFECT)) {
+    assert.match(name, /^(HAT_EF|FOOTPRINT_EF)_[A-Za-z0-9_]+$/, `stone ${id}`);
+  }
+  // The garment stones are the footprints — the client only draws them while
+  // the character walks, and they are the ones stones.json deliberately omits.
+  const footprints = ids.filter((id) => STONE_HAT_EFFECT[id].startsWith("FOOTPRINT_EF_"));
+  assert.deepEqual(footprints.sort((a, b) => a - b), [1001907, 1001908, 1001909, 1002239, 1002240, 1002642]);
+});
+
+// A stone has no resource name to key on, so its bundle key comes from the .str
+// folder alone — the same fallback effectKey already takes for the Korean-named
+// costumes. That is what makes a stone reuse a costume's bundle when both play
+// the same .str, instead of writing a second copy under a second key.
+test("effectKey falls back to the .str folder when there is no resource name", () => {
+  assert.equal(effectKey("", "data/texture/effect/efst_ljosalfar/ljosalfar.str"), "ljosalfar");
+  assert.equal(effectKey("", "data/texture/effect/efst_c_ghost_effect/c_ghost_effect.str"), "c_ghost_effect");
+  // an unprefixed folder is kept as-is
+  assert.equal(effectKey("", "data/texture/effect/c_swirling_flame/vortexf2.str"), "c_swirling_flame");
+  // a resource name still wins when it is servable
+  assert.equal(effectKey("C_Popping_Poring_Aura", "data/texture/effect/efst_x/y.str"), "c_popping_poring_aura");
 });
