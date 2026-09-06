@@ -6,6 +6,25 @@ continuously (no version tags), so entries are grouped by date.
 ## 2026-09-06
 
 ### Fixed
+- **Errors were served with an asset's cache headers, and could revalidate into a
+  304.** `handleRender` called `SetAssetHeaders` up front, so a conditional
+  request could be answered before reading anything. That also stamped
+  `Cache-Control: public, max-age=31536000, immutable` and an ETag onto every
+  error the render then produced. An explicit `max-age` makes a response storable
+  whatever its status, so a browser kept the 500 — and because the ETag hashes the
+  query rather than the bytes, it still matched afterwards: the Worker answered
+  `304`, and the browser re-served the error body it held. Only a cache-bypassing
+  reload escaped it. The EC2 server never did this — it sets the headers with the
+  content already in hand — so the bug arrived with the Cloudflare port.
+
+  `api.SetErrorHeaders` and `api.SetMissingHeaders` now own that contract, with a
+  test that pins the part that is easy to lose: the validator has to go, not just
+  the `max-age`. Errors are `no-store`. A genuine 404 keeps a short TTL, because
+  callers treat it as "nothing here" and skip — but it is no longer immutable:
+  absence is not permanent, a query-derived ETag would not change when a patch
+  added the file, and `effect.ObjectStore.Read` cannot tell absence from a failed
+  read anyway. Five minutes bounds both mistakes; a year did not.
+
 - **Renders were never cached, only their inputs.** Paperdolls came back slower
   after the Cloudflare cutover than the EC2 gateway they replaced: measured from
   GRU, an identical `/image` URL took ~160 ms TTFB against ~85 ms to EC2, and a

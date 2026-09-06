@@ -141,7 +141,7 @@ func main() {
 func route(w http.ResponseWriter, r *http.Request) {
 	bindOnce.Do(bind)
 	if initErr != nil {
-		http.Error(w, "worker not initialised: "+initErr.Error(), http.StatusInternalServerError)
+		fail(w, "worker not initialised: "+initErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -174,7 +174,7 @@ func route(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(p, "/maps/"), strings.HasPrefix(p, "/bgm/"):
 		serveObject(w, r, strings.TrimPrefix(p, "/"), api.CacheImmutable)
 	default:
-		http.NotFound(w, r)
+		missing(w, r)
 	}
 }
 
@@ -202,7 +202,7 @@ func handleDebugR2(w http.ResponseWriter) {
 		Renders: renderCacheStats(),
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		fail(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -227,13 +227,13 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	q := r.URL.Query()
 	req, ext, err := api.BuildRequest(q)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if ext != ".png" {
 		// A frame archive (zip) is a different response shape; the server still
 		// handles those and the Worker does not yet.
-		http.Error(w, "frame archives are not implemented on the Worker yet", http.StatusNotImplemented)
+		fail(w, "frame archives are not implemented on the Worker yet", http.StatusNotImplemented)
 		return
 	}
 
@@ -244,13 +244,18 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	if asGIF {
 		etag += "-gif"
 	}
-	api.SetAssetHeaders(w, etag, api.CacheImmutable)
+	// SetAssetHeaders is deliberately not hoisted above these branches. Stamping
+	// an immutable Cache-Control and an ETag before the work that can fail is what
+	// let a transient 500 be cached and then revalidated into a 304 forever; see
+	// fail() for the full account.
 	if api.IfNoneMatch(r, etag) {
+		api.SetAssetHeaders(w, etag, api.CacheImmutable)
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 
 	if body, contentType, ok := cachedRender(etag); ok {
+		api.SetAssetHeaders(w, etag, api.CacheImmutable)
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 		writeBody(w, body)
@@ -260,7 +265,7 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 
 	renderOnce.Do(setupRender)
 	if renderErr != nil {
-		http.Error(w, "renderer not initialised: "+renderErr.Error(), http.StatusInternalServerError)
+		fail(w, "renderer not initialised: "+renderErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -279,18 +284,18 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 
 	res, err := eng.RenderPlanned(req, plan)
 	if err != nil {
-		http.Error(w, "render: "+err.Error(), http.StatusInternalServerError)
+		fail(w, "render: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	out, err := encode.Animation(res.Frames, res.IntervalMs)
 	if err != nil {
-		http.Error(w, "encode: "+err.Error(), http.StatusInternalServerError)
+		fail(w, "encode: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	contentType := "image/png"
 	if asGIF {
 		if out, err = gifenc.FromAPNG(out); err != nil {
-			http.Error(w, "gif: "+err.Error(), http.StatusInternalServerError)
+			fail(w, "gif: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		contentType = "image/gif"
@@ -298,6 +303,7 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 
 	putRender(etag, contentType, out)
 
+	api.SetAssetHeaders(w, etag, api.CacheImmutable)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
 	writeBody(w, out)
@@ -325,25 +331,26 @@ func serveEffectFile(w http.ResponseWriter, r *http.Request, etagSuffix string, 
 	q := r.URL.Query()
 	file := q.Get("file")
 	if file == "" {
-		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		fail(w, "missing 'file' query parameter", http.StatusBadRequest)
 		return
 	}
 	etag := api.ETagFor(q) + etagSuffix
-	api.SetAssetHeaders(w, etag, api.CacheImmutable)
 	if api.IfNoneMatch(r, etag) {
+		api.SetAssetHeaders(w, etag, api.CacheImmutable)
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	data, name, ok, err := estore.Read(file, exts)
 	if err != nil || !ok {
-		http.NotFound(w, r)
+		missing(w, r)
 		return
 	}
 	out, err := convert(data, name)
 	if err != nil {
-		http.Error(w, "convert: "+err.Error(), http.StatusInternalServerError)
+		fail(w, "convert: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	api.SetAssetHeaders(w, etag, api.CacheImmutable)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
 	writeBody(w, out)
@@ -366,12 +373,12 @@ func strToJSON(data []byte, _ string) ([]byte, error) {
 func handleEffectSound(w http.ResponseWriter, r *http.Request) {
 	file := r.URL.Query().Get("file")
 	if file == "" {
-		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		fail(w, "missing 'file' query parameter", http.StatusBadRequest)
 		return
 	}
 	key, ok := soundKey(file)
 	if !ok {
-		http.NotFound(w, r)
+		missing(w, r)
 		return
 	}
 	serveObject(w, r, key, api.CacheImmutable)
@@ -396,6 +403,40 @@ func soundKey(file string) (string, bool) {
 		return "", false
 	}
 	return "sounds/" + clean, true
+}
+
+// fail and missing are the only two ways this Worker may answer with a non-2xx,
+// and they exist because getting that wrong poisoned real browsers for a year.
+//
+// The failure, in full. handleRender used to call SetAssetHeaders up front, so
+// the ETag was ready before any asset was read and a conditional request could be
+// answered at once. That also stamped `Cache-Control: public, max-age=31536000,
+// immutable` and an ETag onto every *error* the render then produced. An explicit
+// max-age makes a response storable whatever its status, so a browser kept the
+// 500. Worse, the ETag is a hash of the query alone and so still matched on the
+// next visit: the Worker answered 304, and the browser re-served the error body it
+// had. A transient failure — the "Go program has already exited" window, an R2
+// hiccup — became a permanently broken image that only a cache-bypassing reload
+// could clear. The EC2 server never did this; it sets the headers with the content
+// already in hand, which is why the bug arrived with the Cloudflare port.
+//
+// So: an error carries no validator anything could revalidate against, and says
+// no-store.
+func fail(w http.ResponseWriter, msg string, code int) {
+	api.SetErrorHeaders(w)
+	http.Error(w, msg, code)
+}
+
+// missing answers "this asset does not exist" — a distinct thing from a failure,
+// and the reason it is not simply fail: callers treat a 404 as "no effect here"
+// and skip it, so re-asking on every request is waste. It is still not immutable.
+// Absence is not permanent — a client patch adds files — and the ETag would not
+// change when one arrived, since it hashes the query rather than the bytes. It
+// also cannot be distinguished from a read that failed: effect.ObjectStore.Read
+// reports both as "not found". Five minutes bounds both mistakes; a year does not.
+func missing(w http.ResponseWriter, r *http.Request) {
+	api.SetMissingHeaders(w)
+	http.NotFound(w, r)
 }
 
 // rawJSBodyWriter is syumai/workers' escape hatch for handing the runtime a body
@@ -443,7 +484,7 @@ func serveObject(w http.ResponseWriter, r *http.Request, key, cacheControl strin
 	}
 	b, err := objStore.Get(key)
 	if err != nil {
-		http.NotFound(w, r)
+		missing(w, r)
 		return
 	}
 	etag := api.ETagForBytes(b)

@@ -34,6 +34,10 @@ import (
 const (
 	CacheImmutable  = "public, max-age=31536000, immutable"
 	CacheRevalidate = "public, max-age=300, must-revalidate"
+
+	// CacheNoStore is for responses that carry no asset: nothing may keep them,
+	// and nothing may revalidate against them. See SetErrorHeaders.
+	CacheNoStore = "no-store"
 )
 
 func BuildRequest(q url.Values) (engine.Request, string, error) {
@@ -356,6 +360,37 @@ func IfNoneMatch(r *http.Request, etag string) bool {
 		}
 	}
 	return false
+}
+
+// SetErrorHeaders makes a response uncacheable and unrevalidatable, and must be
+// applied to every non-2xx that is not a 304.
+//
+// Both halves are load-bearing, and the second is the one that is easy to miss.
+// An explicit max-age makes a response storable whatever its status, so an error
+// that inherited an asset's Cache-Control is kept. It is the *validator* that
+// makes the damage permanent: these ETags hash the query, not the bytes, so the
+// stale error still matches on the next request, the origin answers 304, and the
+// browser re-serves the error body it had. A transient render failure becomes an
+// image that is broken until the user bypasses their cache.
+//
+// Deleting rather than merely not setting, because a handler may already have
+// stamped the asset headers before reaching the path that failed.
+func SetErrorHeaders(w http.ResponseWriter) {
+	w.Header().Del("Etag")
+	w.Header().Set("Cache-Control", CacheNoStore)
+}
+
+// SetMissingHeaders is SetErrorHeaders for "this asset does not exist", which is
+// an answer rather than a failure: callers treat a 404 as "nothing here" and skip
+// it, so it is worth not re-asking every time.
+//
+// It is still never immutable. Absence is not permanent — a client patch adds
+// files — and a query-derived ETag would not change when one arrived. Nor can
+// absence always be told apart from a failed read. A short TTL bounds both
+// mistakes; a year does not. The validator goes for the same reason as above.
+func SetMissingHeaders(w http.ResponseWriter) {
+	w.Header().Del("Etag")
+	w.Header().Set("Cache-Control", CacheRevalidate)
 }
 
 // SetAssetHeaders applies a cache policy, a quoted ETag, and the wildcard CORS
