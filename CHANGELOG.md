@@ -35,6 +35,16 @@ continuously (no version tags), so entries are grouped by date.
   CI's checkout, and a default that cannot repeat needs no guard.
 
 ### Fixed
+- **A single transient error disabled rendering on an isolate for good.** Both
+  initialisations used `sync.Once`, which latches on *completion*, not on success:
+  one failed manifest read left `renderErr` set for the life of the isolate and
+  every later render answered "renderer not initialised". That is a latent bug
+  that only became reachable once reads could fail — which the timeouts above
+  made possible — and it matches the shape of what was left: a handful of 500s in
+  the first burst after a deploy and none afterwards, because the poisoned isolate
+  was replaced rather than recovered. They latch only on success now, under a
+  mutex, so a failure is retried by the next request.
+
 - **Broken paperdolls on visuais: a render could hang forever.** Reported as
   images that fail and come good on a cache-bypassing reload. It was not a stale
   cache — reproduced in a browser with none, 54 of 56 `/image` requests broken on

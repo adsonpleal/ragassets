@@ -101,11 +101,20 @@ const (
 // only /image and /gif consult — folding it into the first stage would block a
 // /healthz or /bgm request on a cold isolate behind a download it never reads.
 var (
-	bindOnce sync.Once
-	initErr  error
-
-	renderOnce sync.Once
-	renderErr  error
+	// setupMu guards both initialisations. They used to be sync.Once, which was
+	// wrong in a way that only showed once reads could fail: Once latches on
+	// *completion*, not on success, so a single transient error left renderErr set
+	// for the life of the isolate and every later render answered "renderer not
+	// initialised". One bad moment poisoned the isolate permanently — visible as a
+	// handful of 500s in the first burst after a deploy and nothing afterwards,
+	// because the poisoned isolate was eventually replaced rather than recovered.
+	//
+	// Latching only on success is the whole fix. A failure leaves the flag clear,
+	// so the next request tries again; the mutex keeps concurrent requests from
+	// each starting their own attempt.
+	setupMu    sync.Mutex
+	bound      bool
+	renderInit bool
 
 	// Two views of the same bucket, differing only in key prefix.
 	//
@@ -120,11 +129,15 @@ var (
 	estore    *effect.ObjectStore
 )
 
-func bind() {
+// bind builds the bucket-backed stores. Returns an error rather than latching
+// one, so a caller can retry; see setupMu.
+func bind() error {
+	if bound {
+		return nil
+	}
 	bucket, err := r2.NewBucket(bucketBinding)
 	if err != nil {
-		initErr = fmt.Errorf("r2 binding %q: %w", bucketBinding, err)
-		return
+		return fmt.Errorf("r2 binding %q: %w", bucketBinding, err)
 	}
 	dataStore = resource.NewR2Store(bucket, assetEpoch, "data/")
 	objStore = resource.NewR2Store(bucket, assetEpoch, "")
@@ -134,28 +147,33 @@ func bind() {
 	// Finished renders go in the same colo cache, under their own key space (see
 	// rendercache.go).
 	renderCache = cache.New()
+	bound = true
+	return nil
 }
 
 // setupRender fetches the existence manifest and builds the Engine. The manifest
 // is read through objStore rather than straight off the binding, so it goes
 // through the same epoch-keyed colo cache as everything else: one R2 read per
 // colo per deploy rather than one per isolate cold start, forever.
-func setupRender() {
+func setupRender() error {
+	if renderInit {
+		return nil
+	}
 	b, err := objStore.Get(manifestKey)
 	if err != nil {
-		renderErr = fmt.Errorf("load %s: %w", manifestKey, err)
-		return
+		return fmt.Errorf("load %s: %w", manifestKey, err)
 	}
 	m, err := resource.LoadManifest(bytes.NewReader(b))
 	if err != nil {
-		renderErr = fmt.Errorf("parse %s: %w", manifestKey, err)
-		return
+		return fmt.Errorf("parse %s: %w", manifestKey, err)
 	}
 	exist = m
 	// One long-lived Engine, so its parse caches survive across requests. The
 	// per-render prefetch warms the colo cache in parallel; the engine's own
 	// reads then land on that cache rather than on R2.
 	eng = engine.NewWithSourceBudget(dataStore, exist, resolve.DefaultTables(), sprCacheBytes, actCacheBytes)
+	renderInit = true
+	return nil
 }
 
 func main() {
@@ -163,9 +181,11 @@ func main() {
 }
 
 func route(w http.ResponseWriter, r *http.Request) {
-	bindOnce.Do(bind)
-	if initErr != nil {
-		fail(w, "worker not initialised: "+initErr.Error(), http.StatusInternalServerError)
+	setupMu.Lock()
+	err := bind()
+	setupMu.Unlock()
+	if err != nil {
+		fail(w, "worker not initialised: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -311,10 +331,12 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	defer releaseRenderSlot()
 	tr.mark("admitted")
 
-	renderOnce.Do(setupRender)
+	setupMu.Lock()
+	setupErr := setupRender()
+	setupMu.Unlock()
 	tr.mark("setup")
-	if renderErr != nil {
-		fail(w, "renderer not initialised: "+renderErr.Error(), http.StatusInternalServerError)
+	if setupErr != nil {
+		fail(w, "renderer not initialised: "+setupErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
