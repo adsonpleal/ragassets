@@ -272,6 +272,17 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	}
 	renderCacheMisses.Add(1)
 
+	if !acquireRenderSlot() {
+		// Shed rather than queue further. A 503 with Retry-After is something a
+		// caller can act on; a request held until the runtime kills it is not.
+		w.Header().Set("Retry-After", "1")
+		fail(w, "too many renders in flight; retry", http.StatusServiceUnavailable)
+		tr.mark("shed")
+		return
+	}
+	defer releaseRenderSlot()
+	tr.mark("admitted")
+
 	renderOnce.Do(setupRender)
 	tr.mark("setup")
 	if renderErr != nil {
@@ -326,6 +337,49 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	writeBody(w, out)
 	tr.mark("done")
 }
+
+// Admission control for renders.
+//
+// Bounded awaits in the R2 store are what stop a request hanging; this is the
+// second half, and it addresses a different thing: how much work one wasm
+// instance is holding at once. The shim reuses a single Go instance per isolate
+// and runs every request as a goroutine in it, so 60 concurrent renders meant one
+// 128 MiB isolate carrying 60 render working sets and, through Prefetch, several
+// hundred goroutines parked on JS promises. Capping that keeps the instance
+// inside a footprint that has actually been measured.
+//
+// Cache hits are deliberately not gated. They allocate nothing beyond the
+// response, they are the overwhelming majority of traffic once the render cache
+// is warm, and making them queue behind renders would undo the latency win that
+// cache exists for.
+//
+// The cap is generous rather than tight, because the evidence does not support a
+// tight one: the failures were never load-proportional (4 concurrent gave 18
+// failures, 8 gave 0, 16 gave 28, 56 gave 0). This is a ceiling on the worst
+// case, not a throttle on the normal one.
+const (
+	maxConcurrentRenders = 8
+	// admissionTimeout is bounded well inside the runtime's own hang detector, so
+	// a queue that is not draining fails as a 503 the caller can retry rather than
+	// as a killed request the caller sees as a dead connection.
+	admissionTimeout = 10 * time.Second
+)
+
+var renderSlots = make(chan struct{}, maxConcurrentRenders)
+
+// acquireRenderSlot blocks until a slot is free, or gives up.
+func acquireRenderSlot() bool {
+	timer := time.NewTimer(admissionTimeout)
+	defer timer.Stop()
+	select {
+	case renderSlots <- struct{}{}:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func releaseRenderSlot() { <-renderSlots }
 
 // uncachedKeys drops the plan keys the engine has already parsed. The answer is
 // advisory — see resource.Manager.Cached — so a key that is evicted between this

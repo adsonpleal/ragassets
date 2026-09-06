@@ -10,10 +10,73 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/syumai/workers/cloudflare/cache"
 	"github.com/syumai/workers/cloudflare/r2"
 )
+
+// Every await here is bounded, because an unbounded one was observed hanging
+// production. Tracing a burst of 60 concurrent renders caught a request whose
+// last log line was `planned` and which never reached `prefetched`: it entered
+// Prefetch and never came out, and the Workers runtime eventually killed it with
+// "your Worker's code had hung and would never generate a response". The browser
+// sees no status at all, only a connection that dies — which is what a broken
+// paperdoll on visuais actually was.
+//
+// The mechanism is that a Go call into the Cache API or an R2 binding parks the
+// goroutine on a JS promise, and a promise that never settles parks it forever.
+// One such goroutine is enough: Prefetch's wg.Wait() waits on all of them. The
+// shim's reused wasm instance makes this reachable — its runtime context belongs
+// to whichever request booted it, so a subrequest can be issued against an
+// invocation that ended long ago.
+//
+// Nothing here tries to make the promise settle. The point is only that a stall
+// must degrade instead of hanging: a timed-out read is reported as a miss, the
+// engine reads that key through the ordinary path, and the render is slower
+// rather than absent. Failing in 5 seconds also leaves room to fail *inside* the
+// runtime's own limit rather than being killed by it.
+const (
+	// readTimeout bounds a single cache or R2 await. Measured normal: 20-40 ms.
+	readTimeout = 5 * time.Second
+	// prefetchTimeout bounds the whole warm-up batch, so a plan that names many
+	// keys cannot serialise several readTimeouts into a hang of its own.
+	prefetchTimeout = 8 * time.Second
+)
+
+// errTimedOut marks a read abandoned rather than answered. It wraps
+// fs.ErrNotExist so every caller already handles it: the engine treats a missing
+// key as a miss and reads on, which is exactly the degradation wanted.
+var errTimedOut = fmt.Errorf("timed out: %w", fs.ErrNotExist)
+
+// await runs fn on its own goroutine and gives up after d.
+//
+// The goroutine is deliberately not cancelled, because it cannot be: it is parked
+// inside syscall/js waiting on a promise, and nothing in Go can interrupt that.
+// It is left to finish or not, holding one buffered slot so it can never block on
+// send. That leaks a goroutine per timeout, which is the right trade — the leak
+// is bounded by how often a promise wedges, and the alternative is a request that
+// never returns.
+func await[T any](d time.Duration, fn func() (T, error)) (T, error) {
+	type result struct {
+		v   T
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		v, err := fn()
+		ch <- result{v, err}
+	}()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		return r.v, r.err
+	case <-timer.C:
+		var zero T
+		return zero, errTimedOut
+	}
+}
 
 // R2Store reads resource keys from an R2 bucket, through the colo edge cache.
 //
@@ -124,7 +187,8 @@ func (s *R2Store) Get(key string) ([]byte, error) {
 		return nil, fmt.Errorf("resource %q: %w", key, err)
 	}
 
-	if res, err := s.cache.Match(req, nil); err == nil && res != nil && res.Body != nil {
+	match := func() (*http.Response, error) { return s.cache.Match(req, nil) }
+	if res, err := await(readTimeout, match); err == nil && res != nil && res.Body != nil {
 		b, readErr := io.ReadAll(res.Body)
 		res.Body.Close()
 		if readErr == nil {
@@ -136,7 +200,7 @@ func (s *R2Store) Get(key string) ([]byte, error) {
 		// still has the object, and the entry will be replaced below.
 	}
 
-	obj, err := s.bucket.Get(s.prefix + key)
+	obj, err := await(readTimeout, func() (*r2.Object, error) { return s.bucket.Get(s.prefix + key) })
 	if err != nil {
 		return nil, fmt.Errorf("r2 get %q: %w", key, err)
 	}
@@ -221,5 +285,24 @@ func (s *R2Store) Prefetch(keys []string, ex Existence) {
 			_, _ = s.Get(key)
 		}(k)
 	}
-	wg.Wait()
+
+	// Waiting on the WaitGroup through a channel rather than calling wg.Wait()
+	// directly, so the wait itself can be abandoned. Each Get is already bounded
+	// by readTimeout; this is the second bound, covering the case where enough of
+	// them stall that their timeouts stack up past what the runtime will tolerate.
+	//
+	// Abandoning is safe because a prefetch is only a warm-up. Every key it did
+	// not manage to cache is read again by the render, through the same Get and
+	// the same timeout. Giving up here costs latency, never correctness.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(prefetchTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }

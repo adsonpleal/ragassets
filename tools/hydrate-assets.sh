@@ -35,4 +35,10 @@ mkdir -p "$OUT"
 # 69% of traffic — revalidate on every request instead of being cached.
 cp -f worker/_headers "$OUT/_headers"
 
+# And the 404 page. Static Assets is configured not_found_handling "404-page",
+# so without this file a miss is answered with an empty body. This is the copy
+# that actually deploys — CI has no extracted client and never runs
+# stage-assets.sh — so a control file added there has to be added here too.
+cp -f worker/404.html "$OUT/404.html"
+
 check_asset_count "$OUT" 39000
