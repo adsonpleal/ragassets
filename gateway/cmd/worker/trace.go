@@ -4,54 +4,94 @@ package main
 
 import (
 	"fmt"
+	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// Stage tracing for /image and /gif.
+// Stage tracking for /image and /gif.
 //
-// Why it exists: the Workers runtime was observed killing 23 of 60 concurrent
-// renders with "your Worker's code had hung and would never generate a response".
-// A hang produces no response, no status and no stack, so the only way to learn
-// where it stalls is to say where it has got to. Each stage prints a line, and a
-// request that hung is one whose id has a first line and no `done`; the last
-// stage it printed is the one it died in.
+// This started as printf tracing, to answer a question that had no other way in:
+// the Workers runtime was killing concurrent renders with "your Worker's code had
+// hung and would never generate a response", and a hang leaves no response, no
+// status and no stack. Printing each stage found it in one burst — a request
+// whose last line was `planned` and which never reached `prefetched`, i.e. stuck
+// inside Prefetch on a JS promise that never settled.
 //
-// Every request logs, deliberately. Sampling would be the obvious economy and
-// the wrong one: the failure is intermittent and not load-proportional (4
-// concurrent gave 18 failures, 8 gave 0, 16 gave 28, 56 gave 0), so a sample
-// that misses the bad burst tells us nothing. Volume is bounded by /image
-// traffic, which the render cache has already cut sharply.
+// What survives is the part worth keeping. Logging every stage of every request
+// was right for a diagnostic and wrong as a fixture, but dropping it entirely
+// would leave the same blind spot if this recurs. So stages are now recorded in
+// memory and reported through /debug/r2 instead: a request that is stuck shows up
+// as an in-flight entry whose stage stops advancing, which is the same signal at
+// no cost per request. Only two things reach the log — a render that was shed,
+// and one slow enough to be worth a line.
 //
-// This is a diagnostic, not a permanent fixture. Once the stall is located it
-// should be cut back to the stage boundaries that turn out to matter.
-//
-// A caution on the numbers: Workers freezes the clock except while I/O is in
-// flight, so these durations measure I/O and not CPU. A stage that shows 0 ms did
-// not necessarily run quickly — it did not wait. That is exactly the right
-// instrument here, because a hang is a wait that never ends.
-var traceSeq atomic.Int64
+// A caution on the durations: Workers freezes the clock except while I/O is in
+// flight, so these measure waiting, not CPU. That is the right instrument for a
+// hang, which is a wait that never ends, and the wrong one for a slow render.
+const slowRender = 3 * time.Second
+
+var (
+	traceSeq atomic.Int64
+	traceMu  sync.Mutex
+	inflight = map[int64]*tracer{}
+)
 
 type tracer struct {
 	id    int64
+	kind  string
 	start time.Time
-	last  time.Time
+	stage string
 }
 
-func startTrace(what string) *tracer {
-	now := time.Now()
-	t := &tracer{id: traceSeq.Add(1), start: now, last: now}
-	fmt.Printf("trace %s/%d %s enter\n", isolateID, t.id, what)
+func startTrace(kind string) *tracer {
+	t := &tracer{id: traceSeq.Add(1), kind: kind, start: time.Now(), stage: "enter"}
+	traceMu.Lock()
+	inflight[t.id] = t
+	traceMu.Unlock()
 	return t
 }
 
-// mark reports reaching a stage, with the wait since the previous one and since
-// entry. Printed rather than buffered until the end: a request that hangs never
-// reaches an end, and the whole point is to see how far it got.
+// mark records reaching a stage. Deliberately cheap: no formatting, no I/O.
 func (t *tracer) mark(stage string) {
-	now := time.Now()
-	fmt.Printf("trace %s/%d %s +%dms total=%dms\n",
-		isolateID, t.id, stage,
-		now.Sub(t.last).Milliseconds(), now.Sub(t.start).Milliseconds())
-	t.last = now
+	traceMu.Lock()
+	t.stage = stage
+	traceMu.Unlock()
+}
+
+// finish retires the request, and says so only if it was slow enough to matter.
+func (t *tracer) finish() {
+	traceMu.Lock()
+	delete(inflight, t.id)
+	stage := t.stage
+	traceMu.Unlock()
+	if d := time.Since(t.start); d >= slowRender {
+		fmt.Printf("slow %s %s/%d %s %dms\n", t.kind, isolateID, t.id, stage, d.Milliseconds())
+	}
+}
+
+// InflightRender is one render still running, as reported by /debug/r2.
+type InflightRender struct {
+	ID    int64  `json:"id"`
+	Kind  string `json:"kind"`
+	Stage string `json:"stage"`
+	AgeMs int64  `json:"ageMs"`
+}
+
+// inflightRenders snapshots what is currently running, oldest first. An entry
+// that is old and whose stage never changes between two samples is a stall, and
+// its stage names where.
+func inflightRenders() []InflightRender {
+	traceMu.Lock()
+	out := make([]InflightRender, 0, len(inflight))
+	for _, t := range inflight {
+		out = append(out, InflightRender{
+			ID: t.id, Kind: t.kind, Stage: t.stage,
+			AgeMs: time.Since(t.start).Milliseconds(),
+		})
+	}
+	traceMu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].AgeMs > out[j].AgeMs })
+	return out
 }

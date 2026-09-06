@@ -188,18 +188,20 @@ var isolateID = fmt.Sprintf("%x", time.Now().UnixNano())
 // traffic. Counts only — nothing about what was read, or by whom.
 func handleDebugR2(w http.ResponseWriter) {
 	type payload struct {
-		Isolate string           `json:"isolate"`
-		Epoch   string           `json:"epoch"`
-		Data    resource.Stats   `json:"data"`
-		Objects resource.Stats   `json:"objects"`
-		Renders RenderCacheStats `json:"renders"`
+		Isolate  string           `json:"isolate"`
+		Epoch    string           `json:"epoch"`
+		Data     resource.Stats   `json:"data"`
+		Objects  resource.Stats   `json:"objects"`
+		Renders  RenderCacheStats `json:"renders"`
+		Inflight []InflightRender `json:"inflight"`
 	}
 	out, err := json.Marshal(payload{
-		Isolate: isolateID,
-		Epoch:   deployEpoch,
-		Data:    dataStore.Stats(),
-		Objects: objStore.Stats(),
-		Renders: renderCacheStats(),
+		Isolate:  isolateID,
+		Epoch:    deployEpoch,
+		Data:     dataStore.Stats(),
+		Objects:  objStore.Stats(),
+		Renders:  renderCacheStats(),
+		Inflight: inflightRenders(),
 	})
 	if err != nil {
 		fail(w, err.Error(), http.StatusInternalServerError)
@@ -229,6 +231,7 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 		kind = "gif"
 	}
 	tr := startTrace(kind)
+	defer tr.finish()
 
 	q := r.URL.Query()
 	req, ext, err := api.BuildRequest(q)
@@ -267,7 +270,6 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 		writeBody(w, body)
-		tr.mark("done-cached")
 		return
 	}
 	renderCacheMisses.Add(1)
@@ -335,7 +337,6 @@ func handleRender(w http.ResponseWriter, r *http.Request, asGIF bool) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
 	writeBody(w, out)
-	tr.mark("done")
 }
 
 // Admission control for renders.

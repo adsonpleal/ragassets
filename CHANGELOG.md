@@ -6,6 +6,42 @@ continuously (no version tags), so entries are grouped by date.
 ## 2026-09-06
 
 ### Fixed
+- **Broken paperdolls on visuais: a render could hang forever.** Reported as
+  images that fail and come good on a cache-bypassing reload. It was not a stale
+  cache — reproduced in a browser with none, 54 of 56 `/image` requests broken on
+  first load, while the same URL `fetch`ed as a valid PNG and re-assigning the
+  identical `src` loaded it at once. Tailing production during a 60-request burst
+  named it: 23 requests killed with *"the Workers runtime canceled this request
+  because it detected that your Worker's code had hung and would never generate a
+  response"*. A hang yields no status at all, only a connection that dies, which
+  is why it reached the browser as a broken image rather than an error.
+
+  Stage tracing located it in one run — a request whose last line was `planned`
+  and which never reached `prefetched`. A Go call into the Cache API or an R2
+  binding parks the goroutine on a JS promise, and one that never settles parks it
+  forever; `Prefetch`'s `wg.Wait()` waits on all of them, so a single wedged read
+  hangs the request. The shim's reused wasm instance is what makes it reachable:
+  its runtime context belongs to whichever request booted it, so a subrequest can
+  be issued against an invocation that ended long ago.
+
+  Every await is now bounded — 5s for one read, 8s for the whole prefetch batch,
+  both inside the runtime's own limit so this fails as an error rather than as a
+  kill. A timed-out read wraps `fs.ErrNotExist`, which every caller already treats
+  as a miss, so the engine reads that key through the ordinary path and the render
+  is slower rather than absent. Concurrent renders are also capped at 8 (cache
+  hits are not gated), bounding what one 128 MiB isolate carries. After the fix,
+  60 concurrent fresh renders: 60 × 200.
+
+- **Every icon the client never shipped booted the Go runtime.** Static Assets
+  defaults to `not_found_handling: "none"`, which sends a miss to the Worker — so
+  `/icons/item/400246.png`, `/icons/item/20094.png` and the rest of the absent set
+  were billed Worker invocations for requests meant to be free and unmetered, and
+  were exposed to the runtime's failure modes; two were caught in the same tail
+  throwing "Go program has already exited". A static `404.html` is served instead
+  and the Worker is never invoked. Nothing is lost: every path `route()` handles
+  is in `run_worker_first`. Staged from `hydrate-assets.sh` as well as
+  `stage-assets.sh` — CI has no extracted client and only ever runs the former.
+
 - **Errors were served with an asset's cache headers, and could revalidate into a
   304.** `handleRender` called `SetAssetHeaders` up front, so a conditional
   request could be answered before reading anything. That also stamped
