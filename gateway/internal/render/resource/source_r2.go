@@ -37,8 +37,8 @@ import (
 // rather than absent. Failing in 5 seconds also leaves room to fail *inside* the
 // runtime's own limit rather than being killed by it.
 const (
-	// readTimeout bounds a single cache or R2 await. Measured normal: 20-40 ms.
-	readTimeout = 5 * time.Second
+	// ReadTimeout bounds a single cache or R2 await. Measured normal: 20-40 ms.
+	ReadTimeout = 5 * time.Second
 	// prefetchTimeout bounds the whole warm-up batch, so a plan that names many
 	// keys cannot serialise several readTimeouts into a hang of its own.
 	prefetchTimeout = 8 * time.Second
@@ -49,7 +49,9 @@ const (
 // key as a miss and reads on, which is exactly the degradation wanted.
 var errTimedOut = fmt.Errorf("timed out: %w", fs.ErrNotExist)
 
-// await runs fn on its own goroutine and gives up after d.
+// Await runs fn on its own goroutine and gives up after d. Exported because the
+// Worker's render cache writes through the same JS promise machinery and needs
+// the same bound.
 //
 // The goroutine is deliberately not cancelled, because it cannot be: it is parked
 // inside syscall/js waiting on a promise, and nothing in Go can interrupt that.
@@ -57,7 +59,7 @@ var errTimedOut = fmt.Errorf("timed out: %w", fs.ErrNotExist)
 // send. That leaks a goroutine per timeout, which is the right trade — the leak
 // is bounded by how often a promise wedges, and the alternative is a request that
 // never returns.
-func await[T any](d time.Duration, fn func() (T, error)) (T, error) {
+func Await[T any](d time.Duration, fn func() (T, error)) (T, error) {
 	type result struct {
 		v   T
 		err error
@@ -188,7 +190,7 @@ func (s *R2Store) Get(key string) ([]byte, error) {
 	}
 
 	match := func() (*http.Response, error) { return s.cache.Match(req, nil) }
-	if res, err := await(readTimeout, match); err == nil && res != nil && res.Body != nil {
+	if res, err := Await(ReadTimeout, match); err == nil && res != nil && res.Body != nil {
 		b, readErr := io.ReadAll(res.Body)
 		res.Body.Close()
 		if readErr == nil {
@@ -200,7 +202,7 @@ func (s *R2Store) Get(key string) ([]byte, error) {
 		// still has the object, and the entry will be replaced below.
 	}
 
-	obj, err := await(readTimeout, func() (*r2.Object, error) { return s.bucket.Get(s.prefix + key) })
+	obj, err := Await(ReadTimeout, func() (*r2.Object, error) { return s.bucket.Get(s.prefix + key) })
 	if err != nil {
 		return nil, fmt.Errorf("r2 get %q: %w", key, err)
 	}
@@ -241,7 +243,10 @@ func (s *R2Store) populate(req *http.Request, body []byte) {
 	res.Header.Set("Cache-Control", "public, max-age=31536000, immutable")
 	res.Header.Set("Content-Type", "application/octet-stream")
 	res.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
-	_ = s.cache.Put(req, res)
+	// Bounded like every other await here. A cache write parks on a promise just
+	// as a read does, and an in-flight snapshot caught a render stalled for over
+	// ten seconds on exactly this call.
+	_, _ = Await(ReadTimeout, func() (struct{}, error) { return struct{}{}, s.cache.Put(req, res) })
 }
 
 // PrefetchLimit bounds how many objects are fetched at once. Each R2 binding

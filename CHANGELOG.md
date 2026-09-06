@@ -29,8 +29,14 @@ continuously (no version tags), so entries are grouped by date.
   kill. A timed-out read wraps `fs.ErrNotExist`, which every caller already treats
   as a miss, so the engine reads that key through the ordinary path and the render
   is slower rather than absent. Concurrent renders are also capped at 8 (cache
-  hits are not gated), bounding what one 128 MiB isolate carries. After the fix,
-  60 concurrent fresh renders: 60 × 200.
+  hits are not gated), bounding what one 128 MiB isolate carries.
+
+  Cache *writes* were the last unbounded await, and the instrument that replaced
+  the tracing found them: `/debug/r2` now reports what is in flight and at which
+  stage, and a snapshot caught a render sitting at `encoded` — the stage
+  immediately before the render cache is written — for over ten seconds. A write
+  parks on a promise exactly as a read does, so both `R2Store.populate` and
+  `putRender` are bounded too.
 
 - **Every icon the client never shipped booted the Go runtime.** Static Assets
   defaults to `not_found_handling: "none"`, which sends a miss to the Worker — so

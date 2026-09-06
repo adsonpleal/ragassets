@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 
 	"github.com/syumai/workers/cloudflare/cache"
+
+	"github.com/ragassets/gateway/internal/render/resource"
 )
 
 // The finished-render cache.
@@ -118,5 +120,11 @@ func putRender(etag, contentType string, body []byte) {
 	res.Header.Set("Cache-Control", "public, max-age=31536000, immutable")
 	res.Header.Set("Content-Type", contentType)
 	res.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
-	_ = renderCache.Put(req, res)
+	// Bounded, because this is an await like any other. /debug/r2's in-flight
+	// snapshot caught a render sitting at `encoded` — the stage immediately before
+	// this call — for over ten seconds, which is the same wedged-promise failure
+	// the R2 store was hardened against and the last unbounded one left.
+	_, _ = resource.Await(resource.ReadTimeout, func() (struct{}, error) {
+		return struct{}{}, renderCache.Put(req, res)
+	})
 }
