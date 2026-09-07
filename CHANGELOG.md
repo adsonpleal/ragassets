@@ -5,6 +5,39 @@ continuously (no version tags), so entries are grouped by date.
 
 ## 2026-09-06
 
+### Fixed
+- **Isolates wedged, and the shim kept feeding them.** The cause of the hung
+  invocations, found by pointing `/debug/r2`'s in-flight snapshot at a live burst
+  instead of reasoning about it. One isolate was holding **seven requests frozen**
+  — stages `cache-lookup` and `prefetched`, ages advancing in lockstep, the oldest
+  at 17,094,365 ms, which is four and three quarter hours. Another held one for 23
+  minutes. None ever completed.
+
+  A Go runtime can stop making progress without returning from main, so
+  `go.exited` stayed false and the shim went on dispatching into a corpse. Every
+  request routed there joined the pile. That is what the platform was reporting as
+  "your Worker's code had hung and would never generate a response", and what
+  reached clients as empty-bodied 500s — not a slow render, an isolate that
+  stopped and kept accepting work.
+
+  Each instance now records its outstanding dispatches, and one that has been
+  outstanding for 12 s condemns the instance: it is dropped from the cache and the
+  next request boots a fresh runtime. A render's median is 143 ms and its worst
+  observed 1.3 s, so nothing healthy can reach that, and it sits under the
+  platform's own hang detector — the aim is to stop feeding a dead runtime before
+  requests start being killed, not after.
+
+  Detection has to be in JS. Asking a wedged runtime whether it is wedged is a
+  question that cannot come back; `/debug/r2` answered at all only because the
+  request landed on a different isolate. The shim already knows what it dispatched
+  and what never returned.
+
+  This is also why the age-based recycling below measured identical to nothing: it
+  retired healthy instances on a timer and left wedged ones in service, which is
+  exactly backwards. The signal is the wedge, not the age. Requests already stuck
+  are beyond rescue — a Go runtime mid-render has no interruption point — so what
+  this buys is that they stop accumulating.
+
 ### Investigated (no change shipped)
 - **Instance recycling does NOT help either.** The second theory, tested the same
   way and rejected the same way. Reuse means one Go runtime serves every request

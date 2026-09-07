@@ -42,7 +42,53 @@ import { PATCH_INDEX, parsePatchList } from "./patchlist.mjs";
 // resolves when main returns, which drops the cached instance the moment it
 // dies, and every dispatch re-checks the runtime's own exit flag first.
 let mod;
-let booting; // Promise<{go, binding}>, shared by every request arriving during boot
+let booting; // Promise<{go, binding, pending, seq}>, shared by every request arriving during boot
+
+// Wedge detection.
+//
+// A Go runtime can stop making progress without exiting, and when it does this
+// shim used to keep feeding it. Caught in the act by sampling /debug/r2's
+// in-flight snapshot during a burst: one isolate was holding seven requests
+// frozen at `cache-lookup` and `prefetched`, all of their ages advancing in
+// lockstep, the oldest at 17,094,365 ms — four and three quarter hours. Another
+// held one for 23 minutes. None of them ever completed. go.exited was false the
+// whole time, because main had not returned; the runtime was simply not running
+// any more.
+//
+// Every request routed to such an instance joins the pile. That is the failure
+// behind the invocations the Workers runtime kills with "your Worker's code had
+// hung and would never generate a response", and behind the empty-bodied 500s
+// that reach clients: not one slow render, but an isolate that stopped and kept
+// accepting work.
+//
+// Detection has to live here rather than in Go. Asking a wedged runtime whether
+// it is wedged is asking a question that cannot come back — /debug/r2 only
+// answered because the request landed on a different isolate. JS knows enough on
+// its own: it dispatched the request and it knows the promise never settled.
+//
+// So each instance tracks its outstanding dispatches, and one older than
+// WEDGED_MS condemns it. A render's median is 143 ms and its worst observed is
+// ~1.3 s, so twelve seconds cannot be reached by anything healthy, while staying
+// under the runtime's own hang detector — the aim is to stop feeding the corpse
+// before the platform starts killing requests, not after.
+//
+// This is deliberately not the age-or-request-count recycling that was tried and
+// reverted (see CHANGELOG). That retired healthy instances on a timer and left
+// wedged ones in service, which is exactly backwards, and measured identical to
+// no recycling at all in a matched A/B. The signal is the wedge, not the age.
+const WEDGED_MS = 12_000;
+
+// A condemned instance is dropped from the cache, never killed: a Go runtime
+// mid-render has no interruption point, and the requests already stuck in it are
+// beyond rescue either way. What this buys is that the NEXT request gets a live
+// runtime instead of joining them.
+function isWedged(inst) {
+  const now = Date.now();
+  for (const startedAt of inst.pending.values()) {
+    if (now - startedAt >= WEDGED_MS) return true;
+  }
+  return false;
+}
 
 globalThis.tryCatch = (fn) => {
   try {
@@ -74,8 +120,10 @@ function boot(env, ctx) {
     });
     await readyPromise;
     // go travels with the binding so a dispatch can ask the runtime whether it
-    // is still alive, rather than inferring it from a thrown message.
-    return { go, binding };
+    // is still alive, rather than inferring it from a thrown message. pending
+    // records what has been handed to this instance and not come back, which is
+    // what isWedged reads.
+    return { go, binding, pending: new Map(), seq: 0 };
   })().catch((e) => {
     if (booting === thisBoot) booting = undefined;
     throw e;
@@ -92,19 +140,36 @@ async function fetch(req, env, ctx) {
   // alternative — call into the corpse and match the thrown message — depends on
   // the wording of a string in a generated file that tools/build-worker.sh
   // re-emits from whatever Go toolchain is present.
-  if (inst.go.exited) {
+  // Two ways an instance can be unusable, and they need different tests. A
+  // runtime that returned from main sets go.exited; one that stopped making
+  // progress sets nothing at all, and is only visible as dispatches that never
+  // came back.
+  if (inst.go.exited || isWedged(inst)) {
     booting = undefined;
     inst = await boot(env, ctx);
   }
   try {
-    return await inst.binding.handleRequest(req);
+    return await dispatch(inst, req);
   } catch (e) {
     // Backstop for any exit path that does not set the flag before throwing. A
     // second failure is a real error and belongs to the caller.
     if (!/already exited/.test(String(e && e.message))) throw e;
     booting = undefined;
     const fresh = await boot(env, ctx);
-    return await fresh.binding.handleRequest(req);
+    return await dispatch(fresh, req);
+  }
+}
+
+// dispatch hands one request to an instance while recording that it is
+// outstanding. The finally is what makes isWedged meaningful: an entry that is
+// never cleared is a request that never came back.
+async function dispatch(inst, req) {
+  const id = ++inst.seq;
+  inst.pending.set(id, Date.now());
+  try {
+    return await inst.binding.handleRequest(req);
+  } finally {
+    inst.pending.delete(id);
   }
 }
 
