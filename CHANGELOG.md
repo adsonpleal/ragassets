@@ -5,31 +5,33 @@ continuously (no version tags), so entries are grouped by date.
 
 ## 2026-09-06
 
-### Fixed
-- **Bindings outlived the request they came from, and the I/O hung.** After the
-  timeouts above, clients stopped seeing failures outside the post-deploy window —
-  but the Workers runtime was still killing invocations with "your Worker's code
-  had hung and would never generate a response": 38% of a burst right after a
-  deploy, and ~3 a minute of organic traffic in steady state, measured against a
-  control run with no synthetic load at all. Those cost billed time and buried
-  real errors in the dashboard.
+### Investigated (no change shipped)
+- **Stale bindings are NOT what hangs a render.** Recorded because it was a
+  plausible theory, it was tested, and it was wrong — so nobody has to test it
+  twice. The shim reuses one wasm instance per isolate and `bind()` resolved the
+  R2 bucket and `caches.default` once, out of whichever request happened to boot
+  it. Reusing a handle from a finished invocation is genuinely against the
+  platform's rules, and it looked like an exact fit for invocations the runtime
+  was killing with "your Worker's code had hung and would never generate a
+  response".
 
-  The shim reuses one wasm instance per isolate, and `bind()` resolved the R2
-  bucket and `caches.default` once and kept them. "Once" therefore meant "out of
-  whichever request happened to boot the instance", and a handle from a finished
-  invocation used to do I/O for a live one is what the platform forbids. It did
-  not throw — it hung.
+  Both halves were built and deployed: the shim refreshing `env`/`ctx` on the
+  runtime context object before each dispatch (which does reach Go — wasm_exec's
+  proxy resolves `globalThis.context` to that object and `cfruntimecontext`
+  re-reads the property per lookup), and `R2Store` resolving the bucket and the
+  Cache per operation instead of holding them.
 
-  Both halves are fixed together, and neither works alone. The shim now refreshes
-  `env` and `ctx` on the runtime context object before every dispatch, which
-  reaches Go because wasm_exec's proxy resolves `globalThis.context` to that exact
-  object and `cfruntimecontext` re-reads it on every lookup. And the Go side stops
-  caching what it resolves out of `env`: `R2Store` holds the binding's *name* and
-  resolves the bucket and the Cache per operation — two JS property reads against
-  a round trip to R2, so the cost does not register.
+  It moved nothing. Steady state went from 13 hung invocations per 120-render
+  burst to 17 — noise, and if anything slightly worse. Reverted rather than kept:
+  an unproven change is survivable, but the comments justifying it asserted a
+  cause the measurement rules out, and that is worse than no change at all.
 
-  This is what the old comment called the price of instance reuse and treated as
-  survivable. It was not; it just failed somewhere nobody was looking.
+  What the measurement does say is that the hang concentrates in cold isolates.
+  It is worst in the first burst after a deploy (38-87% of invocations) and
+  settles to roughly 10% plus ~3 a minute of organic traffic. No client-visible
+  failure comes with it outside the post-deploy window — every one of 120 renders
+  returned 200 while 17 invocations were flagged — so what it costs today is
+  billed time and a noisy error dashboard.
 
 ### Changed
 - **One cache epoch became two, so a code deploy stops discarding the sprites.**

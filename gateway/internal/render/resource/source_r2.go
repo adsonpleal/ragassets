@@ -113,24 +113,9 @@ func Await[T any](d time.Duration, fn func() (T, error)) (T, error) {
 //     once, which is the only workable invalidation: purge-by-URL is capped at
 //     30 URLs per call and about 1,000 a day, and purge-by-prefix is Enterprise.
 type R2Store struct {
-	// binding is the R2 binding's name, not a resolved handle, and that is the
-	// whole point.
-	//
-	// Both the bucket and the Cache used to be resolved once, in bind(), and kept
-	// for the isolate's lifetime. But the shim reuses one wasm instance across
-	// requests, so "once" meant "out of whichever request happened to boot the
-	// instance" — and a handle resolved from a finished invocation's env, used to
-	// do I/O on behalf of a live one, is exactly what the platform forbids. It did
-	// not throw; it hung. The runtime killed those invocations with "your Worker's
-	// code had hung and would never generate a response": 38% of a burst right
-	// after a deploy, and about 3 a minute of organic traffic in steady state.
-	//
-	// Resolving per operation is two JS property reads — env.ASSETS, caches.default
-	// — against a round trip to R2, so the cost does not register. The shim's other
-	// half is refreshing globalThis.context.env per request; without that this
-	// would re-read the same stale env forever.
-	binding string
-	epoch   string
+	bucket *r2.Bucket
+	cache  *cache.Cache
+	epoch  string
 	// prefix is prepended to every key before it reaches R2.
 	//
 	// The bucket mirrors the extracted resources tree, so the renderer's inputs
@@ -186,16 +171,9 @@ func (s *R2Store) Stats() Stats {
 // NewR2Store binds a store to a bucket. epoch changes whenever the assets do —
 // it is what makes a redeploy invalidate the edge cache. prefix is prepended to
 // every key; see the field comment for why the renderer needs "data/".
-func NewR2Store(binding, epoch, prefix string) *R2Store {
-	return &R2Store{binding: binding, epoch: epoch, prefix: prefix}
+func NewR2Store(bucket *r2.Bucket, epoch, prefix string) *R2Store {
+	return &R2Store{bucket: bucket, cache: cache.New(), epoch: epoch, prefix: prefix}
 }
-
-// bucket resolves the R2 binding out of the CURRENT request's env. See the
-// binding field for why this is not cached.
-func (s *R2Store) bucket() (*r2.Bucket, error) { return r2.NewBucket(s.binding) }
-
-// edge resolves caches.default the same way and for the same reason.
-func (s *R2Store) edge() *cache.Cache { return cache.New() }
 
 // cacheURL is the synthetic key a resource is cached under. The host is not
 // resolved by anything; the Cache API only needs a well-formed URL, and keeping
@@ -211,8 +189,7 @@ func (s *R2Store) Get(key string) ([]byte, error) {
 		return nil, fmt.Errorf("resource %q: %w", key, err)
 	}
 
-	edge := s.edge()
-	match := func() (*http.Response, error) { return edge.Match(req, nil) }
+	match := func() (*http.Response, error) { return s.cache.Match(req, nil) }
 	if res, err := Await(ReadTimeout, match); err == nil && res != nil && res.Body != nil {
 		b, readErr := io.ReadAll(res.Body)
 		res.Body.Close()
@@ -225,11 +202,7 @@ func (s *R2Store) Get(key string) ([]byte, error) {
 		// still has the object, and the entry will be replaced below.
 	}
 
-	bucket, err := s.bucket()
-	if err != nil {
-		return nil, fmt.Errorf("r2 binding %q: %w", s.binding, err)
-	}
-	obj, err := Await(ReadTimeout, func() (*r2.Object, error) { return bucket.Get(s.prefix + key) })
+	obj, err := Await(ReadTimeout, func() (*r2.Object, error) { return s.bucket.Get(s.prefix + key) })
 	if err != nil {
 		return nil, fmt.Errorf("r2 get %q: %w", key, err)
 	}
@@ -273,8 +246,7 @@ func (s *R2Store) populate(req *http.Request, body []byte) {
 	// Bounded like every other await here. A cache write parks on a promise just
 	// as a read does, and an in-flight snapshot caught a render stalled for over
 	// ten seconds on exactly this call.
-	edge := s.edge()
-	_, _ = Await(ReadTimeout, func() (struct{}, error) { return struct{}{}, edge.Put(req, res) })
+	_, _ = Await(ReadTimeout, func() (struct{}, error) { return struct{}{}, s.cache.Put(req, res) })
 }
 
 // PrefetchLimit bounds how many objects are fetched at once. Each R2 binding

@@ -39,12 +39,7 @@ import (
 // Worker route the Worker runs *in front of* the cache, so a response it returns
 // is never stored. Confirmed against production, where /image came back with no
 // CF-Cache-Status header at all and re-rendered on every request.
-//
-// Resolved per call rather than held, for the reason spelled out on
-// resource.R2Store's binding field: the shim reuses one wasm instance, so a
-// handle kept from the booting request belongs to an invocation that has since
-// finished, and doing I/O through it hangs. It is one property read.
-func renderCache() *cache.Cache { return cache.New() }
+var renderCache *cache.Cache
 
 // Counters, sampled through /debug/r2 the same way the R2 ones are. Renders is
 // the billed quantity here — CPU time — so it is the number to watch.
@@ -84,7 +79,7 @@ func cachedRender(etag string) (body []byte, contentType string, ok bool) {
 	if err != nil {
 		return nil, "", false
 	}
-	res, err := renderCache().Match(req, nil)
+	res, err := renderCache.Match(req, nil)
 	if err != nil || res == nil || res.Body == nil {
 		return nil, "", false
 	}
@@ -133,11 +128,7 @@ func putRender(etag, contentType string, body []byte) {
 	// snapshot caught a render sitting at `encoded` — the stage immediately before
 	// this call — for over ten seconds, which is the same wedged-promise failure
 	// the R2 store was hardened against and the last unbounded one left.
-	// Resolved out here, not inside the closure: an Await that times out leaves its
-	// goroutine running past the request, and the handle should be the live one
-	// from now rather than whatever caches.default resolves to then.
-	edge := renderCache()
 	_, _ = resource.Await(resource.ReadTimeout, func() (struct{}, error) {
-		return struct{}{}, edge.Put(req, res)
+		return struct{}{}, renderCache.Put(req, res)
 	})
 }

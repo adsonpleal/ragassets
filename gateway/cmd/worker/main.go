@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/syumai/workers"
+	"github.com/syumai/workers/cloudflare/cache"
 	"github.com/syumai/workers/cloudflare/r2"
 
 	"github.com/ragassets/gateway/internal/api"
@@ -134,17 +135,18 @@ func bind() error {
 	if bound {
 		return nil
 	}
-	// Resolved once here only to fail fast on a misconfigured binding. The handle
-	// is deliberately thrown away: the stores re-resolve it per operation, out of
-	// the request that is actually running. See resource.R2Store's binding field.
-	if _, err := r2.NewBucket(bucketBinding); err != nil {
+	bucket, err := r2.NewBucket(bucketBinding)
+	if err != nil {
 		return fmt.Errorf("r2 binding %q: %w", bucketBinding, err)
 	}
-	dataStore = resource.NewR2Store(bucketBinding, assetEpoch, "data/")
-	objStore = resource.NewR2Store(bucketBinding, assetEpoch, "")
+	dataStore = resource.NewR2Store(bucket, assetEpoch, "data/")
+	objStore = resource.NewR2Store(bucket, assetEpoch, "")
 	// The effect store reads the same bucket through the same cache; only its
 	// resolution differs (see internal/effect/store_r2.go).
 	estore = effect.NewObjectStore(objStore.Get)
+	// Finished renders go in the same colo cache, under their own key space (see
+	// rendercache.go).
+	renderCache = cache.New()
 	bound = true
 	return nil
 }
