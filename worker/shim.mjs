@@ -70,22 +70,35 @@ let booting; // Promise<{go, binding}>, shared by every request arriving during 
 // recycling often would trade one problem for a worse one. 500 requests or five
 // minutes puts a ceiling on accumulation while leaving the common case — a warm
 // instance serving a steady stream — untouched.
-const MAX_INSTANCE_REQUESTS = 500;
-const MAX_INSTANCE_AGE_MS = 5 * 60 * 1000;
+// Tunable from wrangler.jsonc vars rather than baked in, because this is an
+// experiment and the only way to judge it is A/B: same protocol, one variable
+// changed. 0 disables that limit, and 0 for both disables recycling entirely,
+// which is the control arm.
+const DEFAULT_MAX_REQUESTS = 500;
+const DEFAULT_MAX_AGE_MS = 5 * 60 * 1000;
+
+function limitsFrom(env) {
+  const num = (v, dflt) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : dflt;
+  };
+  return {
+    maxRequests: num(env?.INSTANCE_MAX_REQUESTS, DEFAULT_MAX_REQUESTS),
+    maxAgeMs: num(env?.INSTANCE_MAX_AGE_MS, DEFAULT_MAX_AGE_MS),
+  };
+}
 
 // Retiring only ever drops the *cache* of the instance. Anything already running
 // keeps its reference and finishes on the old runtime; the next request boots a
 // new one. There is no kill, because there is nothing safe to kill: a Go runtime
 // mid-render has no interruption point.
-function retireIfStale(inst) {
-  if (
-    inst.requests >= MAX_INSTANCE_REQUESTS ||
-    Date.now() - inst.bornAt >= MAX_INSTANCE_AGE_MS
-  ) {
-    booting = undefined;
-    return true;
-  }
-  return false;
+function retireIfStale(inst, env) {
+  const { maxRequests, maxAgeMs } = limitsFrom(env);
+  const stale =
+    (maxRequests > 0 && inst.requests >= maxRequests) ||
+    (maxAgeMs > 0 && Date.now() - inst.bornAt >= maxAgeMs);
+  if (stale) booting = undefined;
+  return stale;
 }
 
 globalThis.tryCatch = (fn) => {
@@ -144,7 +157,7 @@ async function fetch(req, env, ctx) {
   // Checked before dispatch rather than after, so a stale instance never takes
   // another request — the one in hand is served by whatever boot() returns next,
   // which is a fresh runtime.
-  if (retireIfStale(inst)) inst = await boot(env, ctx);
+  if (retireIfStale(inst, env)) inst = await boot(env, ctx);
   inst.requests++;
 
   try {

@@ -24,7 +24,18 @@
 
   // Where the patch poll sends repository_dispatch. Not a secret — the token
   // that authorises it is (wrangler secret put GITHUB_TOKEN).
-  "vars": { "GITHUB_REPO": "adsonpleal/ragassets" },
+  // GITHUB_REPO: where the patch poll sends repository_dispatch.
+  //
+  // INSTANCE_MAX_REQUESTS / INSTANCE_MAX_AGE_MS bound how long one wasm instance
+  // serves before the shim retires it. 0 disables a limit; both 0 disables
+  // recycling entirely, which is the control arm of the experiment these exist
+  // for. Set here rather than baked into the shim so the two arms differ by a
+  // config value and nothing else.
+  "vars": {
+    "GITHUB_REPO": "adsonpleal/ragassets",
+    "INSTANCE_MAX_REQUESTS": "0",
+    "INSTANCE_MAX_AGE_MS": "0"
+  },
 
   "assets": {
     // Serve ./404.html on a miss instead of falling through to the Worker, which
