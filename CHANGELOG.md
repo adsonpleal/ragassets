@@ -20,8 +20,8 @@ continuously (no version tags), so entries are grouped by date.
   reached clients as empty-bodied 500s — not a slow render, an isolate that
   stopped and kept accepting work.
 
-  Each instance now records its outstanding dispatches, and one that has been
-  outstanding for 12 s condemns the instance: it is dropped from the cache and the
+  Two parts. Each instance records its outstanding dispatches, and one that has
+  been outstanding for 12 s condemns the instance: it is dropped from the cache and the
   next request boots a fresh runtime. A render's median is 143 ms and its worst
   observed 1.3 s, so nothing healthy can reach that, and it sits under the
   platform's own hang detector — the aim is to stop feeding a dead runtime before
@@ -31,6 +31,16 @@ continuously (no version tags), so entries are grouped by date.
   question that cannot come back; `/debug/r2` answered at all only because the
   request landed on a different isolate. The shim already knows what it dispatched
   and what never returned.
+
+  Condemning protects the requests that come *after*, though, not the ones already
+  inside — measured post-deploy against cold isolates, detection alone took hung
+  invocations from 45-52 per 60 down to 10 per 180 and stuck requests from seven
+  to none, but those 10 were still lost. So the second part: a dispatch that has
+  not returned in 8 s is abandoned and the request re-served from a fresh runtime.
+  A render is a pure function of its query, so re-running one costs nothing but
+  time, and a request that gets no response is strictly worse than one that waits.
+  Eight seconds clears any real render (median 143 ms, worst observed 1.3 s) and
+  leaves room inside the platform's hang detector for the retry to land.
 
   This is also why the age-based recycling below measured identical to nothing: it
   retired healthy instances on a timer and left wedged ones in service, which is

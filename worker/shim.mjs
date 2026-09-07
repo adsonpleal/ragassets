@@ -78,6 +78,25 @@ let booting; // Promise<{go, binding, pending, seq}>, shared by every request ar
 // no recycling at all in a matched A/B. The signal is the wedge, not the age.
 const WEDGED_MS = 12_000;
 
+// Condemning an instance protects the requests that come after it, but not the
+// ones already inside. Measured post-deploy, against entirely cold isolates:
+// wedge detection took hung invocations from 45-52 per 60 requests down to 10 per
+// 180, and permanently-stuck requests from seven to none — but those 10 were
+// still lost, because they had been dispatched before anything knew the runtime
+// was going.
+//
+// They do not have to be. A render is a pure function of its query, so re-running
+// one is free of consequence, and a request that gets no response is strictly
+// worse than one that waits and then succeeds. So a dispatch that has not come
+// back in DISPATCH_TIMEOUT_MS is abandoned, its instance condemned, and the
+// request served again from a fresh runtime.
+//
+// Eight seconds: comfortably past any real render (median 143 ms, worst observed
+// 1.3 s, ~1 s fully cold) and comfortably short of the platform's own hang
+// detector, so the retry happens while there is still time for it to succeed.
+const DISPATCH_TIMEOUT_MS = 8_000;
+const TIMED_OUT = Symbol("dispatch timed out");
+
 // A condemned instance is dropped from the cache, never killed: a Go runtime
 // mid-render has no interruption point, and the requests already stuck in it are
 // beyond rescue either way. What this buys is that the NEXT request gets a live
@@ -148,16 +167,37 @@ async function fetch(req, env, ctx) {
     booting = undefined;
     inst = await boot(env, ctx);
   }
+
   try {
-    return await dispatch(inst, req);
+    const res = await raceDispatch(inst, req);
+    if (res !== TIMED_OUT) return res;
   } catch (e) {
-    // Backstop for any exit path that does not set the flag before throwing. A
-    // second failure is a real error and belongs to the caller.
+    // A runtime that died mid-dispatch, rather than one that stopped answering.
+    // Same remedy; anything else is a real error and belongs to the caller.
     if (!/already exited/.test(String(e && e.message))) throw e;
-    booting = undefined;
-    const fresh = await boot(env, ctx);
-    return await dispatch(fresh, req);
   }
+
+  // Either way this instance is finished. Condemn it and serve the request from a
+  // fresh runtime — the first attempt may yet return, but nothing is waiting for
+  // it any more.
+  booting = undefined;
+  const fresh = await boot(env, ctx);
+  return await dispatch(fresh, req);
+}
+
+// raceDispatch resolves with the response, resolves with TIMED_OUT if the
+// instance has not answered in time, or rejects if the dispatch itself threw.
+function raceDispatch(inst, req) {
+  const attempt = dispatch(inst, req);
+  // The losing side of a race still settles. Without this, an attempt that
+  // rejects after the timeout has already won surfaces as an unhandled rejection
+  // and takes the isolate down with it.
+  attempt.catch(() => {});
+  let timer;
+  const expiry = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), DISPATCH_TIMEOUT_MS);
+  });
+  return Promise.race([attempt, expiry]).finally(() => clearTimeout(timer));
 }
 
 // dispatch hands one request to an instance while recording that it is
