@@ -44,6 +44,50 @@ import { PATCH_INDEX, parsePatchList } from "./patchlist.mjs";
 let mod;
 let booting; // Promise<{go, binding}>, shared by every request arriving during boot
 
+// Instance recycling.
+//
+// Reuse is what makes this Worker fast — ~20 ms of server time against ~270 ms
+// for the generated per-request shim — but it also means one Go runtime serves
+// every request an isolate ever sees, accumulating whatever that leaves behind.
+// This bounds how long any one instance lives.
+//
+// The thing being bounded is state the runtime cannot shed. Chief among it,
+// goroutines parked forever on JS promises that never settle: the R2 store
+// abandons one on every read timeout by design, because a leaked goroutine is
+// better than a request that never returns. Nothing reclaims them. The
+// hypothesis this tests is that they are what the Workers runtime eventually
+// reports as "your Worker's code had hung and would never generate a response" —
+// a rate that is worst on cold isolates (38-87% of a burst right after a deploy)
+// and settles near 10%.
+//
+// It is a hypothesis, not a diagnosis. A previous attempt on this failure blamed
+// stale bindings, was built, deployed, measured, and moved nothing (see
+// CHANGELOG). So this is written to be measured the same way, and to be cheap to
+// abandon if it also does nothing.
+//
+// The limits are loose on purpose. Every recycle costs a fresh Go runtime, an
+// empty parse cache, and a 1.44 MB manifest read on the next render, so
+// recycling often would trade one problem for a worse one. 500 requests or five
+// minutes puts a ceiling on accumulation while leaving the common case — a warm
+// instance serving a steady stream — untouched.
+const MAX_INSTANCE_REQUESTS = 500;
+const MAX_INSTANCE_AGE_MS = 5 * 60 * 1000;
+
+// Retiring only ever drops the *cache* of the instance. Anything already running
+// keeps its reference and finishes on the old runtime; the next request boots a
+// new one. There is no kill, because there is nothing safe to kill: a Go runtime
+// mid-render has no interruption point.
+function retireIfStale(inst) {
+  if (
+    inst.requests >= MAX_INSTANCE_REQUESTS ||
+    Date.now() - inst.bornAt >= MAX_INSTANCE_AGE_MS
+  ) {
+    booting = undefined;
+    return true;
+  }
+  return false;
+}
+
 globalThis.tryCatch = (fn) => {
   try {
     return { result: fn() };
@@ -74,8 +118,9 @@ function boot(env, ctx) {
     });
     await readyPromise;
     // go travels with the binding so a dispatch can ask the runtime whether it
-    // is still alive, rather than inferring it from a thrown message.
-    return { go, binding };
+    // is still alive, rather than inferring it from a thrown message. bornAt and
+    // requests are what retireIfStale bounds.
+    return { go, binding, bornAt: Date.now(), requests: 0 };
   })().catch((e) => {
     if (booting === thisBoot) booting = undefined;
     throw e;
@@ -96,6 +141,12 @@ async function fetch(req, env, ctx) {
     booting = undefined;
     inst = await boot(env, ctx);
   }
+  // Checked before dispatch rather than after, so a stale instance never takes
+  // another request — the one in hand is served by whatever boot() returns next,
+  // which is a fresh runtime.
+  if (retireIfStale(inst)) inst = await boot(env, ctx);
+  inst.requests++;
+
   try {
     return await inst.binding.handleRequest(req);
   } catch (e) {
