@@ -18,14 +18,33 @@
 // handler runs as a goroutine per request, so concurrent requests interleave on
 // the Go scheduler rather than racing.
 //
-// The catch, and the reason the generated shim does it the other way: the
-// runtime context — {env, ctx, binding} — is captured when go.run() is called
-// and read once by the Go side at init. Reusing the instance therefore pins it
-// to the FIRST request's context. `env` holds the bindings and is not
-// request-scoped, so R2 access stays valid; `ctx` (waitUntil,
-// passThroughOnException) becomes stale, which is why nothing here may use it.
-// If a waitUntil is ever needed, it has to be done on the JS side with the
-// current request's ctx, not through Go.
+// The catch the generated shim avoids by instantiating per request: the runtime
+// context — {env, ctx, binding} — is passed once, when go.run() is called, so
+// reusing the instance would pin every later request to the FIRST one's context.
+//
+// That is not a theoretical concern. It showed up as invocations the Workers
+// runtime killed with "your Worker's code had hung and would never generate a
+// response" — 38% of a burst right after a deploy, and about 3 a minute of
+// organic traffic in steady state. A binding resolved from a finished
+// invocation's env is being used to do I/O on behalf of a live one, which is
+// precisely what the platform does not allow.
+//
+// So the context is refreshed in place on every request rather than left pinned.
+// This works because of how the Go side reads it: wasm_exec's proxy resolves
+// `globalThis.context` to this exact object, jsutil.RuntimeContext captures a
+// reference to it once at init, and every lookup after that is a live property
+// read (cfruntimecontext.GetRuntimeContextValue does context.Get(key) per call).
+// Assigning new values onto the same object is therefore visible to Go
+// immediately, with no re-instantiation and none of its cost.
+//
+// Refreshing here is only half of it. The Go side must also stop caching what it
+// resolves *out* of env — see internal/render/resource/source_r2.go, where the R2
+// bucket and the Cache handle are now obtained per operation instead of once per
+// isolate. A fresh env that nothing re-reads would fix nothing.
+//
+// `ctx` (waitUntil, passThroughOnException) is refreshed too and is now current
+// rather than stale, but nothing on the Go side uses it and nothing should start
+// without checking that a request is actually in flight when it does.
 import "./wasm_exec.js";
 import { createRuntimeContext, loadModule } from "./runtime.mjs";
 import { PATCH_INDEX, parsePatchList } from "./patchlist.mjs";
@@ -66,16 +85,19 @@ function boot(env, ctx) {
       ...go.importObject,
       workers: { ready: () => ready() },
     });
+    // Kept, so each request can refresh it in place; see the note above.
+    const runtime = createRuntimeContext({ env, ctx, binding });
     // Resolves when Go's main returns, i.e. when this instance is no longer
     // usable. Dropping the cache there means the next request boots a fresh one
     // instead of calling into a corpse.
-    go.run(instance, createRuntimeContext({ env, ctx, binding })).finally(() => {
+    go.run(instance, runtime).finally(() => {
       if (booting === thisBoot) booting = undefined;
     });
     await readyPromise;
     // go travels with the binding so a dispatch can ask the runtime whether it
-    // is still alive, rather than inferring it from a thrown message.
-    return { go, binding };
+    // is still alive, rather than inferring it from a thrown message. runtime
+    // travels with it so each request can point it at its own env and ctx.
+    return { go, binding, runtime };
   })().catch((e) => {
     if (booting === thisBoot) booting = undefined;
     throw e;
@@ -96,6 +118,13 @@ async function fetch(req, env, ctx) {
     booting = undefined;
     inst = await boot(env, ctx);
   }
+  // Point the shared runtime context at THIS request before handing over. The Go
+  // side re-reads both on every binding lookup, so this is what keeps its I/O on
+  // behalf of the live invocation rather than the one that happened to boot the
+  // instance.
+  inst.runtime.env = env;
+  inst.runtime.ctx = ctx;
+
   try {
     return await inst.binding.handleRequest(req);
   } catch (e) {
@@ -104,6 +133,8 @@ async function fetch(req, env, ctx) {
     if (!/already exited/.test(String(e && e.message))) throw e;
     booting = undefined;
     const fresh = await boot(env, ctx);
+    fresh.runtime.env = env;
+    fresh.runtime.ctx = ctx;
     return await fresh.binding.handleRequest(req);
   }
 }
