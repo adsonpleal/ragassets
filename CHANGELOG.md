@@ -39,8 +39,17 @@ continuously (no version tags), so entries are grouped by date.
   not returned in 8 s is abandoned and the request re-served from a fresh runtime.
   A render is a pure function of its query, so re-running one costs nothing but
   time, and a request that gets no response is strictly worse than one that waits.
-  Eight seconds clears any real render (median 143 ms, worst observed 1.3 s) and
+  Eight seconds clears any real render (median 143 ms, worst observed 1.37 s) and
   leaves room inside the platform's hang detector for the retry to land.
+
+  Four was tried, since the whole cost falls on the one request that waits the
+  threshold out. It did halve that wait, 8,546 ms to 4,181 ms — and brought back
+  twenty "Worker exceeded memory limit" exceptions per 360 renders, from zero. A
+  shorter threshold fires more retries, every retry condemns an instance, and a
+  condemned instance cannot be freed while the goroutines parked inside keep the
+  runtime reachable. An OOM takes down everything in flight; the timeout costs one
+  request a few seconds. Eight stays until the leak is fixed rather than budgeted
+  around.
 
   This is also why the age-based recycling below measured identical to nothing: it
   retired healthy instances on a timer and left wedged ones in service, which is
