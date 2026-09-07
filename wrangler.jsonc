@@ -33,8 +33,8 @@
   // config value and nothing else.
   "vars": {
     "GITHUB_REPO": "adsonpleal/ragassets",
-    "INSTANCE_MAX_REQUESTS": "0",
-    "INSTANCE_MAX_AGE_MS": "0"
+    "INSTANCE_MAX_REQUESTS": "500",
+    "INSTANCE_MAX_AGE_MS": "300000"
   },
 
   "assets": {
