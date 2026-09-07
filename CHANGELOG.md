@@ -6,6 +6,35 @@ continuously (no version tags), so entries are grouped by date.
 ## 2026-09-06
 
 ### Investigated (no change shipped)
+- **Instance recycling does NOT help either.** The second theory, tested the same
+  way and rejected the same way. Reuse means one Go runtime serves every request
+  an isolate sees, accumulating state it cannot shed — above all goroutines parked
+  forever on promises that never settle, one of which the R2 store abandons on
+  every read timeout by design. Retiring an instance after N requests or T seconds
+  should have cleared them.
+
+  The first two measurements disagreed wildly (34 hung, then 1), because the runs
+  differed in more than the code: one followed a three-minute `/healthz` loop that
+  tripped the request limit repeatedly, forcing exactly the cold starts that
+  correlate with hangs. So the limits moved to wrangler vars and both arms were
+  measured under one protocol — quiet for four minutes, then a tailed pair of
+  60-render bursts — differing only in a config value:
+
+  | arm | clients | hung invocations |
+  |---|---|---|
+  | recycling off | 115/120, 5 × 500 | 5 |
+  | 500 requests / 5 minutes | 115/120, 5 × 500 | 5 |
+
+  Identical. The machinery is removed rather than left disabled: dead code
+  justified by a rejected hypothesis is the thing the previous entry was reverted
+  for.
+
+  What the A/B did establish is a number worth keeping. Roughly 4% of
+  *never-before-rendered* URLs fail even in steady state — 5 of 120 in both arms.
+  Cached renders never fail, which is why visuais loads clean and why this stayed
+  invisible: every visitor there requests the same 56 URLs. A user who is the
+  first to view a given costume combination can still get a broken image.
+
 - **Stale bindings are NOT what hangs a render.** Recorded because it was a
   plausible theory, it was tested, and it was wrong — so nobody has to test it
   twice. The shim reuses one wasm instance per isolate and `bind()` resolved the
