@@ -86,11 +86,27 @@ var (
 // the parse caches AND the manifest, so the next request pays a full cold start
 // including a fresh 1.44 MiB manifest read.
 //
-// Budget: ~7 MiB module + 1.44 MiB manifest + 36 MiB here + the per-render
-// working set, inside 128 MiB.
+// These were 24+12 MiB, budgeted as "~7 MiB module + 1.44 MiB manifest + 36 MiB
+// here + the per-render working set, inside 128 MiB" — arithmetic that assumed
+// one Go runtime per isolate. That assumption no longer holds. When the shim
+// condemns a wedged instance it cannot free it: the goroutines parked inside are
+// exactly the ones that never finish, and they keep the whole runtime reachable.
+// So a fresh instance boots alongside the corpse, and the isolate carries both.
+//
+// It showed up immediately once wedge detection started working: 20 "Worker
+// exceeded memory limit" exceptions across 360 renders, a class that had never
+// appeared before. No client saw one — the isolate restarts and the request is
+// served — but an OOM takes down everything in flight with it, which is trading
+// one failure for a quieter one rather than fixing anything.
+//
+// 12+6 MiB leaves room for three coexisting runtimes inside the ceiling. The cost
+// is a smaller in-isolate parse cache, which is the layer that matters least:
+// misses fall through to the colo cache, which is shared by every isolate and
+// survives their eviction, and which the R2 store was built around in the first
+// place.
 const (
-	sprCacheBytes int64 = 24 << 20
-	actCacheBytes int64 = 12 << 20
+	sprCacheBytes int64 = 12 << 20
+	actCacheBytes int64 = 6 << 20
 )
 
 // The runtime bindings are only reachable while a request is in flight, so
