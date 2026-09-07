@@ -91,10 +91,19 @@ const WEDGED_MS = 12_000;
 // back in DISPATCH_TIMEOUT_MS is abandoned, its instance condemned, and the
 // request served again from a fresh runtime.
 //
-// Eight seconds: comfortably past any real render (median 143 ms, worst observed
-// 1.3 s, ~1 s fully cold) and comfortably short of the platform's own hang
-// detector, so the retry happens while there is still time for it to succeed.
-const DISPATCH_TIMEOUT_MS = 8_000;
+// Four seconds. It began at eight, which worked — but the whole cost of this
+// mechanism lands on the one request that has to wait it out before being
+// re-served, and eight seconds of that was measured (max 8,546 ms against a
+// median of 138 ms). Renders do not go anywhere near it: p95 630 ms, worst
+// observed 1.37 s, ~1 s fully cold, so four leaves roughly 3x headroom over
+// anything real while halving what the unlucky request pays.
+//
+// Erring low is cheap in a way that erring high is not. A retry fired at a render
+// that would have finished costs one extra render, because a render is a pure
+// function of its query; a threshold set too high costs a real person a visible
+// stall. And the retry still has to land inside the platform's hang detector,
+// which four seconds leaves ample room for and eight was beginning to crowd.
+const DISPATCH_TIMEOUT_MS = 4_000;
 const TIMED_OUT = Symbol("dispatch timed out");
 
 // A condemned instance is dropped from the cache, never killed: a Go runtime
