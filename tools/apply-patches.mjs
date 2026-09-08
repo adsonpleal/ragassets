@@ -7,7 +7,7 @@
 // ones overwrite earlier ones. That is why this is a copy rather than a merge,
 // and why the result is a valid overlay for the paths it touches.
 //
-// It does NOT decide what to do with the result — that is the workflow's job.
+// It does NOT decide what to do with the result — that is patch-cycle.mjs's job.
 // The two containers a patch release ships are both handled: .gpf carries the
 // data.grf tree, .rgz carries the loose client files (System/**, RagHash.dat,
 // Ragexe), and extracting both into one directory reproduces the client's own
@@ -109,8 +109,9 @@ async function main() {
     throw new Error(
       `${wanted.length} patches to apply exceeds the cap of ${MAX_PATCHES}. That is ` +
         `a rebuild, not an update: it would re-download the archive history to ` +
-        `reproduce a tree R2 already holds. Seed the poll state to the current head ` +
-        `and re-run, or pass --max to take a deliberate slice.`,
+        `reproduce a tree the mirror already holds. Re-seed the poll state to the ` +
+        `current head (tools/patch-cycle.mjs --seed) and re-run, or pass --max to ` +
+        `take a deliberate slice.`,
     );
   }
   if (!wanted.length) {

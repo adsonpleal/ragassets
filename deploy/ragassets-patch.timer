@@ -1,0 +1,27 @@
+# Poll the LATAM patch index every ten minutes.
+#
+# The cadence is affordable because the common outcome is a conditional GET that
+# returns 304: one process start, one request, no body, no disk write. Real work
+# happens only when the index moves, and the heavy rebuilds only when a patch
+# touches their inputs.
+[Unit]
+Description=Poll the LATAM patch index every 10 minutes
+
+[Timer]
+OnBootSec=3min
+
+# OnUnitActiveSec, not OnCalendar=*:0/10. It measures from the last activation,
+# so a three-hour --maps rebuild does not leave eighteen queued firings behind
+# it waiting to stampede the moment it finishes.
+OnUnitActiveSec=10min
+
+AccuracySec=30s
+RandomizedDelaySec=60
+
+# Run once at boot if the box was down over a maintenance window.
+Persistent=true
+
+Unit=ragassets-patch.service
+
+[Install]
+WantedBy=timers.target

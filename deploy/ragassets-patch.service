@@ -1,0 +1,57 @@
+# One client-update cycle. Driven by ragassets-patch.timer; safe to start by
+# hand at any time.
+#
+# Needs, before the first run:
+#   node tools/patch-cycle.mjs --seed          (records the current head)
+#   /etc/sudoers.d/ragassets                   (the gateway restart, below)
+#   /etc/ragassets/patch.env                   (optional: Discord, CF purge)
+[Unit]
+Description=ragassets client-patch cycle (poll, apply, rebuild the derived stores)
+After=network-online.target ragassets-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+
+# Must be the repo root: apply-patches.mjs writes patch-report.json relative to
+# the working directory and spawns extract-grf.mjs by a relative path.
+WorkingDirectory=/home/ubuntu/ragassets
+
+# Creates /var/lib/ragassets with the right owner and mode, and keeps the poll
+# position outside the checkout — the working tree is disposable, the sequence
+# is not.
+StateDirectory=ragassets
+
+# Never in the repo: it is public. root:root 0600. The leading - means a missing
+# file is not an error, so a box with no Discord bot and no purge token works.
+EnvironmentFile=-/etc/ragassets/patch.env
+
+# flock, not just Type=oneshot. systemd already refuses to start a service that
+# is active, but the lock also covers a cycle a human started by hand in a shell.
+ExecStart=/usr/bin/flock -n /run/lock/ragassets-patch.lock /usr/local/bin/node tools/patch-cycle.mjs
+
+# This box serves live traffic, and an extraction is hours of CPU and gigabytes
+# of writes. Everything here is about staying out of the gateway's way.
+Nice=10
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+
+# Its own cgroup ceiling, so a runaway extraction is killed instead of the
+# gateway (MemoryMax=600M) or the page cache the extraction itself depends on.
+MemoryHigh=1200M
+MemoryMax=1500M
+
+# Must exceed a full --maps rebuild: 5.8 GB across 21.4k files, single-threaded.
+# Measure one and tighten this.
+TimeoutStartSec=8h
+
+ProtectSystem=full
+PrivateTmp=true
+# NoNewPrivileges is deliberately NOT set: the cycle must run
+# `sudo systemctl restart ragassets-gateway`, without which a patched sprite
+# serves from a stale parse cache and a new file in an already-indexed effect
+# folder 404s forever.
+
+[Install]
+WantedBy=multi-user.target

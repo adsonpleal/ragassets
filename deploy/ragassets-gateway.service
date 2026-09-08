@@ -1,0 +1,47 @@
+# The asset gateway. Renders sprites and serves every derived store from the
+# local tree; Caddy terminates TLS in front of it and Cloudflare caches in front
+# of that.
+#
+# Install: cp deploy/*.service deploy/*.timer /etc/systemd/system/
+#          systemctl daemon-reload && systemctl enable --now ragassets-gateway
+#
+# Do NOT enable this before the mirror exists. main.go log.Fatalf's when
+# RESOURCE_DIR has no data/ subdirectory, so it would crash-loop. Every other
+# directory below degrades gracefully — each is stat'd at boot, missing ones are
+# logged, and their routes 404 — so the gateway can come up on the mirror alone
+# and gain stores as each extraction mode finishes.
+[Unit]
+Description=ragassets gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/ragassets/gateway
+ExecStart=/home/ubuntu/ragassets/gateway/ragassets-gateway
+
+# RESOURCE_DIR is the merged client mirror — the extractor's input and the
+# renderer's source. The rest are the derived stores it produces.
+Environment=RESOURCE_DIR=/home/ubuntu/ragassets/mirror
+Environment=ICONS_DIR=/home/ubuntu/ragassets/resources/icons
+Environment=ILLUST_DIR=/home/ubuntu/ragassets/resources/illust
+Environment=EFFECTS_DIR=/home/ubuntu/ragassets/resources/effects
+Environment=MAPS_DIR=/home/ubuntu/ragassets/resources/maps
+Environment=BGM_DIR=/home/ubuntu/ragassets/resources/bgm
+Environment=SOUNDS_DIR=/home/ubuntu/ragassets/resources/sounds
+Environment=RAW_DIR=/home/ubuntu/ragassets/resources/raw
+Environment=GATEWAY_PORT=8080
+
+# 500 MiB is the number the parse-cache budgets in resource/manager.go are sized
+# against (96 MiB spr + 48 MiB act plus the per-render working set). Raising one
+# without the other wastes the headroom; lowering it makes the caches thrash.
+# MemoryMax is the backstop, deliberately close: a gateway that needs more than
+# this has a leak, and dying is a better answer than starving the patch cycle.
+Environment=GOMEMLIMIT=500MiB
+MemoryMax=600M
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

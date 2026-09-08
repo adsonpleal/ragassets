@@ -1,0 +1,9 @@
+# Install with: visudo -cf deploy/ragassets.sudoers && install -m 0440 deploy/ragassets.sudoers /etc/sudoers.d/ragassets
+#
+# The patch cycle must restart the gateway after applying a patch: the parse
+# caches in resource.Manager are keyed by name and effect.Store's per-folder
+# directory index is built once, so a live process would serve a patched sprite
+# from a stale parse and 404 a new effect file forever.
+#
+# Exactly one command, no wildcards. That is the whole privilege.
+ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl restart ragassets-gateway.service
