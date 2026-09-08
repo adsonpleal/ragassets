@@ -12,21 +12,22 @@ import (
 // case-insensitively. GRF paths are EUC-KR with inconsistent casing, and the
 // extracted tree preserves whatever the client shipped; prod runs on a
 // case-sensitive filesystem, so a lowercased directory index is kept per folder
-// (built lazily, then cached — the resource tree is read-only and only changes on
-// redeploy, which restarts the process).
+// (built lazily, then cached — the resource tree is read-only between patches).
 //
-// Serving these from an object store instead will not be able to keep resolveCI —
-// there is no ReadDir and no cheap Stat — and will normalise keys to lowercase at
-// upload time, turning resolution into a single lowercase lookup.
+// That cache is why applying a patch must restart this process. The index is per
+// folder and built once, so a patch that adds a file to a folder already indexed
+// would 404 forever against a live process — not a cache miss but a permanent
+// wrong answer. tools/patch-cycle.mjs restarts the gateway for this reason and
+// for the parse caches in resource.Manager, which are keyed by name and equally
+// blind to the file underneath changing.
 //
-// That substitution is not valid for this filesystem path, and resolveCI must
-// stay. The LATAM client's tree happens to be entirely lowercase (24,624 texture
-// files, no uppercase, no collisions), but extract-grf.mjs preserves whatever the
-// GRF shipped — sanitizePath normalises separators and rejects traversal, it does
-// not lowercase — so a self-hoster's client can legitimately produce mixed-case
-// files that a bare strings.ToLower would fail to find, silently, as 404s.
-// TestTextureTreeHasNoCaseCollisions pins the injectivity the object-store path
-// depends on.
+// resolveCI cannot be replaced by a plain strings.ToLower. The LATAM client's
+// tree happens to be entirely lowercase (24,624 texture files, no uppercase, no
+// collisions), but extract-grf.mjs preserves whatever the GRF shipped —
+// sanitizePath normalises separators and rejects traversal, it does not
+// lowercase — so a self-hoster's client can legitimately produce mixed-case files
+// that a lowercase lookup would fail to find, silently, as 404s.
+// TestTextureTreeHasNoCaseCollisions pins that the mapping is injective.
 type Store struct {
 	base string // <resourceDir>/data/texture
 

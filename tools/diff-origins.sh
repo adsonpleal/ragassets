@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # Compare two origins byte-for-byte over a set of URLs.
 #
-# This is the cutover gate. The Worker is a different implementation of the same
-# renderer reading from different storage, so "it works" is not the bar —
-# every response has to be identical to what the current gateway serves, because
+# This is the cutover gate, and it works in whichever direction a cutover runs.
+# It was written to prove a Cloudflare Worker matched the gateway it replaced;
+# it now proves the self-hosted origin matches whatever is serving production.
+# Point NEW at the candidate and OLD at the incumbent.
+#
+# "It works" is not the bar. Every response has to be byte-identical, because
 # clients hold ETags derived from the query and will keep using cached bytes
-# across the switch.
+# across the switch — a candidate that renders correctly but differs by a pixel
+# hands half the world one version and half the other, indefinitely.
+#
+# Run it BEFORE the new origin applies a client patch the old one never got.
+# After that, /raw/* and every index.json differ for legitimate reasons and the
+# gate stops being a clean signal.
 #
 # Usage:
 #   tools/diff-origins.sh [paths-file]

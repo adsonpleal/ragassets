@@ -1,12 +1,14 @@
-// Package api holds the HTTP-facing contract the server and the Worker must
-// honour identically: how a query string becomes a render request, and how that
-// request becomes an ETag.
+// Package api holds the HTTP-facing contract: how a query string becomes a
+// render request, how that request becomes an ETag, and what cache headers a
+// response carries.
 //
-// It exists because those are the two places where a divergence would be
-// invisible rather than loud. A Worker that parsed one parameter differently
-// would quietly render a different sprite; one that hashed the query differently
-// would invalidate every cached render in the world at cutover. Sharing the code
-// makes both impossible instead of merely unlikely.
+// It was split out of the server when a second front end briefly existed, and it
+// stays split for the reason that split it: these are the places where a
+// divergence is invisible rather than loud. Parse one parameter differently and
+// you quietly render a different sprite. Hash the query differently and you
+// invalidate every cached render in the world. Clients hold these ETags for a
+// year, so the contract outlives any particular origin and belongs somewhere it
+// cannot be edited by accident while editing a handler.
 package api
 
 import (
@@ -305,17 +307,17 @@ func parseHexColor(name, s string) (raster.Color, error) {
 }
 
 // ETagForBytes derives a strong validator from content rather than from mtime
-// and size, which is what the filesystem server uses. R2 has no mtime, and
-// hashing the bytes is stable across re-uploads of identical content — so a
-// re-sync that rewrites an unchanged file does not invalidate anyone's cache,
-// and clients revalidate exactly once at cutover.
+// and size, which is what fileETag uses for files on disk. It is for bytes that
+// have no mtime to hash — the go:embed lookup tables, whose validators are
+// computed once at startup — and, being content-derived, it is stable across
+// rebuilds that do not change them.
 func ETagForBytes(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:16])
 }
 
-// RootHelp is the plain-text index served at "/". It lives here so the server
-// and the Worker serve identical bytes rather than two copies that drift apart.
+// RootHelp is the plain-text index served at "/". It lives beside the request
+// contract it documents, so a route added to one is not described by the other.
 const RootHelp = "ragassets-gateway — renders and serves Ragnarok Online sprites, icons, maps, and BGM.\n\n" +
 	"Try: /image?job=1002            (still image)\n" +
 	"     /image?job=1002&action=0   (animation, APNG)\n" +

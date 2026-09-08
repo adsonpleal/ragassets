@@ -71,16 +71,15 @@ func New(resourceRoot string, tables resolve.Tables) *Engine {
 }
 
 // NewWithSource builds an Engine over an arbitrary resource Source and Existence
-// with the default cache budgets. The filesystem case is just New; this is what a
-// build serving from an object store uses.
+// with the default cache budgets. The filesystem case is just New; this is the
+// seam tests render through, and where a non-filesystem tree would attach.
 func NewWithSource(src resource.Source, ex resource.Existence, tables resolve.Tables) *Engine {
 	return NewWithSourceBudget(src, ex, tables, 0, 0)
 }
 
 // NewWithSourceBudget is NewWithSource with explicit spr/act cache byte budgets,
-// for a build whose memory ceiling is not the server's — the defaults are sized
-// for ~500 MiB and do not fit a 128 MB Workers isolate. Values <= 0 take the
-// defaults.
+// for a caller whose memory ceiling is not the server's. The defaults are sized
+// for GOMEMLIMIT=500MiB, which is what the unit sets. Values <= 0 take them.
 func NewWithSourceBudget(src resource.Source, ex resource.Existence, tables resolve.Tables, sprBytes, actBytes int64) *Engine {
 	if tables == nil {
 		tables = resolve.NopTables{}

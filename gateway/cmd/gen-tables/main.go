@@ -7,11 +7,11 @@
 //
 // That matters for two reasons:
 //
-//   - encoding/json needs reflection, which is the single biggest obstacle to
-//     compiling the render path for a WebAssembly target.
-//   - the embedded tables are 352 KB and were unmarshalled in init(), a cost paid
-//     on every cold start. On a long-lived server that is invisible; per isolate
-//     it is not.
+//   - the embedded tables are 352 KB and were unmarshalled in init(), a cost
+//     paid on every process start. The patch cycle restarts the gateway on each
+//     client update, so a cold start is a recurring event rather than a one-off.
+//   - encoding/json needs reflection, which drags a large part of the runtime
+//     into the binary for data that is fully known at build time.
 //
 // The two large string tables (accname, jobName) become sorted key/value arrays
 // searched with sort.Search — fully static data, zero init work. The smaller

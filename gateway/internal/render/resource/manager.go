@@ -28,9 +28,9 @@ import (
 // These are byte budgets, not entry counts, and the difference is not academic.
 // The previous entry-count defaults (2000 spr, 3000 act) implied roughly 219 MB
 // against measured averages of 41.1 KB per .spr (81,040 files) and 45.6 KB per
-// .act (102,345) — already over budget on the 500 MiB box, and far over for a
-// 128 MB Workers isolate. The old doc comment put .act at "~15 KB", which was
-// stale by 3x and is what made the counts look safe.
+// .act (102,345) — already over budget on the 500 MiB box. The old doc comment
+// put .act at "~15 KB", which was stale by 3x and is what made the counts look
+// safe.
 const (
 	DefaultSprCacheBytes int64 = 96 << 20 // 96 MiB
 	DefaultActCacheBytes int64 = 48 << 20 // 48 MiB
@@ -102,9 +102,10 @@ func NewManagerWithBudget(root string, sprBytes, actBytes int64) *Manager {
 	return NewManagerWithSource(FSSource{Root: root}, FSExistence{Root: root}, sprBytes, actBytes)
 }
 
-// NewManagerWithSource builds a Manager over an arbitrary Source and Existence —
-// an object store in a Workers build, the filesystem on the server. The caching,
-// parsing and lookup behaviour is identical either way.
+// NewManagerWithSource builds a Manager over an arbitrary Source and Existence.
+// The filesystem case is NewManager; this is what tests and any non-filesystem
+// tree attach to. The caching, parsing and lookup behaviour is identical either
+// way.
 func NewManagerWithSource(src Source, ex Existence, sprBytes, actBytes int64) *Manager {
 	if sprBytes <= 0 {
 		sprBytes = DefaultSprCacheBytes

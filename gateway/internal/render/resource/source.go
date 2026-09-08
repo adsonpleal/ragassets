@@ -8,15 +8,15 @@ import (
 )
 
 // Source and Existence are the seam between the renderer and wherever the asset
-// bytes actually live. On the server that is the local filesystem; in a Workers
-// build it is an object store reached asynchronously, which cannot be read from
-// inside a synchronous render.
+// bytes actually live. In production that is the local filesystem, under the
+// merged client mirror; in tests it is a map.
 //
-// Splitting them apart is what makes the async case tractable: the caller
-// resolves what a render needs (using Existence, which is cheap and answerable
-// from a baked manifest) and fetches those keys in one concurrent batch before
-// the render starts, so every read the engine then makes is answered locally. The
-// engine, the caches, and every parser below them stay unchanged and unaware.
+// They are two interfaces rather than one because "does this exist?" and "give me
+// the bytes" have very different costs. Keeping them apart lets a caller resolve
+// everything a render needs through Existence first and fetch those keys in one
+// batch, so the render itself never blocks on a lookup — see engine.BuildPlan.
+// The engine, the caches, and every parser below them stay unaware of which
+// implementation they are on.
 //
 // A key is a forward-slashed path relative to the resource tree's data/
 // directory, extension included:

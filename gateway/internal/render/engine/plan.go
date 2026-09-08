@@ -11,12 +11,15 @@ import (
 // currently made mid-render by probing the filesystem.
 //
 // Why this exists: the engine resolves what to load lazily, interleaving "does
-// this file exist?" with "parse this file". That is fine against a local disk and
-// unworkable against an object store, where each probe is a network round trip —
-// a garment request alone can test a dozen candidate pairs before it finds one.
-// Splitting the decision out means a caller can resolve the whole key set up
-// front, fetch it in one batch, and hand the engine bytes it can read
-// synchronously.
+// this file exist?" with "parse this file". That is fine against a local disk,
+// where a probe is a stat, and untenable anywhere a probe costs a round trip — a
+// garment request alone can test a dozen candidate pairs before it finds one.
+// Splitting the decision out means the whole key set can be resolved up front and
+// fetched in one batch, and the render itself reads only what it was handed.
+//
+// It earns its keep against a local disk too: golden_test.go renders every case
+// through RenderPlanned under an Existence that fails the test on any probe,
+// which is what pins that all the existence decisions really do live here.
 //
 // Building a Plan needs no file contents, only Existence. Every name comes from
 // the baked resolver tables; nothing downstream of a file *read* changes which
