@@ -74,12 +74,23 @@ continuously (no version tags), so entries are grouped by date.
   error stored as `immutable` under a query-derived ETag revalidates to 304
   against that same query and stays broken until the client bypasses its cache.
 
-### Not removed
-- The Worker deployment, the `ragassets` R2 bucket and the `UPDATE_STATE` KV
-  namespace are still live, as a rollback target. **That target is frozen**: it
-  serves what was in the bucket at cutover and receives no further patches, since
-  the pipeline that fed it is gone. It degrades with every client update. Two to
-  four weeks, then tear it down along with `assets-next` and the EC2 instance.
+### Cutover
+- `assets.latam-tools.com.br` now resolves to the origin, proxied. Measured
+  immediately after: **`cf-cache-status: MISS` then `HIT` then `HIT`** on
+  `/image`, and the same on `/gif`. Renders had never been edge-cached before —
+  on the Worker route the header was absent entirely, which the first workflow
+  run had re-confirmed minutes earlier against the still-live Worker.
+- `/` and `/healthz` report `DYNAMIC`, so the bypass rule works. `/raw/*` still
+  answers `304` to a conditional GET behind `max-age=300, must-revalidate` — the
+  contract three sibling projects depend on. All seventeen routes verified
+  through Cloudflare.
+
+- **The rollback was then removed, deliberately.** Both Workers, the `ragassets`
+  R2 bucket (276,740 objects, 16.4 GB) and the `UPDATE_STATE` KV namespace are
+  deleted. There is no flip-DNS-back path any more; recovery means rebuilding
+  from the box or re-extracting from a client, both of which are scripted. The
+  Worker had served 143.5k requests with 21.4k errors in its final window, which
+  is the wedged-isolate problem quantified and the reason not to keep it warm.
 
 ## 2026-09-06
 

@@ -896,6 +896,12 @@ extraction is killed instead of the gateway.
 `resources/` ~6.7), peaking near 45 GB when `--maps` rebuilds its tree alongside
 the old one. Oracle's minimum boot volume is 50 GB, which does not fit that peak.
 
+Production moved to this box on 2026-09-08. The Cloudflare Worker, its R2 bucket
+and its KV namespace have been deleted, so this origin is the only thing serving
+`assets.latam-tools.com.br` and there is no rollback target — recovery is a
+rebuild, which is why `tools/provision-oracle.sh` and the extraction steps below
+are kept honest.
+
 **Ampere capacity is the scarce thing, not quota.** Creating this instance took
 91 consecutive `Out of capacity for shape VM.Standard.A1.Flex` failures in
 `sa-saopaulo-1` over about an hour, at both 2 OCPU/12 GB and 1 OCPU/6 GB — the
