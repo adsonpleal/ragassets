@@ -1,0 +1,71 @@
+name: Apply Cloudflare config
+
+# NEVER add `pull_request` to this workflow, and never relax the branch filter.
+#
+# This is the one job in the repository that holds a credential, which makes it
+# the one that has to be paranoid. The repository is public: a pull_request
+# trigger runs a fork's code, and a fork's code with a zone-scoped Cloudflare
+# token could rewrite the cache rules of a live domain. GitHub does not expose
+# secrets to fork PRs by default, but that default is a setting, and this comment
+# is here so nobody changes it casually.
+#
+# The token must be zone-scoped (Cache Rules:Edit, Zone Settings:Edit on
+# latam-tools.com.br only), never a Global API Key.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cloudflare/**"
+      - "tools/apply-cloudflare.mjs"
+      - ".github/workflows/cloudflare.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two overlapping runs would race to PUT different rulesets, and the phase
+# entrypoint is wholesale — the loser silently wins.
+concurrency:
+  group: cloudflare-config
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # Runs without credentials and fails if any rule is missing its http.host
+      # scope. That check matters: this zone also serves latam-market, short,
+      # simulador-latam-ro and latam-social, and an unscoped rule would change
+      # caching for all of them.
+      - name: Validate the plan
+        run: node tools/apply-cloudflare.mjs --dry-run
+
+      - name: Apply
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+        run: node tools/apply-cloudflare.mjs
+
+      # Proves the rules do what they claim rather than merely that the API
+      # accepted them. Skipped until DNS points at the origin, because while the
+      # Worker still serves this hostname there is no origin fetch to cache.
+      - name: Verify /image is cacheable
+        env:
+          HOST: https://assets.latam-tools.com.br
+        run: |
+          url="$HOST/image?job=1002&action=0&cachecheck=$(date +%s)"
+          first=$(curl -sS -o /dev/null -D - "$url" | tr -d '\r' | awk -F': ' '/^cf-cache-status/{print $2}')
+          second=$(curl -sS -o /dev/null -D - "$url" | tr -d '\r' | awk -F': ' '/^cf-cache-status/{print $2}')
+          echo "cf-cache-status: $first then $second"
+          if [ -z "$first" ]; then
+            echo "no CF-Cache-Status header — this hostname is not served by an origin yet (Worker route?)"
+            exit 0
+          fi
+          [ "$second" = "HIT" ] || { echo "expected HIT on the second request, got '$second'"; exit 1; }
+          echo "renders are edge-cached"

@@ -921,14 +921,42 @@ did add. The script handles it; a hand-built box will not.
 
 #### Cloudflare configuration
 
-These settings live only in a dashboard, so this is the only version control they
-get.
+**This is committed, not clicked.** `cloudflare/cache-rules.json` and
+`cloudflare/zone-settings.json` are the source of truth;
+`.github/workflows/cloudflare.yml` applies them on every push to `main` that
+touches them.
+
+```bash
+node tools/apply-cloudflare.mjs --dry-run   # print the plan, no credentials needed
+node tools/apply-cloudflare.mjs --diff      # live vs committed, read-only
+```
+
+Idempotent with no state file: cache rules go through the Rulesets *phase
+entrypoint*, a declarative PUT whose body is the complete ruleset, so deleting a
+rule from the JSON deletes it from Cloudflare. That same wholesale behaviour is
+why the script refuses to run if the phase contains a rule it does not manage —
+applying against the wrong zone would otherwise wipe that zone's rules.
+
+Two things the script enforces that are easy to get wrong by hand. **Every rule
+is scoped to `http.host`**, because this zone also serves `latam-market`,
+`short`, `simulador-latam-ro` and `latam-social`, and an unscoped rule changes
+caching for all of them — `--dry-run` fails if any rule lacks the check. And
+**`browser_cache_ttl` is 0** ("Respect Existing Headers"): any other value
+overrides the origin's browser-facing max-age and collapses the immutable/300s
+split, which would break the sibling projects polling `items.json`.
+
+What the config does, and why:
 
 - **DNS**: `assets` → the box's IP, **proxied**. SSL/TLS mode **Full (strict)**,
-  with a Cloudflare Origin certificate on Caddy. No AAAA record.
-- **Cache rules** (Rules → Caching), in order. Cloudflare Free decides what to
-  cache by *file extension*, and `/image?job=…` has none — so the URLs that cost
-  the most to produce are precisely the ones it would not cache by default:
+  with a Cloudflare Origin certificate on Caddy. No AAAA record. DNS and the SSL
+  mode are deliberately *not* automated — a bad apply there takes the site off
+  the internet, and both change roughly never.
+- **Origin certificate**: Cloudflare signs a CSR generated on the box, so the
+  private key never transits a browser or this repository. Installed at
+  `/etc/caddy/cf-origin.{pem,key}`, `root:caddy`, mode 0640, valid 15 years.
+- **Cache rules**, in order. Cloudflare Free decides what to cache by *file
+  extension*, and `/image?job=…` has none — so the URLs that cost the most to
+  produce are precisely the ones it would not cache by default:
   1. `/` and `/healthz` → **Bypass cache**.
   2. `/image*`, `/gif*` → **Eligible for cache**; Edge TTL *use cache-control
      header*; Browser TTL *respect origin*; cache key **query string: include
@@ -1024,11 +1052,14 @@ caddy/ragassets.caddy     # the live site block: Cloudflare Origin cert, gzip on
 deploy/                   # the systemd units, the timer, and the one-line sudoers rule
 tools/provision-oracle.sh # idempotent setup for the Oracle box — the rebuild plan, in code
 tools/patch-cycle.mjs     # ONE client-update cycle: poll, apply, rebuild, restart, announce
+cloudflare/               # the zone config as data: cache rules and zone settings
+tools/apply-cloudflare.mjs # applies cloudflare/ — idempotent, no state file
 tools/apply-patches.mjs   # download and unpack client patches (.gpf and .rgz)
 tools/patchlist.mjs       # the patch index parser, shared by the poller and the applier
 tools/diff-origins.sh     # compare two origins byte-for-byte — the cutover gate
 tools/post-novidades.mjs  # announce an asset update in #novidades
 .github/workflows/ci.yml  # tests only — no deploy, no credentials, never on pull_request
+.github/workflows/cloudflare.yml # applies cloudflare/ on push to main; the one job with a token
 mirror/                   # YOUR merged client: the whole GRF plus every patch (git-ignored)
 resources/                # what the extractor derives from it (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*

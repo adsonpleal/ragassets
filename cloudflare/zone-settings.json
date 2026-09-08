@@ -1,0 +1,53 @@
+{
+  "$comment": [
+    "Zone-wide settings for latam-tools.com.br, applied by",
+    "tools/apply-cloudflare.mjs.",
+    "",
+    "These are ZONE-wide, not per-hostname — unlike the cache rules, they affect",
+    "every project on this domain. Each one below is either already what the other",
+    "projects want, or is a correctness requirement rather than a preference. Do",
+    "not add anything here that only ragassets wants; that belongs in a cache rule.",
+    "",
+    "Each entry is PATCHed to /zones/{zone}/settings/{name}. A setting the plan",
+    "does not support is reported and skipped rather than failing the run, because",
+    "plan entitlements change and a hard failure would block an unrelated deploy."
+  ],
+  "settings": {
+    "browser_cache_ttl": {
+      "value": 0,
+      "$why": [
+        "0 means 'Respect Existing Headers'. This is the one setting that can",
+        "silently undo the origin's whole cache policy: any other value overrides",
+        "the browser-facing max-age, collapsing the immutable/300s split into one",
+        "number. That would break the sibling projects polling /raw/items.json."
+      ]
+    },
+    "always_online": {
+      "value": "on",
+      "$why": [
+        "Serves stale pages from the Internet Archive when the origin is",
+        "unreachable. Free, and this instance explicitly has no SLA."
+      ]
+    },
+    "polish": {
+      "value": "off",
+      "$why": [
+        "Polish recompresses images, which would change the bytes and break the",
+        "byte-for-byte contract the golden tests and tools/diff-origins.sh exist to",
+        "defend. Unavailable on Free anyway; pinned so an upgrade cannot enable it",
+        "by surprise."
+      ]
+    }
+  },
+  "tiered_caching": {
+    "value": "on",
+    "$why": [
+      "Its own endpoint (/zones/{zone}/argo/tiered_caching), not a plain setting.",
+      "Matters more here than anywhere else in the config: one origin, in one",
+      "region, serving a global audience, with 95% of icon requests repeating",
+      "across only 8k distinct URLs. Turns N colo misses into one origin fetch,",
+      "which is the difference between two ARM cores absorbing miss traffic and",
+      "not."
+    ]
+  }
+}
