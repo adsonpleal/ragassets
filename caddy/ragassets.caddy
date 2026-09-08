@@ -2,52 +2,46 @@
 # Deployed to /etc/caddy/conf.d/ragassets.caddy — the main Caddyfile is a stub
 # that imports conf.d/*.caddy, so each project owns its own site block.
 #
-# Two names, two certificate strategies, because they reach this box by
-# different routes.
-
-# Bring-up and debug name. Not on Cloudflare, so the record points straight
-# here and Caddy's automatic HTTP-01 works. Keep it: it is the only way to
-# measure the origin with no CDN in the way, and it is what the cutover gate
-# (tools/diff-origins.sh) compares against before DNS moves.
-ragassets.duckdns.org {
-	@raw path /raw/*
-	encode @raw zstd gzip
-	reverse_proxy localhost:8080
-}
-
-# The live name, proxied by Cloudflare (orange cloud). Browsers see Cloudflare's
-# edge certificate; this one only has to satisfy the proxy, so it is a
-# Cloudflare Origin CA certificate — valid 15 years, no renewal machinery, and
-# no dependency on this box being reachable from the public internet. The zone
-# must be on Full (strict); Flexible would leave this leg plaintext.
+# One name, proxied by Cloudflare (orange cloud). Browsers see Cloudflare's edge
+# certificate; this one only has to satisfy the proxy, so it is a Cloudflare
+# Origin CA certificate — valid 15 years, no renewal machinery, and no dependency
+# on this box being reachable from the public internet. The zone must be on
+# Full (strict); Flexible would leave this leg plaintext.
 #
-# HTTP-01 cannot work here and it is worth knowing why before trying: Cloudflare
-# terminates :80 at the edge and answers the challenge itself, "Always Use
-# HTTPS" turns the challenge request into a redirect, and Caddy's own redirect
-# fights the proxy. DNS-01 via caddy-dns/cloudflare is the alternative if a
-# publicly-valid origin certificate is ever wanted.
+# The private key is generated ON THE BOX and never leaves it: Cloudflare signs a
+# CSR rather than handing out a keypair. Neither file is in this repo, which is
+# public.
 #
-# Certificates live in /var/lib/caddy/.local/share/caddy — never delete them.
+# ACME is deliberately not used here, and the reason is worth knowing before
+# someone tries: Cloudflare terminates :80 at the edge and answers an HTTP-01
+# challenge itself, "Always Use HTTPS" turns the challenge into a redirect, and
+# Caddy's own redirect fights the proxy. DNS-01 via caddy-dns/cloudflare would
+# work but needs a custom Caddy build and an API token on the box, for a
+# certificate nobody but Cloudflare ever validates.
+#
+# Certificates Caddy manages itself live in /var/lib/caddy/.local/share/caddy —
+# never delete that directory.
 assets.latam-tools.com.br {
 	tls /etc/caddy/cf-origin.pem /etc/caddy/cf-origin.key
 
 	# Compress the /raw data tables. They are the only text this host serves —
 	# everything else is PNG/APNG/GIF/MP3/WAV or already-deflated map blobs, which
-	# re-compress to nothing and would just burn CPU. items.json is 8.2 MB of
-	# highly repetitive JSON and gzips to ~1.1 MB, and three projects fetch it on
-	# every client update.
+	# re-compress to nothing and would just burn CPU. items.json is 8.8 MB of
+	# highly repetitive JSON and gzips to roughly an eighth of that, and three
+	# projects fetch it on every client update.
 	#
 	# Cloudflare compresses at the edge too, so this is not for the browser. It is
-	# for the origin -> edge leg on every miss and revalidation, and what is
-	# scarce here is this box's CPU and its single NIC, not Cloudflare's bandwidth.
+	# for the origin -> edge leg on every miss and revalidation, and what is scarce
+	# here is this box's two cores and single NIC, not Cloudflare's bandwidth.
 	@raw path /raw/*
 	encode @raw zstd gzip
 
 	reverse_proxy localhost:8080
 }
 
-# Deliberately no cache directives anywhere above. Every Cache-Control and ETag
-# comes from the Go server (internal/api: CacheImmutable, CacheRevalidate,
-# CacheNoStore), which is the only place that knows whether it is answering with
-# an asset, a miss or a failure. Cloudflare's cache rules are configured to
-# honour those headers rather than to invent their own; see the README.
+# Deliberately no cache directives above. Every Cache-Control and ETag comes from
+# the Go server (internal/api: CacheImmutable, CacheRevalidate, CacheNoStore),
+# which is the only thing that knows whether it is answering with an asset, a
+# miss, or a failure. Cloudflare's cache rules are configured to honour those
+# headers rather than invent a policy; the README records them, because those
+# rules live in a dashboard and this is the only version control they get.

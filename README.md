@@ -1020,7 +1020,7 @@ gateway/internal/api/     # the HTTP contract: query→request, ETags, cache hea
 gateway/cmd/gen-resolver/ # offline tool: bakes id→sprite-name tables from the client .lub
 gateway/cmd/gen-skin-table/ # offline tool: bakes per-sprite skin-ramp palette indices
 gateway/cmd/gen-tables/   # offline tool: turns those JSON tables into Go source (no JSON at startup)
-caddy/ragassets.caddy     # the two site blocks: duckdns (HTTP-01) and the proxied live name
+caddy/ragassets.caddy     # the live site block: Cloudflare Origin cert, gzip on /raw, proxy to :8080
 deploy/                   # the systemd units, the timer, and the one-line sudoers rule
 tools/provision-oracle.sh # idempotent setup for the Oracle box — the rebuild plan, in code
 tools/patch-cycle.mjs     # ONE client-update cycle: poll, apply, rebuild, restart, announce
