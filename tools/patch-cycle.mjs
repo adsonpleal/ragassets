@@ -27,7 +27,7 @@
 // failure that left the work pending). 1 = a bug or a broken invariant, which
 // should page a human rather than be retried silently.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { PATCH_INDEX, parsePatchList } from "./patchlist.mjs";
@@ -176,6 +176,33 @@ const REBUILDS = [
   },
 ];
 
+// The tables the Discord summary diffs. Snapshotted BEFORE the rebuilds, because
+// afterwards the previous state is gone — the client ships no changelog, so a
+// before/after difference is the only way to say "12 new items" rather than
+// "400 files changed".
+//
+// items.json is ~9 MB and the rest are small, so this is a cheap copy, and it is
+// skipped entirely when no rebuild is going to run.
+const SNAPSHOT = [
+  "raw/items.json",
+  "raw/classes.json",
+  "raw/jobs.json",
+  "raw/skills.json",
+  "maps/index.json",
+  "bgm/index.json",
+  "effects/index.json",
+];
+
+function snapshot(dir) {
+  for (const rel of SNAPSHOT) {
+    const src = join(DERIVED, rel);
+    if (!existsSync(src)) continue;
+    const dst = join(dir, rel);
+    mkdirSync(dirname(dst), { recursive: true });
+    copyFileSync(src, dst);
+  }
+}
+
 // --iteminfo is always passed explicitly. extract-grf.mjs resolves it as
 // dirname(resolve(--grf))/System, which for a mirror at ~/ragassets/mirror lands
 // on ~/ragassets/System — correct here, but only by coincidence of layout, and
@@ -290,7 +317,7 @@ async function cycle({ fromSeq, head, args, state }) {
   // A crashed previous run can leave these behind; a stale patchfiles/ would be
   // overlaid onto the mirror a second time. Harmless (patches carry whole files)
   // but it would make the report lie about what this cycle changed.
-  for (const d of ["patchfiles", "patch-report.json", "_patchdl"]) {
+  for (const d of ["patchfiles", "patch-report.json", "patch-summary.json", "_patchdl", "_snapshot"]) {
     rmSync(join(REPO, d), { recursive: true, force: true });
   }
 
@@ -346,6 +373,15 @@ async function cycle({ fromSeq, head, args, state }) {
     log("");
   }
 
+  // Only worth copying if something is actually going to be rebuilt.
+  const willRebuild = REBUILDS.some((r) => files.some(r.touched));
+  const snapDir = join(REPO, "_snapshot");
+  rmSync(snapDir, { recursive: true, force: true });
+  if (willRebuild) {
+    mkdirSync(snapDir, { recursive: true });
+    snapshot(snapDir);
+  }
+
   const mapsLast = Date.parse(state.lastMapsRebuildAt ?? 0) || 0;
   let mapsRebuiltAt = null;
   for (const r of REBUILDS) {
@@ -381,10 +417,27 @@ async function cycle({ fromSeq, head, args, state }) {
   } catch (e) {
     log(`cache purge failed (ignored): ${e?.message ?? e}`);
   }
+  // Everything past here is announcement, not correctness — already true of the
+  // Discord post, and equally true of the diff that feeds it.
   try {
-    node(["tools/post-novidades.mjs", "--report", "patch-report.json"]);
+    if (willRebuild) {
+      node([
+        "tools/patch-summary.mjs",
+        "--before", snapDir,
+        "--after", DERIVED,
+        "--report", "patch-report.json",
+        "--out", "patch-summary.json",
+      ]);
+    }
+    const args = ["tools/post-novidades.mjs", "--report", "patch-report.json"];
+    if (existsSync(join(REPO, "patch-summary.json"))) {
+      args.push("--summary", "patch-summary.json");
+    }
+    node(args);
   } catch (e) {
     log(`discord post failed (ignored): ${e?.message ?? e}`);
+  } finally {
+    rmSync(snapDir, { recursive: true, force: true });
   }
 
   return { mapsRebuiltAt };
