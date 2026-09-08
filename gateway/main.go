@@ -180,7 +180,7 @@ func main() {
 
 func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -193,7 +193,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		failWith(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -201,7 +201,7 @@ func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 
 	req, ext, err := api.BuildRequest(q)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		failWith(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -222,7 +222,7 @@ func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("render failed for %s: %v", r.URL.RawQuery, err)
-		http.Error(w, "render failed: "+err.Error(), http.StatusInternalServerError)
+		failWith(w, "render failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -235,7 +235,7 @@ func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 // single GIF image.
 func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		failWith(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -243,11 +243,11 @@ func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 
 	req, ext, err := api.BuildRequest(q)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		failWith(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if ext == ".zip" {
-		http.Error(w, "outputFormat=zip is not supported on /gif (it returns a single GIF image)", http.StatusBadRequest)
+		failWith(w, "outputFormat=zip is not supported on /gif (it returns a single GIF image)", http.StatusBadRequest)
 		return
 	}
 
@@ -269,7 +269,7 @@ func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("gif render/convert failed for %s: %v", r.URL.RawQuery, err)
-		http.Error(w, "render failed: "+err.Error(), http.StatusInternalServerError)
+		failWith(w, "render failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -303,6 +303,29 @@ func (s *server) serveReaderCache(w http.ResponseWriter, r *http.Request, conten
 // when the bytes do (renders use their query hash instead).
 func fileETag(fi os.FileInfo) string {
 	return fmt.Sprintf("%x-%x", fi.ModTime().UnixNano(), fi.Size())
+}
+
+// notFound and failWith are the only ways this server writes a non-2xx, and
+// going through them is what guarantees the response carries a cache policy.
+//
+// A bare http.Error is a trap here. The handler may already have stamped
+// SetAssetHeaders before reaching the path that failed, and those headers say
+// "immutable" with a validator derived from the query rather than the bytes — so
+// a transient failure is stored, revalidates to 304 against the same query
+// forever, and the image stays broken until the client bypasses its own cache.
+// api.SetErrorHeaders and api.SetMissingHeaders document both halves.
+//
+// The Worker had these wired in and this server did not, because nothing
+// downstream of it cached. Cloudflare now caches this origin for real, which
+// turns a missing header from harmless into the failure above.
+func notFound(w http.ResponseWriter, r *http.Request) {
+	api.SetMissingHeaders(w)
+	http.NotFound(w, r)
+}
+
+func failWith(w http.ResponseWriter, msg string, code int) {
+	api.SetErrorHeaders(w)
+	http.Error(w, msg, code)
 }
 
 // notModified answers a conditional request whose validator already matches: it
@@ -352,27 +375,27 @@ func (s *server) handleIllust(w http.ResponseWriter, r *http.Request) {
 // 404.
 func (s *server) servePNGByKind(w http.ResponseWriter, r *http.Request, prefix, base string, kinds map[string]bool) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		failWith(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, prefix), "/")
 	if len(parts) != 2 || !kinds[parts[0]] || !iconFilePattern.MatchString(parts[1]) {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
 	path := filepath.Join(base, parts[0], parts[1])
 	f, err := os.Open(path)
 	if err != nil {
-		http.NotFound(w, r) // unknown id, or the store isn't extracted yet
+		notFound(w, r) // unknown id, or the store isn't extracted yet
 		return
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil || fi.IsDir() {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
@@ -402,7 +425,7 @@ var spriteFilePattern = regexp.MustCompile(`^(sprite\.json|[0-9]+\.png)$`)
 
 func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		failWith(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -414,14 +437,14 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(rest, "sprites/"):
 		parts := strings.Split(rest, "/") // sprites/{key}/{file}
 		if len(parts) != 3 || !effectKeyPattern.MatchString(parts[1]) || !spriteFilePattern.MatchString(parts[2]) {
-			http.NotFound(w, r)
+			notFound(w, r)
 			return
 		}
 		rel = filepath.Join("sprites", parts[1], parts[2])
 	default:
 		parts := strings.Split(rest, "/")
 		if len(parts) != 2 || !effectKeyPattern.MatchString(parts[0]) || !effectFilePattern.MatchString(parts[1]) {
-			http.NotFound(w, r)
+			notFound(w, r)
 			return
 		}
 		rel = filepath.Join(parts[0], parts[1])
@@ -433,14 +456,14 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 
 	f, err := os.Open(filepath.Join(s.cfg.effectsDir, rel))
 	if err != nil {
-		http.NotFound(w, r) // unknown effect/file, or effects not extracted yet
+		notFound(w, r) // unknown effect/file, or effects not extracted yet
 		return
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil || fi.IsDir() {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
@@ -476,7 +499,7 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleEffectAsset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		failWith(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -494,7 +517,7 @@ func (s *server) handleEffectAsset(w http.ResponseWriter, r *http.Request) {
 	case "table":
 		s.serveEmbeddedJSON(w, r, effect.EffectTableJSON, s.effTableETag)
 	default:
-		http.NotFound(w, r)
+		notFound(w, r)
 	}
 }
 
@@ -504,7 +527,7 @@ func (s *server) handleEffectAsset(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleEffectStr(w http.ResponseWriter, r *http.Request) {
 	file := r.URL.Query().Get("file")
 	if file == "" {
-		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		failWith(w, "missing 'file' query parameter", http.StatusBadRequest)
 		return
 	}
 	etag := api.ETagFor(r.URL.Query()) + "-effstr"
@@ -516,11 +539,11 @@ func (s *server) handleEffectStr(w http.ResponseWriter, r *http.Request) {
 	data, _, ok, err := s.estore.Read(file, []string{".str"})
 	if err != nil {
 		log.Printf("effect str read failed for %q: %v", file, err)
-		http.Error(w, "read failed", http.StatusInternalServerError)
+		failWith(w, "read failed", http.StatusInternalServerError)
 		return
 	}
 	if !ok {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
@@ -533,7 +556,7 @@ func (s *server) handleEffectStr(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("effect str parse failed for %q: %v", file, err)
-		http.Error(w, "parse failed: "+err.Error(), http.StatusInternalServerError)
+		failWith(w, "parse failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.serveBytes(w, r, out, etag, "application/json")
@@ -544,7 +567,7 @@ func (s *server) handleEffectStr(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleEffectTexture(w http.ResponseWriter, r *http.Request) {
 	file := r.URL.Query().Get("file")
 	if file == "" {
-		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		failWith(w, "missing 'file' query parameter", http.StatusBadRequest)
 		return
 	}
 	etag := api.ETagFor(r.URL.Query()) + "-efftex"
@@ -556,11 +579,11 @@ func (s *server) handleEffectTexture(w http.ResponseWriter, r *http.Request) {
 	data, p, ok, err := s.estore.Read(file, []string{".bmp", ".tga"})
 	if err != nil {
 		log.Printf("effect texture read failed for %q: %v", file, err)
-		http.Error(w, "read failed", http.StatusInternalServerError)
+		failWith(w, "read failed", http.StatusInternalServerError)
 		return
 	}
 	if !ok {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
@@ -569,7 +592,7 @@ func (s *server) handleEffectTexture(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		log.Printf("effect texture decode failed for %q: %v", file, err)
-		http.Error(w, "decode failed: "+err.Error(), http.StatusInternalServerError)
+		failWith(w, "decode failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.serveBytes(w, r, out, etag, "image/png")
@@ -584,25 +607,25 @@ func (s *server) handleEffectTexture(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleEffectSound(w http.ResponseWriter, r *http.Request) {
 	file := r.URL.Query().Get("file")
 	if file == "" {
-		http.Error(w, "missing 'file' query parameter", http.StatusBadRequest)
+		failWith(w, "missing 'file' query parameter", http.StatusBadRequest)
 		return
 	}
 
 	p, ok := s.resolveSound(file)
 	if !ok {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 	f, err := os.Open(p)
 	if err != nil {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil || fi.IsDir() {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
@@ -616,13 +639,13 @@ func (s *server) handleEffectSound(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleEffectSoundIndex(w http.ResponseWriter, r *http.Request) {
 	f, err := os.Open(filepath.Join(s.cfg.soundsDir, "index.json"))
 	if err != nil {
-		http.NotFound(w, r) // sounds not extracted yet
+		notFound(w, r) // sounds not extracted yet
 		return
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil || fi.IsDir() {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), "application/json")
@@ -709,27 +732,27 @@ var blobDirExt = map[string]string{"_t": "png", "_m": "rsm", "_w": "jpg", "_u": 
 
 func (s *server) handleMap(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		failWith(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	rest := strings.TrimPrefix(r.URL.Path, "/maps/")
 	rel, ok := resolveMapPath(rest)
 	if !ok {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
 	f, err := os.Open(filepath.Join(s.cfg.mapsDir, rel))
 	if err != nil {
-		http.NotFound(w, r) // unknown map/blob, or maps not extracted yet
+		notFound(w, r) // unknown map/blob, or maps not extracted yet
 		return
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil || fi.IsDir() {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
@@ -794,26 +817,26 @@ var bgmTrackPattern = regexp.MustCompile(`^[0-9a-z_-]+\.mp3$`)
 
 func (s *server) handleBgm(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		failWith(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	rest := strings.TrimPrefix(r.URL.Path, "/bgm/")
 	if rest != "index.json" && !bgmTrackPattern.MatchString(rest) {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
 	f, err := os.Open(filepath.Join(s.cfg.bgmDir, rest))
 	if err != nil {
-		http.NotFound(w, r) // unknown track, or bgm not extracted yet
+		notFound(w, r) // unknown track, or bgm not extracted yet
 		return
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil || fi.IsDir() {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
@@ -842,26 +865,26 @@ var rawFilePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*\.json$`)
 
 func (s *server) handleRaw(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		failWith(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	rest := strings.TrimPrefix(r.URL.Path, "/raw/")
 	if !rawFilePattern.MatchString(rest) {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 
 	f, err := os.Open(filepath.Join(s.cfg.rawDir, rest))
 	if err != nil {
-		http.NotFound(w, r) // unknown table, or raw data not generated yet
+		notFound(w, r) // unknown table, or raw data not generated yet
 		return
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil || fi.IsDir() {
-		http.NotFound(w, r)
+		notFound(w, r)
 		return
 	}
 

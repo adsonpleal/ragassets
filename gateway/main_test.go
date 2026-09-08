@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ragassets/gateway/internal/api"
 	"github.com/ragassets/gateway/internal/render/engine"
 	"github.com/ragassets/gateway/internal/render/resolve"
 )
@@ -584,4 +585,54 @@ func TestIllustTraversal(t *testing.T) {
 			t.Errorf("%s: status = %d, want 404", p, rec.Code)
 		}
 	}
+}
+
+// Every non-2xx this server writes must carry a cache policy and no validator.
+//
+// These paths deliberately avoid newTestServer: they must run in CI, where the
+// resources tree is absent and every resource-backed test skips. An error-header
+// regression that only showed up on a machine with 15 GB of extracted client
+// would be a regression nobody sees.
+func TestErrorResponsesCarryACachePolicy(t *testing.T) {
+	s := &server{}
+
+	t.Run("404 revalidates", func(t *testing.T) {
+		rec := get(t, s, s.handleRoot, "/no-such-path")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != api.CacheRevalidate {
+			t.Errorf("Cache-Control = %q, want %q", cc, api.CacheRevalidate)
+		}
+		if et := rec.Header().Get("Etag"); et != "" {
+			t.Errorf("404 carried a validator: %q", et)
+		}
+	})
+
+	t.Run("error is not stored", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		s.handleImage(rec, httptest.NewRequest(http.MethodPost, "/image?job=1", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want 405", rec.Code)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != api.CacheNoStore {
+			t.Errorf("Cache-Control = %q, want %q", cc, api.CacheNoStore)
+		}
+	})
+
+	// The bug the helpers exist to prevent: a handler that stamped the asset
+	// headers and then failed. Without the Del, the error is stored as immutable
+	// under a query-derived ETag, revalidates to 304 against that same query, and
+	// the image stays broken until the client bypasses its own cache.
+	t.Run("stale asset headers are cleared", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		api.SetAssetHeaders(rec, "deadbeef", api.CacheImmutable)
+		failWith(rec, "render failed", http.StatusInternalServerError)
+		if et := rec.Header().Get("Etag"); et != "" {
+			t.Errorf("failed render kept its validator: %q", et)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != api.CacheNoStore {
+			t.Errorf("Cache-Control = %q, want %q", cc, api.CacheNoStore)
+		}
+	})
 }
