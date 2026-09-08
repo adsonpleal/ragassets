@@ -52,62 +52,48 @@ monsters. Every one is just a URL — see the [API](#get-image) below.
 
 ## How it works
 
-The renderer is a library (`gateway/internal/render`) with two front ends. Both
-compile the same engine and are pinned to the same output by the golden tests, so
-a render is byte-identical whichever one serves it. The public instance runs the
-Cloudflare one; the plain Go binary is what you get when you self-host.
-
-**On Cloudflare — the engine compiled to WebAssembly:**
+One Go binary renders in-process and serves every route from a local tree. The
+public instance is that same binary, with a CDN in front of it:
 
 ```
-                     your domain (proxied)
-                             │
-        ┌────────────────────┴────────────────────┐
-        │  Workers Static Assets                  │  /icons /illust /effects /raw
-        │  requests free and unmetered            │  39k files — 69% of all traffic
-        └────────────────────┬────────────────────┘
-                             │  paths listed in run_worker_first
-        ┌────────────────────┴────────────────────┐
-        │  Worker — Go → wasm (cmd/worker)        │  /image /gif render here
-        │  reads R2 through the colo edge cache   │  /maps /bgm /effect/* from R2
-        └────────────────────┬────────────────────┘
-                             ▼
-                        R2 bucket (data/, maps/, bgm/, sounds/, manifest/)
-```
-
-**Self-hosted — a single Go binary reading a local tree:**
-
-```
-client ──GET /image?job=1002&...──▶  gateway (Go)
+client ──GET /image?job=1002&...──▶  Cloudflare (DNS + cache)
+                                       │  cache rules make renders cacheable
+                                       ▼
+                                     Caddy (TLS, gzip on /raw)
+                                       ▼
+                                     gateway (Go)
                                        │  render in-process, stream bytes
                                        │  (internal/render: parse SPR/ACT/PAL/IMF,
                                        │   composite layers, z-order, APNG encode)
                                        ▼
-                              immutable bytes + ETag → browser/CDN caches them
+                                     mirror/ + resources/ on local disk
 ```
 
-The two are held to each other by `tools/diff-origins.sh`, which replays real
-production URLs against both origins and compares bytes and `Content-Type`. That
-is the gate any change to the Worker has to pass.
+The two halves of that tree are not the same thing, and the distinction matters
+everywhere below. **`mirror/`** is the merged client — the whole GRF plus every
+patch since — and it is both what the renderer reads and what the extractor runs
+against. **`resources/`** holds only what the extractor produces from it: icons,
+card art, effects, maps, BGM, sounds and the data tables.
 
-The split between the two tiers above is a cost decision, not an architectural
-one. Icons are 69% of traffic and 95% of their URLs repeat, so serving them as
-static assets keeps them off the Worker request budget entirely. Renders are the
-opposite — 93% of `/image` URLs are unique, so the CDN cannot help and each one
-has to be cheap to compute.
+`tools/diff-origins.sh` replays real production URLs against two origins and
+compares bytes and `Content-Type`. It is the gate a cutover has to pass, in
+whichever direction one runs.
 
-Two things make the Worker viable, both measured rather than assumed:
+This used to be two front ends: the same engine also compiled to WebAssembly and
+ran as a Cloudflare Worker over an R2 bucket. Two measurements ended that.
 
-- **Reads are planned before they happen.** `BuildPlan` resolves every resource
-  key a render may touch without reading anything, using a baked existence
-  manifest instead of probing. Those keys are then fetched concurrently, so a
-  garment request costs one round trip rather than up to 41 serial ones.
-- **R2 is read through `caches.default`.** The files behind those unique URLs are
-  heavily shared, so the colo cache absorbs nearly all of it: 0.03–0.85 R2
-  GetObject per render depending on cache warmth, against a 6.47-key average
-  plan. The cache key carries a deploy epoch, which is how a deploy invalidates
-  everything at once — purge-by-URL is capped at 30 URLs a call and prefix purge
-  is Enterprise-only.
+- **The extraction could not be complete.** The derived stores need a merged view
+  of the whole client — `--icons` resolves ids through `iteminfo`, `--maps` needs
+  a map's geometry together with its textures — and a GitHub runner is stateless
+  and the mirror is ~15 GB. So a patch that added an item shipped its sprite and
+  never its icon, and no amount of CPU would have fixed it.
+- **Renders were never cached.** On a Worker route the Worker runs *in front of*
+  the cache, so a response it returns is never stored — confirmed in production,
+  where `/image` came back with no `CF-Cache-Status` header at all and re-rendered
+  on every request. The Worker carried its own per-colo render cache to
+  compensate. A plain origin behind a proxied record has the zone cache work
+  normally, which is why the cache rules in [Running it in
+  production](#running-it-in-production) are load-bearing rather than tuning.
 
 - **Renders are served directly; caching is delegated to the client.** The
   gateway keeps **no disk cache** — every render is fast and in-process. Each
@@ -878,105 +864,161 @@ docker compose up --build
   There is no render cache to persist — renders are served directly and cached by
   the client (see [How it works](#how-it-works)).
 - Compose is for local development. The public instance runs the gateway and
-  Caddy as native systemd services; there is no Docker in production.
+  Caddy as native systemd services on one small ARM box; there is no Docker in
+  production. See [Running it in production](#running-it-in-production).
 
 Every directory is configurable, and each defaults to the compose mount point:
 `RESOURCE_DIR`, `ICONS_DIR`, `ILLUST_DIR`, `EFFECTS_DIR`, `MAPS_DIR`, `BGM_DIR`,
 `SOUNDS_DIR`, `RAW_DIR`, plus `GATEWAY_PORT`.
 
-### Running it on Cloudflare
+### Running it in production
 
-How the public instance runs: the same renderer compiled to wasm, with assets in
-R2 instead of on disk. `wrangler.jsonc` and `.github/workflows/deploy.yml` are the
-whole configuration — a push to `main` tests, builds and deploys.
-
-Requires the **Workers Paid** plan: the free tier's 10 ms CPU limit cannot fit a
-12-frame APNG, and its 50-subrequest cap is below the garment worst case.
+The public instance is one Oracle Cloud Always Free ARM box —
+`VM.Standard.A1.Flex`, 2 OCPU, 6 GB, Ubuntu 24.04 aarch64, 100 GB — running the
+gateway and Caddy as native systemd services, with Cloudflare in front for DNS
+and caching. `tools/provision-oracle.sh` sets it up and is safe to re-run;
+`deploy/` holds the units it installs.
 
 ```bash
-# 1. Bake the existence manifest into resources/manifest/exists.bin
-#    (sync-r2.sh refuses to run without it — the Worker cannot resolve a
-#    render's candidates without one)
-(cd gateway && go run ./cmd/gen-manifest -resources ../resources)
-
-# 2. Push resources/ to R2, ~15 GB (needs rclone and an [r2] remote;
-#    see the header of tools/sync-r2.sh for the config)
-tools/sync-r2.sh
-
-# 3. Stage the four Static Assets stores into ./public
-tools/stage-assets.sh
-
-# 4. Build the wasm bundle and deploy
-tools/build-worker.sh
-npx wrangler@4 deploy --env staging
+tools/provision-oracle.sh          # idempotent; prints what it cannot do
 ```
 
-On a machine with no extracted client — CI, for instance — `tools/stage-assets.sh`
-has nothing to read from. `tools/sync-r2.sh` therefore keeps a second copy of the
-four static stores under `static/` in the bucket, and `tools/hydrate-assets.sh`
-rebuilds `./public` from it. Those keys are never served; they exist so a code
-deploy does not require having the client.
+**Memory is a ceiling, not a target.** `GOMEMLIMIT=500MiB` with
+`MemoryMax=600M`, ~224 MB RSS observed, and the parse-cache budgets in
+`internal/render/resource/manager.go` (96 MiB spr + 48 MiB act) are sized to sit
+inside it. Raising one without the other either wastes the headroom or makes the
+caches thrash. The patch cycle gets its own, larger cgroup ceiling so a runaway
+extraction is killed instead of the gateway.
 
-Two configuration traps, both documented at their definitions:
+**Disk**: ~35 GB steady (toolchains ~10, the client ~4.7, `mirror/` ~13–15,
+`resources/` ~6.7), peaking near 45 GB when `--maps` rebuilds its tree alongside
+the old one. Oracle's minimum boot volume is 50 GB, which does not fit that peak.
 
-- **`run_worker_first` must be an array, never `true`.** As a boolean it routes
-  every request through the Worker, which puts all 39k static assets on the
-  request budget and throws away the reason they are there.
-- **Static Assets defaults to `max-age=0, must-revalidate`.** `worker/_headers`
-  is what stops 159k cacheable icon requests becoming 159k revalidations.
+**Always Free has no SLA.** Oracle reclaims instances whose CPU, network *and*
+memory all sit under 20% for seven days, and it halved the A1 allowance in June
+2026 with no announcement. `/image` can vanish without notice. The mitigation is
+not to argue with the heuristic — it is that everything on the box comes from a
+CDN or this repo, so a reclaimed instance is an afternoon's rebuild. Keep
+`provision-oracle.sh` honest and that stays true.
 
-`deploy.yml` asserts both after every deploy by checking that an icon still comes
-back `immutable`.
+One provisioning trap worth stating on its own: Oracle's Ubuntu images ship
+**iptables rules that block inbound independently of the VCN security list**.
+Both have to be opened, and forgetting the local half is the classic "the port is
+open but nothing connects" afternoon, because the console shows you the rule you
+did add. The script handles it; a hand-built box will not.
+
+#### Cloudflare configuration
+
+These settings live only in a dashboard, so this is the only version control they
+get.
+
+- **DNS**: `assets` → the box's IP, **proxied**. SSL/TLS mode **Full (strict)**,
+  with a Cloudflare Origin certificate on Caddy. No AAAA record.
+- **Cache rules** (Rules → Caching), in order. Cloudflare Free decides what to
+  cache by *file extension*, and `/image?job=…` has none — so the URLs that cost
+  the most to produce are precisely the ones it would not cache by default:
+  1. `/` and `/healthz` → **Bypass cache**.
+  2. `/image*`, `/gif*` → **Eligible for cache**; Edge TTL *use cache-control
+     header*; Browser TTL *respect origin*; cache key **query string: include
+     all** — the query string *is* the identity of a render.
+  3. `/icons/ /illust/ /effects/ /effect/ /maps/ /bgm/ /raw/` → same settings.
+     Most have extensions and would cache anyway; the rule exists for the
+     query-keyed `/effect/*` endpoints and to keep the whole policy in one place.
+- **Browser Cache TTL: Respect Existing Headers.** A fixed value overrides the
+  origin and would collapse the immutable/300 s split — which would break the
+  sibling projects that poll `/raw/items.json` on every client update.
+- **Smart Tiered Cache: on.** One origin, one region, a global audience, and 95%
+  of icon requests repeating across only 8k distinct URLs. This is the difference
+  between two ARM cores absorbing the miss traffic and not.
+- **Always Online: on.** Free, and this instance explicitly has no SLA.
+- **Off**: Polish and Mirage (they recompress images, which would break the
+  byte-for-byte contract the golden tests defend), and Bot Fight Mode (it
+  challenges the programmatic `/raw` pollers).
+
+Nothing sets cache headers except the Go server (`internal/api`). Caddy sets
+none, and the rules above tell Cloudflare to honour what the origin says rather
+than to invent a policy of its own.
+
+**Invalidation has one real gap.** Purge-by-URL is capped at 30 URLs per call and
+prefix purge is Enterprise-only, so there is no wholesale lever short of Purge
+Everything. Adding a sprite creates new ids and therefore new URLs, so nothing
+stale exists. *Redrawing* an existing sprite does not: the URL and its
+query-derived ETag are unchanged, so the edge — and a browser holding a year-long
+`immutable` entry — keeps the old pixels. One sprite maps to unboundedly many
+`/image` query permutations, so no finite purge list exists. Accept it, or fire
+one Purge Everything and pay for a cold render cache.
 
 ### Automated asset updates
 
-The game patches two or three times a day. A cron trigger in `worker/shim.mjs`
-polls the LATAM patch index every 10 minutes with a conditional request — a 304
-of 0 bytes when nothing changed — and on a new sequence sends a
-`repository_dispatch` to `.github/workflows/update-assets.yml`, which:
+The game patches two or three times a day. `ragassets-patch.timer` runs
+`tools/patch-cycle.mjs` every ten minutes, which conditionally GETs the LATAM
+patch index and, on a new sequence:
 
 1. downloads the new patches and unpacks them in order (`tools/apply-patches.mjs`);
-2. selects only the paths the Worker serves (`data/sprite`, `palette`, `imf`,
-   `texture/effect`) and uploads them to R2;
-3. rebuilds the existence manifest from the bucket listing;
-4. redeploys with a fresh `DEPLOY_EPOCH`, which invalidates the edge cache;
-5. announces what landed in the `#novidades` Discord channel
-   (`tools/post-novidades.mjs`), posting nothing when nothing user-visible changed.
+2. overlays them onto `mirror/` — patches carry whole files, so
+   copy-with-overwrite *is* the merge;
+3. prunes the robe duplicates a patch re-introduces;
+4. rebuilds each derived store whose inputs the patch actually touched;
+5. restarts the gateway, purges the stably-named index URLs, and announces what
+   landed in `#novidades` (`tools/post-novidades.mjs`).
 
-Run it by hand with `dry_run: true` to exercise everything up to step 2 without
-uploading, deploying or posting.
+Almost every run stops at the conditional GET: one process start, one request, a
+304, no body, no disk write. That is what makes ten minutes affordable.
 
-**What this does not yet rebuild:** the derived stores — icons, illust, raw,
-maps, bgm, sounds. Those need a merged view of the whole client rather than one
-patch (`--icons` resolves ids through `iteminfo`, `--maps` needs a map's geometry
-together with its textures), so until the client mirror exists, a patch that adds
-an item updates its sprite here but not its icon. Re-run those modes locally and
-`tools/sync-r2.sh` as today.
+Step 4 is the point of the whole arrangement. Because the mirror is on local
+disk, **a patch that adds an item now updates its icon and its data tables, not
+just its sprite** — which a stateless runner could never do. Step 5's restart is
+mandatory rather than hygiene: the parse caches are keyed by name and the effect
+store's directory index is built once per folder, so a live process would serve a
+patched sprite from a stale parse and 404 a new effect file forever.
+
+Two things it deliberately does not do. It never rebuilds the baked resolver
+tables, because that recompiles the renderer; a patch carrying
+`data/luafiles514/` logs loudly and leaves it to a human. And it never advances
+its recorded sequence except on full success — a failed cycle must leave the work
+pending, or the patch is skipped forever.
+
+Seed the state once before enabling the timer, or the first run asks for the
+entire archive history and is refused:
+
+```bash
+node tools/patch-cycle.mjs --seed        # record the current head
+node tools/patch-cycle.mjs --dry-run     # what a cycle would do
+```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs the extractor tests, `go vet`, `go test` and a
+`gofmt` check on every push to `main`. It deploys nothing — the box builds its
+own binary.
+
+**Never add a `pull_request` trigger, and never give that workflow credentials.**
+This repository is public: a `pull_request` trigger runs a fork's code, so any
+secret the job can reach is a secret a stranger can exfiltrate. The rule predates
+the self-hosted origin, and matters more now, because the obvious next credential
+to add is an SSH key into the box that serves production.
 
 ### Layout
 
 ```
 docker-compose.yml        # the gateway service (local development)
-wrangler.jsonc            # the Cloudflare Worker: bindings, routes, static assets
 gateway/                  # the Go gateway + in-process renderer (this project)
 gateway/internal/render/  # the native zrenderer reimplementation (parsers, raster, engine)
-gateway/internal/api/     # the contract the server and the Worker must share (query→request, ETags)
-gateway/cmd/worker/       # the Cloudflare Worker entry point (GOOS=js GOARCH=wasm)
+gateway/internal/api/     # the HTTP contract: query→request, ETags, cache headers
 gateway/cmd/gen-resolver/ # offline tool: bakes id→sprite-name tables from the client .lub
 gateway/cmd/gen-skin-table/ # offline tool: bakes per-sprite skin-ramp palette indices
 gateway/cmd/gen-tables/   # offline tool: turns those JSON tables into Go source (no JSON at startup)
-gateway/cmd/gen-manifest/ # offline tool: bakes the existence manifest the Worker probes instead of R2
-worker/shim.mjs           # Worker entry: boots the wasm instance once per isolate; the patch poll
-worker/_headers           # cache policy for Workers Static Assets (mandatory — see above)
-tools/sync-r2.sh          # push resources/ to R2, plus the static/ mirror CI hydrates from
-tools/stage-assets.sh     # stage icons/illust/effects/raw into ./public for wrangler
-tools/hydrate-assets.sh   # rebuild ./public from R2, for machines with no extracted client
-tools/build-worker.sh     # cross-compile the renderer to wasm and stamp DEPLOY_EPOCH
-tools/diff-origins.sh     # compare two origins byte-for-byte — the cutover gate
+caddy/ragassets.caddy     # the two site blocks: duckdns (HTTP-01) and the proxied live name
+deploy/                   # the systemd units, the timer, and the one-line sudoers rule
+tools/provision-oracle.sh # idempotent setup for the Oracle box — the rebuild plan, in code
+tools/patch-cycle.mjs     # ONE client-update cycle: poll, apply, rebuild, restart, announce
 tools/apply-patches.mjs   # download and unpack client patches (.gpf and .rgz)
+tools/patchlist.mjs       # the patch index parser, shared by the poller and the applier
+tools/diff-origins.sh     # compare two origins byte-for-byte — the cutover gate
 tools/post-novidades.mjs  # announce an asset update in #novidades
-.github/workflows/        # deploy.yml (push → Cloudflare) and update-assets.yml (client patches)
-resources/                # YOUR extracted GRF assets (git-ignored, not distributed)
+.github/workflows/ci.yml  # tests only — no deploy, no credentials, never on pull_request
+mirror/                   # YOUR merged client: the whole GRF plus every patch (git-ignored)
+resources/                # what the extractor derives from it (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*
 resources/illust/         # card artwork (extract-grf.mjs --illust), served at /illust/*
 resources/effects/        # effect-only costume + graphic-stone bundles (extract-grf.mjs --effects), served at /effects/*
@@ -1007,6 +1049,21 @@ Extract exactly the directories the gateway needs into `./resources`:
 node extract-grf.mjs --extract resources --grf path/to/data.grf \
   --match "data\\(sprite|palette|imf|luafiles514|texture\\effect)\\"
 ```
+
+> **Pass `--iteminfo` explicitly in anything automated.** With `--grf <directory>`
+> the extractor resolves iteminfo as `dirname(<directory>)/System`, so a mirror at
+> `~/ragassets/mirror` looks in `~/ragassets/System` — which is exactly where the
+> `.rgz` half of a patch lands. Convenient, and far too subtle to rely on in an
+> unattended job: move the mirror one level and the icons silently rebuild against
+> the wrong table.
+
+On the production box this goes to `mirror/` instead, and holds the *whole* GRF
+rather than the subset below — the derived modes need a merged view of the entire
+client, so the box extracts everything once and patches it in place. `resources/`
+there means only the derived stores. Locally the two can share one tree; the
+split exists because `--grf <dir>` walks every file it is pointed at, and aiming
+it at a tree containing the 21k-file `maps/` output it is about to rewrite is
+both slow and confusing.
 
 This populates `resources/data/sprite`, `resources/data/palette`,
 `resources/data/imf`, `resources/data/luafiles514`, `resources/data/texture/effect`,
@@ -1126,34 +1183,6 @@ only `모험가배낭/모험가배낭.spr` byte-for-byte would miss ~260 of the 
 The step also reports any folder left with no sprite at all. That garment has no
 artwork anywhere in the client, which means its visual is a `.str` effect —
 see [effect-only costumes](#get-effects--effect-only-costumes).
-
-#### Baking the existence manifest
-
-```bash
-cd gateway && go run ./cmd/gen-manifest -resources ../resources
-```
-
-Writes `resources/manifest/exists.bin` — the FNV-1a 64 hash of every resource key
-the renderer can read, sorted and binary-searched. On this client that is 188,153
-keys in **1.44 MiB**, built in under two seconds.
-
-It exists because the renderer *probes* far more often than it reads. Resolving a
-request tests candidate sprite pairs — `loadGarment` alone can walk a dozen before
-one hits — and against a local disk each is a `stat`, but against object storage
-each would be a network round trip, all before a single byte of sprite is
-fetched. The manifest answers them from memory instead.
-
-Scope is the whole tree the renderer addresses (`data/{sprite,palette,imf}`)
-rather than only the three subtrees that are probed today. Narrowing it would save
-416 KiB and couple the file to which probes exist, so a probe added later would
-get a confident "no" instead of an answer.
-
-The trade is false positives: a hash collision would report a key that is not
-there, and one probe site treats that as fatal. With 188k keys in a 64-bit space a
-single probe collides with probability around 1e-14, and `gen-manifest` refuses to
-emit a manifest whose own keys collide — but it is a trade, not an absence of one.
-
-Rebuild it after any extraction that adds or removes sprites.
 
 #### Regenerating the skin table
 

@@ -3,6 +3,84 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-09-08
+
+### Changed
+- **Moved off Cloudflare Workers, R2 and KV onto one self-hosted origin.**
+  Cloudflare keeps DNS and CDN caching; everything else comes back in-house, to a
+  single Oracle Cloud Always Free ARM box running the gateway and Caddy as native
+  systemd services with the client mirror on local disk.
+
+  Two measurements drove it, and the entries below from the Cloudflare period are
+  the record of both.
+
+  The extraction could never be complete on a runner. The derived stores — icons,
+  illust, effects, raw, maps, bgm, sounds — need a merged view of the whole
+  client, and a GitHub runner is stateless while the mirror is ~15 GB. That is
+  why `update-assets.yml` only ever shipped `data/sprite`, `data/palette`,
+  `data/imf` and `data/texture/effect`, and why a patch that added an item
+  updated its sprite and never its icon. It was never a CPU problem, so no amount
+  of compute would have fixed it.
+
+  And renders were never cached. On a Worker route the Worker runs *in front of*
+  the cache, so a response it returns is never stored — confirmed in production,
+  where `/image` came back with no `CF-Cache-Status` header at all and re-rendered
+  on every request. The per-colo render cache added on 2026-09-05 existed to
+  compensate for that, keyed by a deploy epoch. A plain origin behind a proxied
+  record has the zone cache work normally, so `/image` is now edge-cached for the
+  first time.
+
+- **The patch poll moved onto the box.** `tools/patch-cycle.mjs`, driven by
+  `ragassets-patch.timer` every ten minutes, replaces the Worker cron, its two KV
+  keys, the `repository_dispatch`, and `update-assets.yml`. State is a local file,
+  written last and only on a fully successful cycle — the same invariant the
+  Worker held, since a failed cycle that advanced the sequence would skip the
+  patch forever.
+
+  The cycle now rebuilds each derived store whose inputs a patch actually
+  touched, which is the whole point of the move: **a patch that adds an item
+  updates its icon and its data tables, not just its sprite.** Gating on the
+  patch's file list is what keeps a ten-minute timer affordable — the game
+  patches two or three times a day, but only a maintenance touches those inputs,
+  and the common cycle is a 304 with no body and no disk write.
+
+  It also restarts the gateway, which is now mandatory rather than hygiene: the
+  parse caches are keyed by name and the effect store's directory index is built
+  once per folder, so a live process would serve a patched sprite from a stale
+  parse and 404 a new effect file forever.
+
+### Removed
+- The wasm entry point (`gateway/cmd/worker/`), the R2 `Source` and effect
+  `ObjectStore`, the existence manifest and `cmd/gen-manifest`, `Manager.Cached`
+  and the prefetch machinery around it, `wrangler.jsonc`, `worker/`, the four R2
+  shell scripts, and `update-assets.yml`.
+
+  A forward deletion, not a revert. The port had removed nothing — the native
+  server kept all eleven routes and CI kept testing it — so reverting the range
+  would have dropped `/effects/stones.json`, restored the substring-based
+  `If-None-Match` comparison, and put back the 64-hex table ETags. Every
+  post-port fix to shared code survives.
+
+- `deploy.yml` became a test-only `ci.yml`. It was the repository's only test
+  automation, so deleting it would have silently removed `go vet`, `go test`,
+  `gofmt` and the extractor tests along with the deploy.
+
+### Fixed
+- **Errors and 404s carry a cache policy.** Every non-2xx now routes through
+  helpers that apply `api.SetErrorHeaders` / `api.SetMissingHeaders`. Both
+  existed and were tested but had no caller on this side — only the Worker wired
+  them in. Harmless while nothing downstream cached; not harmless now, because a
+  bare `http.Error` inherits whatever the handler stamped before failing, and an
+  error stored as `immutable` under a query-derived ETag revalidates to 304
+  against that same query and stays broken until the client bypasses its cache.
+
+### Not removed
+- The Worker deployment, the `ragassets` R2 bucket and the `UPDATE_STATE` KV
+  namespace are still live, as a rollback target. **That target is frozen**: it
+  serves what was in the bucket at cutover and receives no further patches, since
+  the pipeline that fed it is gone. It degrades with every client update. Two to
+  four weeks, then tear it down along with `assets-next` and the EC2 instance.
+
 ## 2026-09-06
 
 ### Fixed
