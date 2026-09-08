@@ -873,10 +873,12 @@ Every directory is configurable, and each defaults to the compose mount point:
 
 ### Running it in production
 
-The public instance is one Oracle Cloud Always Free ARM box —
-`VM.Standard.A1.Flex`, 2 OCPU, 6 GB, Ubuntu 24.04 aarch64, 100 GB — running the
-gateway and Caddy as native systemd services, with Cloudflare in front for DNS
-and caching. `tools/provision-oracle.sh` sets it up and is safe to re-run;
+The public instance is one Oracle Cloud ARM box — `VM.Standard.A1.Flex`,
+2 OCPU, 12 GB, Ubuntu 24.04 aarch64, 100 GB boot at VPU 10 — running the gateway
+and Caddy as native systemd services, with Cloudflare in front for DNS and
+caching. Those numbers sit inside the Always Free allowance (4 OCPU / 24 GB
+Ampere, 200 GB block storage), so the box is free whatever the account's billing
+status. `tools/provision-oracle.sh` sets it up and is safe to re-run;
 `deploy/` holds the units it installs.
 
 ```bash
@@ -894,12 +896,22 @@ extraction is killed instead of the gateway.
 `resources/` ~6.7), peaking near 45 GB when `--maps` rebuilds its tree alongside
 the old one. Oracle's minimum boot volume is 50 GB, which does not fit that peak.
 
-**Always Free has no SLA.** Oracle reclaims instances whose CPU, network *and*
-memory all sit under 20% for seven days, and it halved the A1 allowance in June
-2026 with no announcement. `/image` can vanish without notice. The mitigation is
-not to argue with the heuristic — it is that everything on the box comes from a
-CDN or this repo, so a reclaimed instance is an afternoon's rebuild. Keep
-`provision-oracle.sh` honest and that stays true.
+**Ampere capacity is the scarce thing, not quota.** Creating this instance took
+91 consecutive `Out of capacity for shape VM.Standard.A1.Flex` failures in
+`sa-saopaulo-1` over about an hour, at both 2 OCPU/12 GB and 1 OCPU/6 GB — the
+smaller ask fails identically, so shrinking the shape is not a workaround. The
+service limit was never the constraint (`standard-a1-core-count` reads *Dynamic*
+with usage 0); free-tier tenancies are simply last in line for Ampere hosts, and
+it launched first try once a payment method was attached. If this box is ever
+lost and has to be rebuilt, expect that queue again and budget for it.
+
+**Always Free carries no SLA**, and a free-tier tenancy additionally has idle
+instances reclaimed when CPU, network *and* memory all sit under 20% for seven
+days — a heuristic that does not apply to a Pay As You Go account, even one
+running purely inside the free allowances. Either way the mitigation is the same
+and worth keeping true: everything on this box comes from a CDN or this repo, so
+a rebuild is an afternoon rather than an excavation. Keep
+`provision-oracle.sh` honest and that stays so.
 
 One provisioning trap worth stating on its own: Oracle's Ubuntu images ship
 **iptables rules that block inbound independently of the VCN security list**.
