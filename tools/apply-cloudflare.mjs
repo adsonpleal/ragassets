@@ -91,7 +91,9 @@ async function cf(token, method, path, body) {
 // objected to; the API returns structured errors and dropping them turns a
 // five-second fix into a debugging session.
 function explain(label, r) {
-  const errs = (r.json?.errors ?? []).map((e) => `${e.code}: ${e.message}`).join("; ");
+  const errs = (r.json?.errors ?? [])
+    .map((e) => [e.code, e.message].filter(Boolean).join(": "))
+    .join("; ");
   return `${label}: HTTP ${r.status}${errs ? ` — ${errs}` : ""}`;
 }
 

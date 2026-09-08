@@ -33,22 +33,22 @@
         "and renders were never stored at all (no CF-Cache-Status header in",
         "production, re-rendered every request).",
         "",
-        "The query string IS the identity of a render, so it must be in the cache",
-        "key in full. Note api.ETagFor hashes the query order-independently while",
-        "this key does not: ?job=1&action=0 and ?action=0&job=1 are two edge entries",
-        "holding identical bytes. Extra misses, never wrong bytes."
+        "The query string IS the identity of a render, and Cloudflare's default",
+        "cache key already includes it in full — so there is deliberately no",
+        "cache_key override here. An earlier version set one 'to be explicit' and",
+        "the API rejected it: custom cache keys are Enterprise-only. It was also",
+        "redundant, which is the more useful half of that lesson.",
+        "",
+        "Note api.ETagFor hashes the query order-independently while the cache key",
+        "does not: ?job=1&action=0 and ?action=0&job=1 are two edge entries holding",
+        "identical bytes. Extra misses, never wrong bytes."
       ],
       "expression": "(http.host eq \"assets.latam-tools.com.br\" and (starts_with(http.request.uri.path, \"/image\") or starts_with(http.request.uri.path, \"/gif\")))",
       "action": "set_cache_settings",
       "action_parameters": {
         "cache": true,
         "edge_ttl": { "mode": "respect_origin" },
-        "browser_ttl": { "mode": "respect_origin" },
-        "cache_key": {
-          "custom_key": {
-            "query_string": { "include": "*" }
-          }
-        }
+        "browser_ttl": { "mode": "respect_origin" }
       }
     },
     {
@@ -69,12 +69,7 @@
       "action_parameters": {
         "cache": true,
         "edge_ttl": { "mode": "respect_origin" },
-        "browser_ttl": { "mode": "respect_origin" },
-        "cache_key": {
-          "custom_key": {
-            "query_string": { "include": "*" }
-          }
-        }
+        "browser_ttl": { "mode": "respect_origin" }
       }
     }
   ]
