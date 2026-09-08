@@ -1122,8 +1122,27 @@ textures that [`/effect/str`](#get-effect--skill--world-effects-data--textures) 
 `/effect/texture` parse on demand; drop `texture\\effect` from the match if you
 don't need those endpoints. The headgear/garment
 ID→sprite-name tables are baked from the client `luafiles514/.lub` into the binary
-by `gateway/cmd/gen-resolver` — re-run it when you update the client (see that
-directory's `dump.lua` and `main.go`).
+by `gateway/cmd/gen-resolver` — re-run it when you update the client.
+`tools/rebake-resolver.sh` does the whole cycle on the origin box (dump, generate,
+bake, test, rebuild, restart) and exits early if nothing changed.
+
+That script needs a **32-bit** Lua, which is the non-obvious part. `.lub` files are
+precompiled Lua 5.1 bytecode and the header pins the word size:
+
+```
+1b 4c 75 61 51 00 01 04 04 04 08 00
+                     ^^ sizeof(size_t) = 4
+```
+
+`lua_undump` refuses a chunk whose sizes do not match the host, so a 64-bit
+interpreter cannot read these files at all. What that requires is a 32-bit
+*interpreter*, not a 32-bit machine: `lua5.1:armhf` run through
+`qemu-user-static`'s binfmt handler, since Ampere Altra is AArch64-only and cannot
+execute AArch32 natively. It produces a `tables.json` byte-identical to a 32-bit
+x86 Lua on Windows. `tools/provision-oracle.sh` installs it.
+
+Skipping the rebake is not cosmetic: a job id missing from `jobName` is an
+unresolvable request, so `/image` returns 500 rather than degrading.
 
 #### Patch archives and mirrored trees
 

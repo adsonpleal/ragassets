@@ -340,8 +340,9 @@ async function cycle({ fromSeq, head, args, state }) {
   if (files.some((f) => /^data\/luafiles514\//i.test(f))) {
     log("");
     log("*** this patch ships data/luafiles514 — the baked resolver tables are stale.");
-    log("*** New headgear will render as nothing until someone re-runs");
-    log("*** gateway/cmd/gen-resolver and gen-tables, rebuilds and restarts.");
+    log("*** New job ids will return 500 and new headgear will render as nothing");
+    log("*** until someone runs:  tools/rebake-resolver.sh");
+    log("*** (it rebuilds the renderer, so it stays a human decision)");
     log("");
   }
 

@@ -35,6 +35,24 @@ sudo apt-get update -qq
 sudo apt-get install -y -qq git tmux unzip curl ca-certificates \
   debian-keyring debian-archive-keyring apt-transport-https iptables-persistent
 
+say "32-bit Lua, for the client's .lub bytecode"
+# The client ships precompiled Lua 5.1 chunks whose header pins sizeof(size_t)=4,
+# and lua_undump refuses anything wider — so a 64-bit interpreter cannot read them
+# at all. What is needed is a 32-bit *interpreter*, not a 32-bit machine.
+#
+# Ampere Altra is AArch64-only and cannot execute AArch32 natively, so the armhf
+# build runs through qemu-user-static's binfmt handler. Verified to produce a
+# byte-identical tables.json to a 32-bit x86 lua on Windows.
+#
+# Without this, tools/rebake-resolver.sh cannot run here and a client update that
+# adds job ids leaves /image returning 500 for them.
+if ! command -v lua5.1 >/dev/null; then
+  sudo dpkg --add-architecture armhf
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq qemu-user-static lua5.1:armhf
+fi
+lua5.1 -e 'print("lua " .. _VERSION .. " ok")'
+
 say "Node ${NODE_VERSION} (arm64)"
 # The official tarball rather than a third-party apt repo: the extractor has zero
 # npm dependencies, so trusting a package repo buys nothing that a pinned,
@@ -136,9 +154,9 @@ Provisioned. What this script cannot do, in the order it is needed:
 
   3. Build the gateway. The old x86 binary will not run here.
        cd $REPO/gateway && go build -ldflags='-s -w' -o ragassets-gateway .
-     Then re-run cmd/gen-resolver against the fresh mirror and diff the result
-     against the committed tables.json. A difference there is a live bug in
-     production today, not an artefact of the move.
+     Then run tools/rebake-resolver.sh. It regenerates the baked id -> sprite
+     tables from the mirror and rebuilds only if they changed. A difference there
+     is a live bug in production, not an artefact of the move.
 
   4. Enable the gateway ONLY once mirror/data exists — it exits otherwise.
        sudo systemctl enable --now ragassets-gateway
