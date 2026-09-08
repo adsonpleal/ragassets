@@ -23,7 +23,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, existsSync, readdirSync, statSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 
-import { PATCH_INDEX, PATCH_FILE, parsePatchList } from "../worker/patchlist.mjs";
+import { PATCH_INDEX, PATCH_FILE, parsePatchList } from "./patchlist.mjs";
 
 // MAX_PATCHES bounds what one run will apply, unless --max says otherwise.
 //

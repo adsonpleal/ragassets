@@ -1,0 +1,56 @@
+name: CI
+
+# NEVER add `pull_request` here, and never add credentials to this workflow.
+# This is a public repository: a pull_request trigger runs a fork's code, so any
+# secret this job could reach is a secret a stranger can exfiltrate. The rule
+# predates the self-hosted origin — it guarded the R2 and Cloudflare credentials
+# the old deploy held — and it matters more now, not less, because the natural
+# next credential to add here is an SSH key into the box that serves production.
+# If a deploy job is ever added, it belongs behind `push` on a protected branch.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Matches the local toolchain and the version installed on the origin box.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # go.mod's `go 1.22` is the minimum language version, not the toolchain;
+      # build and test with what production is built with.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: gateway/go.sum
+
+      # The extractor's parsers are pure and need neither a GRF nor resources/,
+      # so they run here in full.
+      - name: Test the extractor
+        run: node --test extract-grf.test.mjs
+
+      # Most Go tests skip without resources/ (gitignored) — but not the golden
+      # renders. Those run against a committed fixture pack precisely so CI
+      # cannot pass vacuously on the one thing that guards the renderer.
+      - name: Test the gateway
+        working-directory: gateway
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
+      - name: Check formatting
+        working-directory: gateway
+        run: |
+          unformatted=$(gofmt -l . | grep -v '_gen.go' || true)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
