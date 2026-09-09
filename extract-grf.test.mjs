@@ -35,6 +35,7 @@ import {
   decodeImaAdpcm,
   toPlayableWav,
   decodeClientString,
+  reportUnrepairedCyrillic,
   actDrawsNothing,
   hatEffectSprite,
   hatEffectIndex,
@@ -1037,6 +1038,28 @@ test("decodeClientString leaves Cyrillic it cannot account for untouched", () =>
   assert.equal(decodeClientString(utf8("Русский")), "Русский");
   // A mapped letter next to an unmapped one (\u0448 sha): all or nothing.
   assert.equal(decodeClientString(utf8("Cabe\u0443\u0448a")), "Cabe\u0443\u0448a");
+});
+
+// The guard is the whole reason it is safe to map only six of row 0xAC's cells,
+// so it has to actually fire — a silent one would just restore the old bug with
+// a clear conscience.
+test("reportUnrepairedCyrillic names the Cyrillic a table still carries", () => {
+  const said = [];
+  const real = console.error;
+  console.error = (m) => said.push(m);
+  try {
+    reportUnrepairedCyrillic("items.json", [{ id: 1, description: "Cabeшa" }]);
+    reportUnrepairedCyrillic("jobs.json", [{ id: 2, name: "Cabeça", nested: [{ d: "Nível" }] }]);
+  } finally {
+    console.error = real;
+  }
+  assert.match(said[0], /items\.json/);
+  assert.match(said[0], /U\+0448/);
+  assert.match(said[0], /x1/);
+  // One finding, reported as a line naming it and a line saying what to do.
+  assert.equal(said.length, 2);
+  // Text that came out repaired must not trip it, at any nesting depth.
+  assert.equal(said.filter((m) => m.includes("jobs.json")).length, 0);
 });
 
 // Effect costumes ship an accessory sprite that is there but deliberately blank:

@@ -6385,7 +6385,7 @@ export function projectHair(scan, read) {
 // "N[ií]vel necess[aá]rio" match as surely as it misreads to a player. Report it
 // rather than throwing — one mangled word is not worth blocking a whole publish,
 // but it must never pass unremarked.
-function reportUnrepairedCyrillic(name, records) {
+export function reportUnrepairedCyrillic(name, records) {
   const chars = new Map();
   const walk = (v) => {
     if (typeof v === "string") {
