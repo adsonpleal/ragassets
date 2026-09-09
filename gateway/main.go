@@ -118,7 +118,7 @@ func main() {
 	if fi, err := os.Stat(cfg.effectsDir); err != nil || !fi.IsDir() {
 		log.Printf("effects: %s not found — /effects/* will return 404 (run extract-grf.mjs --effects)", cfg.effectsDir)
 	} else {
-		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png}, /effects/sprites/{key}/{sprite.json,N.png}, /effects/index.json and /effects/stones.json", cfg.effectsDir)
+		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png}, /effects/sprites/{key}/{sprite.json,N.png}, /effects/index.json, /effects/stones.json and /effects/footprints.json", cfg.effectsDir)
 	}
 
 	if fi, err := os.Stat(filepath.Join(cfg.resourceDir, "data", "texture", "effect")); err != nil || !fi.IsDir() {
@@ -432,7 +432,7 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/effects/")
 	rel := rest // the catalogue, served as-is
 	switch {
-	case rest == "index.json", rest == "stones.json":
+	case rest == "index.json", rest == "stones.json", rest == "footprints.json":
 		// served as-is
 	case strings.HasPrefix(rest, "sprites/"):
 		parts := strings.Split(rest, "/") // sprites/{key}/{file}

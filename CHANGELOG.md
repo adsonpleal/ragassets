@@ -5,6 +5,39 @@ continuously (no version tags), so entries are grouped by date.
 
 ## 2026-09-08
 
+### Added
+- **`/effects/footprints.json` — the footprint stones.** The six *Pegadas* the
+  graphic-stone catalogue skipped now ship as a catalogue of their own, with
+  their assets. A footprint is not one looping effect: the client stamps a decal
+  per footstep out of `FootPrintEffectTable`, four `.str` per row (a mark on the
+  ground and a puff above it, each with a left and a right variant) plus the
+  numbers that space them along the walk line. That has no single `effect` key to
+  put in `stones.json`, which is the only reason it was ever left out — the
+  assets were all in the GRF.
+
+  All six bundle all four halves, into ordinary `/effects/<key>/` bundles from
+  the same pass and deduped against every key it produces, so the two panda
+  footprints share one puff. Every row is listed whether or not it bundled:
+  being in this file is what marks a stone a footprint, and a consumer can then
+  say "it draws while you walk, the artwork just isn't extracted" instead of
+  `stones.json`'s "nothing can ever draw this".
+
+  Every placement number is written out explicitly, because the client's default
+  for an absent field is never the neutral value: a row with no `Scale_Bottom`
+  draws at `0.05`, not `1`, and one with no `Stride` — five of our six — steps
+  every `50`, not every `0`, which would stamp the whole walk on one spot. The
+  defaults are read off `HatEffect_F.lub`'s `GetFootprintStr*` accessors, each of
+  which ends in the literal it falls back on, and are pinned in
+  `FOOTPRINT_DEFAULTS`.
+
+  `stride`/`gap`/`heightTop` are in the `.str`'s own pixel unit and are *not*
+  multiplied by `scale*`, which normalizes art authored at different sizes. The
+  client's own numbers show it: the only two rows in the table that set `Stride`
+  (35 and 60) also carry its largest scales (0.1 and 0.2), so read as pre-scale
+  pixels their strides would be 3.5 and 12 — an order of magnitude under the
+  drawn size of the art they space. README's [Footprints](README.md#footprints)
+  section carries the measurements and the px-per-cell cross-check.
+
 ### Changed
 - **Moved off Cloudflare Workers, R2 and KV onto one self-hosted origin.**
   Cloudflare keeps DNS and CDN caching; everything else comes back in-house, to a

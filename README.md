@@ -445,8 +445,8 @@ the sprite the former plays and the latter's effect id isn't in the effect table
 at all. Two more come from the enchant's `aegisName`, which rAthena has no script
 for (`Golden_Aura_TW`, `Magic_D_Space_BTM`).
 
-Only 12 of the 29 stones produce a bundle, and the ways of missing are worth
-telling apart:
+Only 12 of the 29 stones produce a `stones.json` bundle, and the ways of missing
+are worth telling apart:
 
 - **10 are built into the client**: their `hatEffectTable` row carries a
   `hatEffectID` instead of a `resourceFileName`, so there is no `.str` to bundle.
@@ -458,14 +458,8 @@ telling apart:
   points at it. That is a different bundle shape from a `.str`, so it can't be a
   `stones.json` key as the file stands — showing those two would need the
   catalogue (and the consumer) to carry a sprite reference as well.
-- **6 are footprints**, and a footprint is a different animation shape: a decal
-  stamped once per footstep *while the character walks*, out of a separate table
-  (`FootPrintEffectTable`) with four `.str` slots — bottom and top × left and
-  right, the same file in both left/right slots for all six of these — plus the
-  placement they need (`Scale_Bottom`, `Scale_Top`, `Height_Top`, `Stride`,
-  `Gap`). One bundle key cannot describe that, so they are reported rather than
-  forced into the same shape; the assets are all in the GRF, under
-  `data/texture/effect/footprint*/`.
+- **6 are footprints**, a different animation shape that one bundle key cannot
+  describe, so they get their own catalogue — see [Footprints](#footprints).
 
 The last one out is *Ventania* (`HAT_EF_Golden_Aura_TW`): this client declares the
 constant in `HatEffectIDs.lub` and then gives it no row in either table and ships
@@ -480,6 +474,7 @@ already produced reuses that bundle rather than writing a second copy.
 |---|---|
 | `GET /effects/index.json` | Catalogue: `{"items":[{"id","name","slots","effect"}]}` — one entry per effect-only costume (`effect` is the bundle key; there is no character `view`). |
 | `GET /effects/stones.json` | Graphic-stone catalogue: `{"items":[{"id","effect"}]}` — `id` is the **stone's** item id, `effect` its bundle key. Only the stones that play a `.str` appear; a missing stone means "no preview", not an error (see [Graphic stones](#graphic-stones)). |
+| `GET /effects/footprints.json` | Footprint catalogue: one row per footprint stone, four bundle keys and the placement numbers (see [Footprints](#footprints)). Being listed here is what marks a stone a footprint. |
 | `GET /effects/{key}/effect.json` | The parsed `.str` animation: `{"key","fps","maxKey","layers":[{"textures":[…],"anims":[…]}]}`. |
 | `GET /effects/{key}/tex_N.png` | That effect's layer textures (TGA alpha kept; BMP magenta-keyed → alpha). |
 | `GET /effects/sprites/{key}/sprite.json` | A sprite-based effect's play list: `{"frames":[{"img":"0.png","delay":96,"offset":[x,y]},…]}` — frames in play order, per-frame `delay` in ms, and `offset` (RO px, +x right / +y down) the composited image centre relative to the effect's placement origin. `key` is a map effect's slug (`torch_01`) or `eff_<id>` for the skill/hat effects the replay viewer plays by effect id. |
@@ -488,6 +483,7 @@ already produced reuses that bundle rather than writing a second copy.
 ```
 /effects/index.json
 /effects/stones.json
+/effects/footprints.json
 /effects/c_spot_light/effect.json
 /effects/c_spot_light/tex_0.png
 /effects/sprites/torch_01/sprite.json
@@ -508,6 +504,71 @@ format above, keyed by the `.str` basename (e.g. `bubble1`). The id→`.str` map
 the STR-type subset of roBrowser's `EffectTable.js`, ported into `extract-grf.mjs`; a
 bundle is built for every servable STR effect in that table, so any map's effect
 references resolve.
+
+#### Footprints
+
+Six of the garment stones are not a looping effect at all. They stamp a **decal
+once per footstep while the character walks**, and the client reads them from a
+second table, `FootPrintEffectTable`, keyed by the same `HatEFID` ids. A row is
+four `.str` — a mark left on the ground and a puff above it, each with a left and
+a right variant — plus the numbers that space them along the walk line. There is
+no single `effect` key to put in `stones.json`, so `--effects` writes
+`footprints.json` instead:
+
+```json
+{"items":[{"id":1002239,
+           "bottomLeft":"footprint_dragon_face_2d_bottom",
+           "bottomRight":"footprint_dragon_face_2d_bottom",
+           "topLeft":"footprint_dragon_face_2d",
+           "topRight":"footprint_dragon_face_2d",
+           "scaleBottom":0.06,"scaleTop":0.15,
+           "heightTop":0,"stride":50,"gap":2,"adjustAngle":true}]}
+```
+
+The four keys are ordinary `/effects/{key}/` bundles built by the same pass, and
+deduped against every other key it produces — the two panda footprints share one
+puff, so `footprint_panda` is extracted once. `topLeft`/`topRight` are absent when
+a row genuinely has no top half; a row with no `bottomLeft` is likewise a real
+row, not a broken one. **Being listed here at all is what marks a stone as a
+footprint**, which is a different thing for a consumer to say than `stones.json`'s
+silence: "it draws while you walk, the artwork just isn't extracted" rather than
+"nothing can ever draw this".
+
+Every number is emitted on every row, because the client's defaults for the ones
+a row leaves out are not the neutral values a reader would guess. They live in
+`HatEffect_F.lub`, at the end of each `GetFootprintStr*` accessor
+(`luac5.1 -l` prints the `LOADK`), and `FOOTPRINT_DEFAULTS` copies them:
+
+| field | client default | what it is |
+|---|---|---|
+| `scaleBottom`, `scaleTop` | `0.05` | multiplier on the `.str`'s own geometry — **not** 1 |
+| `heightTop` | `0` | how far the top layer floats above the mark |
+| `stride` | `50` | spacing along the walk line — **not** 0, which would stamp the whole walk on one spot |
+| `gap` | `2` | lateral offset, left foot against right |
+| `adjustAngle` | `false` | whether the decal turns to face the walk direction |
+
+`stride`, `gap` and `heightTop` are in the `.str`'s own pixel unit — the same one
+the quad coordinates inside `effect.json` use — and are **not** multiplied by
+`scale*`: `Scale_Bottom` normalizes art authored at different sizes onto a common
+drawn size, and the spacing is measured in that drawn space. The client's own
+numbers bear this out. Only two rows in the whole 26-row table set `Stride` at
+all — `FOOTPRINT_EF_DogFoot` at 35 and `FOOTPRINT_EF_flower_garden` at 60 — so the
+observed range is 35–60 around a default of 50, while the same rows carry the
+table's largest `Scale` values (0.1 and 0.2); read as pre-scale pixels their
+strides would be 3.5 and 12, an order of magnitude under the drawn size of the
+art they space. All six of ours take the default 50, against ground marks that
+measure 15–27 drawn px and puffs that measure 41–58 — a mark about a third of the
+spacing, which is what a footstep trail looks like.
+
+The absolute px-per-cell conversion is a renderer's choice and nothing in these
+assets fixes it, but the client's own art gives a cross-check: the two `.str`
+whose ground area is unambiguous, `sanctuary` (5×5 cells) and `magnus` (7×7),
+measure 657 and 896 px across, i.e. **≈128–131 px per GAT cell**. At that rate a
+default stride of 50 is ~0.4 of a cell — a dense decorative trail rather than
+anatomical footprints, which matches what these are (a stream of dumplings,
+pandas and dragon faces). For all six the left and right files are identical and
+`gap` is the default 2 px, so there is no visible left/right asymmetry; the only
+row in the client that authors distinct left and right art is `flower_garden`.
 
 A handful of map effects are **played sprites** (`.spr`/`.act`) rather than `.str` —
 `EF_TORCH`, `EF_SMOKE` and `EF_BANJJAKII`. The `--effects` step renders each into a
@@ -1355,9 +1416,13 @@ map's `sprite` effect references resolve.
 
 Last, it writes `resources/effects/stones.json`: the **graphic stones** (see
 [Graphic stones](#graphic-stones)) that play a `.str` hat effect, each mapped to
-its bundle key — reusing a costume's bundle where the two play the same file. The
-report accounts for all 29: bundled, built into the client (no asset exists),
-footprints (a different animation shape, deliberately not bundled), unresolved.
+its bundle key — reusing a costume's bundle where the two play the same file — and
+`resources/effects/footprints.json` for the six that stamp a decal per footstep
+instead (see [Footprints](#footprints)), each with its four bundle keys and the
+client's placement numbers. The report accounts for all 29: bundled, built into
+the client (no asset exists), footprints, unresolved. It prints every footprint's
+scale, height, stride and gap, marking in parentheses the ones that come from the
+client's default rather than the row itself.
 
 To serve the world maps (`/maps/*`), run the map extraction step:
 

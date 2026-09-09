@@ -38,6 +38,8 @@ import {
   actDrawsNothing,
   hatEffectSprite,
   hatEffectIndex,
+  footprintRow,
+  FOOTPRINT_DEFAULTS,
   STONE_HAT_EFFECT,
   effectKey,
   sprEffectCandidates,
@@ -1655,19 +1657,22 @@ test("hatEffectIndex separates .str effects, built-ins, footprints and dead name
     4: tbl({ resourceFileName: "efst_Ljosalfar\\ljosalfar.str" }),
     17: tbl({ hatEffectID: 421 }),
   });
-  const foot = tbl({ 287: tbl({ Type: 4 }) });
+  const foot = tbl({ 287: tbl({ Type: 4, StrFile_Bottom_Left: "footprint_phoenix\\a.str" }) });
   const idx = hatEffectIndex(ids, table, foot);
 
   assert.deepEqual(idx.get("hat_ef_ljosalfar"), {
     id: 4,
     str: "data/texture/effect/efst_ljosalfar/ljosalfar.str",
     builtin: null,
-    footprint: false,
+    footprint: null,
   });
-  assert.deepEqual(idx.get("hat_ef_shrink"), { id: 17, str: null, builtin: 421, footprint: false });
-  assert.deepEqual(idx.get("footprint_ef_phoenix"), { id: 287, str: null, builtin: null, footprint: true });
+  assert.deepEqual(idx.get("hat_ef_shrink"), { id: 17, str: null, builtin: 421, footprint: null });
+  const phoenix = idx.get("footprint_ef_phoenix");
+  assert.equal(phoenix.str, null);
+  assert.equal(phoenix.builtin, null);
+  assert.equal(phoenix.footprint.bottomLeft, "data/texture/effect/footprint_phoenix/a.str");
   // declared, never given a row: nothing to draw, and not a built-in either
-  assert.deepEqual(idx.get("hat_ef_golden_aura_tw"), { id: 278, str: null, builtin: null, footprint: false });
+  assert.deepEqual(idx.get("hat_ef_golden_aura_tw"), { id: 278, str: null, builtin: null, footprint: null });
 
   // Lookup is by lowercased name because rAthena's script constants and the
   // client's own HatEFID casing disagree (HAT_EF_VALHALLA_IDOL vs _Valhalla_Idol).
@@ -1675,6 +1680,69 @@ test("hatEffectIndex separates .str effects, built-ins, footprints and dead name
 
   assert.equal(hatEffectIndex(null, table, foot), null);
   assert.equal(hatEffectIndex(ids, undefined, foot), null);
+});
+
+// A footprint row is read for two things at once: the four .str it stamps, and
+// the numbers that place them. Both have traps. An absent field is NOT zero —
+// the client's accessors substitute their own literals, and a row that leaves
+// out Stride walks 50 apart rather than stamping every print on one spot — and
+// an empty-string file is a deliberate "this footprint has no such half"
+// (several are a puff with no ground mark) rather than a missing asset.
+test("footprintRow normalizes the four .str and fills the client's own defaults", () => {
+  const tbl = (obj) => {
+    const t = new LuaTable();
+    for (const [k, v] of Object.entries(obj)) t.set(k, v);
+    return t;
+  };
+
+  // A fully-specified row: every path normalized, every number passed through.
+  const full = footprintRow(
+    tbl({
+      Type: 4,
+      StrFile_Bottom_Left: "footprint_DogFoot\\bottom_L.str",
+      StrFile_Bottom_Right: "footprint_DogFoot\\bottom_R.str",
+      StrFile_Top_Left: "footprint\\top_fire.str",
+      StrFile_Top_Right: "footprint\\top_fire.str",
+      Scale_Bottom: 0.1,
+      Scale_Top: 0,
+      Height_Top: 9,
+      Stride: 35,
+      Gap: 2,
+      IsAdjustAngle: true,
+    }),
+  );
+  assert.deepEqual(full, {
+    type: 4,
+    bottomLeft: "data/texture/effect/footprint_dogfoot/bottom_l.str",
+    bottomRight: "data/texture/effect/footprint_dogfoot/bottom_r.str",
+    topLeft: "data/texture/effect/footprint/top_fire.str",
+    topRight: "data/texture/effect/footprint/top_fire.str",
+    scaleBottom: 0.1,
+    scaleTop: 0,
+    heightTop: 9,
+    stride: 35,
+    gap: 2,
+    adjustAngle: true,
+  });
+  // Scale_Top: 0 is the row's own number, not a hole to fill with the default.
+  assert.equal(full.scaleTop, 0);
+
+  // A bare row: the ground mark is genuinely absent (empty string), the right
+  // foot reuses the left, and every number comes from the client's accessors.
+  const bare = footprintRow(
+    tbl({ Type: 4, StrFile_Bottom_Left: "", StrFile_Top_Left: "footprint_bud\\bud.str" }),
+  );
+  assert.equal(bare.bottomLeft, null);
+  assert.equal(bare.bottomRight, null);
+  assert.equal(bare.topRight, "data/texture/effect/footprint_bud/bud.str");
+  assert.deepEqual(
+    { s: bare.scaleBottom, h: bare.heightTop, st: bare.stride, g: bare.gap, a: bare.adjustAngle },
+    { s: 0.05, h: 0, st: 50, g: 2, a: false },
+  );
+  assert.equal(bare.stride, FOOTPRINT_DEFAULTS.stride);
+
+  assert.equal(footprintRow(undefined), null);
+  assert.equal(footprintRow({ Stride: 1 }), null);
 });
 
 // The stone → HAT_EF_* link is the one part of the chain the client does not

@@ -165,6 +165,7 @@ func effectsServer(t *testing.T) *server {
 	}
 	write("index.json", `{"items":[{"id":410127,"name":"Holofote","slots":["mid"],"effect":"c_spot_light"}]}`)
 	write("stones.json", `{"items":[{"id":410127,"effect":"c_spot_light"}]}`)
+	write("footprints.json", `{"items":[{"id":1002642,"bottomLeft":"c_spot_light","stride":50}]}`)
 	write(filepath.Join("c_spot_light", "effect.json"), `{"key":"c_spot_light","fps":60,"maxKey":150,"layers":[]}`)
 	write(filepath.Join("c_spot_light", "tex_0.png"), "\x89PNG\r\n\x1a\n")
 	if err := os.MkdirAll(filepath.Join(dir, "sprites", "torch_01"), 0o755); err != nil {
@@ -184,7 +185,8 @@ func TestEffectEndpoint(t *testing.T) {
 	}{
 		{"/effects/index.json", http.StatusOK, "application/json"},
 		{"/effects/stones.json", http.StatusOK, "application/json"},
-		{"/effects/other.json", http.StatusNotFound, ""}, // only the two catalogues are served bare
+		{"/effects/footprints.json", http.StatusOK, "application/json"},
+		{"/effects/other.json", http.StatusNotFound, ""}, // only the three catalogues are served bare
 		{"/effects/c_spot_light/effect.json", http.StatusOK, "application/json"},
 		{"/effects/c_spot_light/tex_0.png", http.StatusOK, "image/png"},
 		{"/effects/c_spot_light/tex_9.png", http.StatusNotFound, ""},       // valid pattern, no such file

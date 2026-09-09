@@ -179,7 +179,9 @@ function usage() {
       "  bubble1..4) referenced by EFFECT_STR_TABLE (roBrowser's EffectTable.js).",
       "  It also writes stones.json, the graphic-stone catalogue: each Malangdo",
       "  visual-enchant stone that plays a .str hat effect, mapped to its bundle",
-      "  key (STONE_HAT_EFFECT → HatEffectInfo.lub → .str).",
+      "  key (STONE_HAT_EFFECT → HatEffectInfo.lub → .str), and footprints.json,",
+      "  the stones that instead stamp a decal per footstep — four bundle keys",
+      "  (ground mark and puff, per foot) plus the client's placement numbers.",
       "",
       "  --maps extracts every world map (or one, with --map <name>) for the map",
       "  simulator: per-map <name>/{<name>.gat,.gnd,.rsw,manifest.json} plus shared,",
@@ -2791,8 +2793,9 @@ export const STONE_HAT_EFFECT = {
 // data/texture/effect/) OR a `hatEffectID` (an effect compiled into the client
 // executable, with no asset in the GRF). Footprints live in a second table,
 // FootPrintEffectTable, keyed by the same ids — they are a different animation
-// shape (a decal stamped per footstep, four .str for bottom/top × left/right)
-// rather than one looping effect, so they are reported, not bundled.
+// shape (a decal stamped per footstep, four .str for bottom/top × left/right,
+// spaced along the walk line by a handful of numbers) rather than one looping
+// effect, so they are bundled the same way but catalogued in footprints.json.
 function readHatEffectTable(grf) {
   const globals = new LuaTable();
   for (const base of ["HatEffectIDs", "HatEffectInfo", "FootPrintEffectInfo"]) {
@@ -2815,9 +2818,10 @@ function readHatEffectTable(grf) {
 // The projection of those three tables: HAT_EF_* name (lowercased — rAthena's
 // script constants and the client's own casing disagree freely) → what it plays.
 // `str` is the GRF path of its .str, `builtin` the executable-compiled effect id
-// it falls back on, `footprint` whether it is a footprint rather than a hat
-// effect. A name declared in HatEFID with no row in either table gets all three
-// null/false — the client can't draw it either.
+// it falls back on, `footprint` its FootPrintEffectTable row (see footprintRow)
+// when it is a footprint rather than a hat effect. A name declared in HatEFID
+// with no row in any of the three gets all three null — the client can't draw it
+// either.
 export function hatEffectIndex(ids, table, foot) {
   if (!(ids instanceof LuaTable) || !(table instanceof LuaTable)) return null;
   const out = new Map();
@@ -2828,10 +2832,53 @@ export function hatEffectIndex(ids, table, foot) {
       id,
       str: typeof res === "string" && res ? normalize(`data/texture/effect/${res}`) : null,
       builtin: row instanceof LuaTable ? (row.get("hatEffectID") ?? null) : null,
-      footprint: foot instanceof LuaTable && foot.map.has(id),
+      footprint: foot instanceof LuaTable ? footprintRow(foot.get(id)) : null,
     });
   }
   return out;
+}
+
+// What the client falls back on when a FootPrintEffectTable row leaves a field
+// out — read off HatEffect_F.lub, whose GetFootprintStr* accessors each end in a
+// literal (`luac5.1 -l` on it shows the LOADK). They are worth writing down
+// because none of them is the neutral value a reader would assume: a row with no
+// Scale_Bottom draws at 0.05 rather than 1, and — the one that actually matters —
+// a row with no Stride steps every 50, not every 0, which would stamp every
+// print of the walk on one spot. Five of our six stones set neither Stride nor
+// Gap, so these ARE their spacing.
+export const FOOTPRINT_DEFAULTS = { scale: 0.05, heightTop: 0, stride: 50, gap: 2, adjustAngle: false };
+
+// One FootPrintEffectTable row, normalized: the four .str as GRF paths, and the
+// placement numbers with the client's own default substituted wherever the row
+// is silent, so a consumer never has to know the defaults above. `_Right` falls
+// back to `_Left` — the client reads the pair together and most rows name the
+// same file twice. An empty string is the table's way of saying "no such half"
+// (several footprints are a puff with no ground mark), and stays null here.
+export function footprintRow(row) {
+  if (!(row instanceof LuaTable)) return null;
+  const str = (key) => {
+    const v = row.get(key);
+    return typeof v === "string" && v ? normalize(`data/texture/effect/${v}`) : null;
+  };
+  const num = (key, dflt) => {
+    const v = row.get(key);
+    return typeof v === "number" ? v : dflt;
+  };
+  const bottomLeft = str("StrFile_Bottom_Left");
+  const topLeft = str("StrFile_Top_Left");
+  return {
+    type: row.get("Type") ?? null,
+    bottomLeft,
+    bottomRight: str("StrFile_Bottom_Right") ?? bottomLeft,
+    topLeft,
+    topRight: str("StrFile_Top_Right") ?? topLeft,
+    scaleBottom: num("Scale_Bottom", FOOTPRINT_DEFAULTS.scale),
+    scaleTop: num("Scale_Top", FOOTPRINT_DEFAULTS.scale),
+    heightTop: num("Height_Top", FOOTPRINT_DEFAULTS.heightTop),
+    stride: num("Stride", FOOTPRINT_DEFAULTS.stride),
+    gap: num("Gap", FOOTPRINT_DEFAULTS.gap),
+    adjustAngle: row.get("IsAdjustAngle") === true,
+  };
 }
 
 // The STR_OVERRIDE of the SPR side: effect ids whose ported `file` names an asset
@@ -3127,6 +3174,39 @@ function extractEffects(grfPath, outBase, args) {
     // rewriting it, so one .str is only ever extracted once.
     const producedKeys = new Set(resolved.map((e) => e.key));
 
+    // Build one .str into /effects/<key>/ and return { key }, or reuse the bundle
+    // when an earlier pass already produced that key. { error } instead when the
+    // .str will not parse or its key is one the gateway would refuse to serve
+    // (handleEffect only routes [a-z0-9_]), so the caller can report it.
+    const bundleStr = (strPath, label) => {
+      const key = effectKey("", strPath);
+      if (!effectKeyOk(key)) {
+        console.error(`  ! ${label}: non-ASCII key ${JSON.stringify(key)}`);
+        return { error: `unservable key ${JSON.stringify(key)}` };
+      }
+      if (producedKeys.has(key)) {
+        console.error(`  ✓ ${key} (${label}) → reused`);
+        return { key };
+      }
+      const outDir = join(root, key);
+      rmSync(outDir, { recursive: true, force: true });
+      mkdirSync(outDir, { recursive: true });
+      try {
+        const info = buildEffect(grf, strPath, key, outDir);
+        const roundTrip = info.bytesRead === info.total ? "" : ` (! str bytesRead ${info.bytesRead}/${info.total})`;
+        console.error(
+          `  ✓ ${key} (${label}) → ${info.layers} layers, ${info.textures} textures` +
+            (info.texMissing ? ` (${info.texMissing} missing)` : "") + roundTrip,
+        );
+        producedKeys.add(key);
+        return { key };
+      } catch (err) {
+        rmSync(outDir, { recursive: true, force: true });
+        console.error(`  ! ${key} (${label}): ${err.message}`);
+        return { error: err.message };
+      }
+    };
+
     // Graphic stones (see STONE_HAT_EFFECT): stone item id → the .str its hat
     // effect plays, resolved through the client's own HatEffectInfo table, and
     // built into the same /effects/<key>/ bundles. Keyed by the STONE's id —
@@ -3145,7 +3225,8 @@ function extractEffects(grfPath, outBase, args) {
         continue;
       }
       if (row.footprint) {
-        stoneFootprint.push({ id, hatEf });
+        // Not a stones.json row: it goes to footprints.json below, bundles and all.
+        stoneFootprint.push({ id, hatEf, fp: row.footprint });
         continue;
       }
       if (!row.str) {
@@ -3162,37 +3243,58 @@ function extractEffects(grfPath, outBase, args) {
       }
       // No resource name to key on — the .str folder is the key, exactly as it
       // is for the Korean-named costumes (see effectKey).
-      const key = effectKey("", row.str);
-      if (!effectKeyOk(key)) {
-        stoneUnresolved.push({ id, hatEf, why: `unservable key ${JSON.stringify(key)}` });
-        console.error(`  ! ${id} ${hatEf}: non-ASCII key ${JSON.stringify(key)}`);
+      const built = bundleStr(row.str, `stone ${id}, ${hatEf}`);
+      if (built.error) {
+        stoneUnresolved.push({ id, hatEf, why: built.error });
         continue;
       }
-      if (!producedKeys.has(key)) {
-        const outDir = join(root, key);
-        rmSync(outDir, { recursive: true, force: true });
-        mkdirSync(outDir, { recursive: true });
-        try {
-          const info = buildEffect(grf, row.str, key, outDir);
-          const roundTrip = info.bytesRead === info.total ? "" : ` (! str bytesRead ${info.bytesRead}/${info.total})`;
-          console.error(
-            `  ✓ ${key} (stone ${id}, ${hatEf}) → ${info.layers} layers, ${info.textures} textures` +
-              (info.texMissing ? ` (${info.texMissing} missing)` : "") + roundTrip,
-          );
-          producedKeys.add(key);
-        } catch (err) {
-          rmSync(outDir, { recursive: true, force: true });
-          stoneUnresolved.push({ id, hatEf, why: err.message });
-          console.error(`  ! ${key} (stone ${id}): ${err.message}`);
-          continue;
-        }
-      } else {
-        console.error(`  ✓ ${key} (stone ${id}, ${hatEf}) → reused`);
-      }
-      stoneItems.push({ id, effect: key });
+      stoneItems.push({ id, effect: built.key });
     }
     stoneItems.sort((a, b) => a.id - b.id);
     writeFileSync(join(root, "stones.json"), JSON.stringify({ items: stoneItems }));
+
+    // Footprints: the six garment stones whose HAT_EF_* is a FootPrintEffectTable
+    // row. Each is two effects per foot — the mark left on the ground and the
+    // puff above it — plus the numbers that stamp them along the walk line, so it
+    // has no single `effect` key to put in stones.json and gets its own file.
+    //
+    // Every footprint stone is listed even when nothing bundled: being in this
+    // file is what tells the consumer "this draws while the character walks",
+    // which is a different thing to say than stones.json's silence, and a row
+    // with no bottomLeft still carries that. The .str themselves are ordinary
+    // ones — same bundles, same /effects/<key>/ URLs, deduped against every key
+    // built so far (the two pandas share one puff).
+    console.error("\nFootprints…");
+    const footprintItems = [];
+    const footprintPartial = [];
+    for (const { id, hatEf, fp } of stoneFootprint) {
+      const item = { id };
+      const missing = [];
+      let named = 0;
+      for (const side of ["bottomLeft", "bottomRight", "topLeft", "topRight"]) {
+        if (!fp[side]) continue;
+        named++;
+        const built = bundleStr(fp[side], `footprint ${id}, ${hatEf} ${side}`);
+        if (built.key) item[side] = built.key;
+        else missing.push(`${side}: ${built.error}`);
+      }
+      // A row that names no .str at all is the PNG shape (Type 3, a plain decal
+      // this pass does not extract) or an empty row — either way nothing drew,
+      // which the summary must not count as built.
+      if (!named) missing.push(`row names no .str (Type ${fp.type})`);
+      Object.assign(item, {
+        scaleBottom: fp.scaleBottom,
+        scaleTop: fp.scaleTop,
+        heightTop: fp.heightTop,
+        stride: fp.stride,
+        gap: fp.gap,
+        adjustAngle: fp.adjustAngle,
+      });
+      if (missing.length) footprintPartial.push({ id, hatEf, missing });
+      footprintItems.push(item);
+    }
+    footprintItems.sort((a, b) => a.id - b.id);
+    writeFileSync(join(root, "footprints.json"), JSON.stringify({ items: footprintItems }));
 
     // In-world map effects: build a /effects/<key>/ bundle for every servable STR
     // effect in the ported EffectTable, so any map's manifest `effects[].str` keys
@@ -3309,8 +3411,13 @@ function extractEffects(grfPath, outBase, args) {
     console.error(`  catalogue:  index.json (${items.length} items)`);
     console.error(
       `  stones:     ${stoneItems.length} bundled, ${stoneBuiltin.length} built into the client, ` +
-        `${stoneFootprint.length} footprints (not bundled), ${stoneUnresolved.length} unresolved` +
+        `${stoneFootprint.length} footprints, ${stoneUnresolved.length} unresolved` +
         ` → stones.json`,
+    );
+    console.error(
+      `  footprints: ${footprintItems.length - footprintPartial.length} built` +
+        (footprintPartial.length ? `, ${footprintPartial.length} incomplete` : "") +
+        ` → footprints.json`,
     );
     if (stoneBuiltin.length) {
       // Most of these have no asset at all (the client draws them procedurally,
@@ -3324,10 +3431,29 @@ function extractEffects(grfPath, outBase, args) {
         console.error(`    ${x.id}\t${x.hatEf}\teffect ${x.effect}${spr}`);
       }
     }
-    if (stoneFootprint.length) {
-      console.error(`
-  Stones skipped (footprints — a per-step decal, not one looping effect):`);
-      for (const x of stoneFootprint) console.error(`    ${x.id}	${x.hatEf}`);
+    if (footprintItems.length) {
+      // The placement numbers, per footprint — the one part of this the assets
+      // do not carry and a consumer cannot infer. `stride`/`gap` are along and
+      // across the walk line, `height` how far the top layer floats above the
+      // mark; a value in (parentheses) is the client's default for a field the
+      // row leaves out (FOOTPRINT_DEFAULTS), not something the row asked for.
+      const shown = (v, key) => (v === FOOTPRINT_DEFAULTS[key] ? `(${v})` : `${v}`);
+      console.error(`\n  Footprints (scale bottom/top, height, stride, gap, angle — defaults in parens):`);
+      for (const it of footprintItems) {
+        const hatEf = stoneFootprint.find((x) => x.id === it.id)?.hatEf ?? "";
+        const halves = ["bottomLeft", "bottomRight", "topLeft", "topRight"].filter((k) => it[k]).length;
+        console.error(
+          `    ${it.id}\t${hatEf}\t${halves}/4 bundled` +
+            `\tscale ${shown(it.scaleBottom, "scale")}/${shown(it.scaleTop, "scale")}` +
+            `\theight ${shown(it.heightTop, "heightTop")}` +
+            `\tstride ${shown(it.stride, "stride")}\tgap ${shown(it.gap, "gap")}` +
+            `\t${it.adjustAngle ? "angled" : "flat"}`,
+        );
+      }
+    }
+    if (footprintPartial.length) {
+      console.error(`\n  Footprints incomplete (listed anyway — the consumer needs to know they exist):`);
+      for (const x of footprintPartial) console.error(`    ${x.id}\t${x.hatEf}\t${x.missing.join(", ")}`);
     }
     if (stoneUnresolved.length) {
       console.error(`
