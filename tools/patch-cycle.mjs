@@ -464,6 +464,7 @@ const PURGE_PATHS = [
   "/raw/hair.json",
   "/effects/index.json",
   "/effects/stones.json",
+  "/effects/footprints.json",
   "/maps/index.json",
   "/bgm/index.json",
   "/effect/sound/index.json",
