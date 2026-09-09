@@ -1586,7 +1586,48 @@ const HANGUL = /[\uac00-\ud7af]/;
 const isLatinText = (s) =>
   [...s].every((ch) => ch.charCodeAt(0) < 0x80 || /\p{L}/u.test(ch)) &&
   !/[\u0080-\uffff]{3}/.test(s);
+// LATAM accent repair. Every Portuguese accent in a handful of item strings
+// arrives as a Cyrillic letter out of KS X 1001 row 12 (lead byte 0xAC):
+// "Cabeуa" for "Cabeça", "Nьvel necessрrio" for "Nível necessário". EUC-KR
+// encodes no accented Latin at all — the whole A1-FE x A1-FE space contains not
+// one of á à â ã é ê í ó ô õ ú ç — so upstream of the client the translators'
+// text was read through a plain EUC-KR table and re-encoded from the Cyrillic
+// that came out. What reaches us is therefore UTF-8-encoded Cyrillic, not
+// row-0xAC bytes: the strings sail through the UTF-8 branch below intact and
+// wrong, which is why this repair runs on decoded text instead of inside the
+// charset ladder.
+//
+// Only these six cells are attested, and the mapping is arbitrary — é is cell
+// D8 and ê is A8, nowhere near their Latin 0xE9/0xEA. The bundled client fonts
+// (System/font/SCDream{4,6}.otf) carry Cyrillic and Hangul but no accented Latin
+// whatsoever, so there is no glyph table to derive the other 60 cells from.
+// Guessing them would invent a mapping nothing supports, so an unmapped Cyrillic
+// character is left alone and reported at write time instead.
+const LATAM_ACCENTS = new Map([
+  ["\u0416", "\u00ea"], // AC A8 -> ê   (Cyrillic capital Zhe)
+  ["\u0436", "\u00e9"], // AC D8 -> é   (Cyrillic small zhe)
+  ["\u0440", "\u00e1"], // AC E2 -> á   (Cyrillic small er)
+  ["\u0441", "\u00e3"], // AC E3 -> ã   (Cyrillic small es)
+  ["\u0443", "\u00e7"], // AC E5 -> ç   (Cyrillic small u)
+  ["\u044c", "\u00ed"], // AC EE -> í   (Cyrillic soft sign)
+]);
+const CYRILLIC = /[\u0400-\u04ff]/;
+// Repair only Latin text with Cyrillic sprinkled through it. A string carrying a
+// Cyrillic letter outside the table is either genuine Cyrillic or a row-0xAC
+// cell nobody has pinned down yet; substituting just the known ones would leave
+// a half-converted mess either way, so hand it back whole to be reported.
+function repairLatamAccents(s) {
+  if (!CYRILLIC.test(s) || !/[A-Za-z]/.test(s)) return s;
+  if ([...s].some((ch) => CYRILLIC.test(ch) && !LATAM_ACCENTS.has(ch))) return s;
+  return s.replace(/[\u0400-\u04ff]/g, (ch) => LATAM_ACCENTS.get(ch));
+}
+
 export function decodeClientString(latin1) {
+  const decoded = decodeClientCharset(latin1);
+  return decoded == null ? decoded : repairLatamAccents(decoded);
+}
+
+function decodeClientCharset(latin1) {
   if (latin1 == null) return null;
   const bytes = Buffer.from(latin1, "latin1");
   if (!bytes.some((x) => x >= 0x80)) return latin1; // pure ASCII
@@ -6338,6 +6379,29 @@ export function projectHair(scan, read) {
   ];
 }
 
+// Any Cyrillic surviving repairLatamAccents is a row-0xAC cell with no known
+// accent behind it, so it ships as a wrong letter to every reader of the table:
+// the calculator parses these description lines, and "Nьvel necessрrio" fails a
+// "N[ií]vel necess[aá]rio" match as surely as it misreads to a player. Report it
+// rather than throwing — one mangled word is not worth blocking a whole publish,
+// but it must never pass unremarked.
+function reportUnrepairedCyrillic(name, records) {
+  const chars = new Map();
+  const walk = (v) => {
+    if (typeof v === "string") {
+      for (const ch of v) if (CYRILLIC.test(ch)) chars.set(ch, (chars.get(ch) ?? 0) + 1);
+    } else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  walk(records);
+  if (!chars.size) return;
+  const list = [...chars]
+    .map(([ch, n]) => `${ch} (U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}) x${n}`)
+    .join(", ");
+  console.error(`  ! ${name}: Cyrillic left unrepaired — ${list}`);
+  console.error("    Work out which accent each stands for and add it to LATAM_ACCENTS.");
+}
+
 function extractRawTables(grfPath, outDir, args) {
   const dest = resolve(outDir);
   mkdirSync(dest, { recursive: true });
@@ -6358,6 +6422,7 @@ function extractRawTables(grfPath, outDir, args) {
   const tables = new Map();
   const write = (name, records) => {
     if (!records.length) throw new Error(`${name}: no records — refusing to write an empty table`);
+    reportUnrepairedCyrillic(name, records);
     tables.set(name, records);
   };
 

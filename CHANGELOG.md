@@ -99,6 +99,40 @@ continuously (no version tags), so entries are grouped by date.
   `gofmt` and the extractor tests along with the deploy.
 
 ### Fixed
+- **Portuguese accents that reached `/raw/items.json` as Cyrillic.** Three item
+  descriptions — 19405 *Sabores Outonais*, 19406 *Fogueira de Graças*, 400016
+  *Boneco de Peru* — read `Cabeуa`, `Nьvel necessрrio`, `Chapжu`, `aparЖncia`,
+  `Aусo de Graуas`. Every wrong letter is a Cyrillic one from KS X 1001 row 12
+  (lead byte `0xAC`), and the six of them map one-to-one onto the accents they
+  displaced: `Ж`→`ê`, `ж`→`é`, `р`→`á`, `с`→`ã`, `у`→`ç`, `ь`→`í`.
+
+  The damage is upstream of us, not in the decode ladder. EUC-KR encodes no
+  accented Latin at all — the whole `A1-FE x A1-FE` space holds not one of
+  `á à â ã é ê í ó ô õ ú ç` — so the translators' text was at some point read
+  through a plain EUC-KR table and re-encoded from the Cyrillic that fell out.
+  What `iteminfo_new.lub` actually contains is UTF-8-encoded Cyrillic, not
+  `0xAC` byte pairs: `Nьvel` is `4E D1 8C 76 65 6C`. The strings therefore take
+  the UTF-8 branch of `decodeClientString`, decode cleanly, and come out wrong,
+  which is why the repair is a pass over the decoded text rather than a change
+  to the charset ladder or its Hangul tie-break. It also explains the per-string
+  granularity that made this look like a heuristic misfire: 19406's `Cabeуa` and
+  its intact `Nível necessário` are separate strings in the file, one mangled
+  upstream and one not.
+
+  Only those six cells are attested and only six are mapped. The mapping is
+  arbitrary — `é` is cell `D8` and `ê` is `A8`, nowhere near their Latin `0xE9`
+  and `0xEA` — and the client's own fonts (`System/font/SCDream{4,6}.otf`) carry
+  Cyrillic and Hangul but no accented Latin whatsoever, so there is no glyph
+  table to derive the other sixty cells from and guessing them would invent a
+  mapping nothing supports. A string holding Cyrillic outside the table is left
+  strictly alone, and `--raw` now reports any that survives rather than shipping
+  a wrong letter quietly.
+
+  Two more rows were mangled the same way and no one had noticed, because the
+  corruption sat in `unidentifiedDescriptionName`, which `items.json` does not
+  carry: 31368 *[Visual] Chapéu do Festival da Colheita* and 31580 *[Visual]
+  Espetinhos*, both `Item nсo identificado`.
+
 - **Errors and 404s carry a cache policy.** Every non-2xx now routes through
   helpers that apply `api.SetErrorHeaders` / `api.SetMissingHeaders`. Both
   existed and were tested but had no caller on this side — only the Worker wired

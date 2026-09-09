@@ -1008,6 +1008,37 @@ test("decodeClientString keeps UTF-8 (the patched iteminfo) as-is", () => {
   assert.equal(decodeClientString(Buffer.from("Poção de Cura", "utf8").toString("latin1")), "Poção de Cura");
 });
 
+// A few LATAM item strings reach us with every Portuguese accent replaced by a
+// Cyrillic letter from KS X 1001 row 12 (lead 0xAC). They arrive UTF-8-encoded,
+// so the UTF-8 branch decodes them cleanly and hands back the wrong letters;
+// the repair runs on the decoded text.
+test("decodeClientString repairs LATAM accents encoded as row-0xAC Cyrillic", () => {
+  const utf8 = (s) => Buffer.from(s, "utf8").toString("latin1");
+  const cases = [
+    ["Tipo: ^777777Equip. para Cabe\u0443a^000000", "Tipo: ^777777Equip. para Cabeça^000000"],
+    ["N\u044cvel necess\u0440rio: ^7777771^000000", "Nível necessário: ^7777771^000000"],
+    ["Chap\u0436u feito com apar\u0416ncia", "Chapéu feito com aparência"],
+    ["A\u0443\u0441o de Gra\u0443as", "Ação de Graças"],
+    ["a combina\u0443\u0441o perfeita", "a combinação perfeita"],
+    ["Item n\u0441o identificado.", "Item não identificado."],
+  ];
+  for (const [broken, want] of cases) {
+    assert.equal(decodeClientString(utf8(broken)), want);
+  }
+});
+
+// Only six cells of row 0xAC are attested, and there is nothing to derive the
+// other sixty from — the client's own fonts carry no accented Latin at all. So a
+// Cyrillic letter outside the table means either genuine Cyrillic or a cell
+// nobody has pinned down, and a half-applied substitution would corrupt both.
+test("decodeClientString leaves Cyrillic it cannot account for untouched", () => {
+  const utf8 = (s) => Buffer.from(s, "utf8").toString("latin1");
+  // Genuine Cyrillic, no Latin letters at all.
+  assert.equal(decodeClientString(utf8("Русский")), "Русский");
+  // A mapped letter next to an unmapped one (\u0448 sha): all or nothing.
+  assert.equal(decodeClientString(utf8("Cabe\u0443\u0448a")), "Cabe\u0443\u0448a");
+});
+
 // Effect costumes ship an accessory sprite that is there but deliberately blank:
 // every layer tinted alpha 0. That is how the client says "the visual is an
 // effect" — so the extractor must not mistake such a view for a renderable one.
