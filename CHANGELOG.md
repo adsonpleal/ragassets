@@ -41,8 +41,15 @@ continuously (no version tags), so entries are grouped by date.
 
   What was given up: Cloudflare's DDoS absorption, its WAF, Always Online, tiered
   caching, and the hidden origin IP. This box is now directly addressable with no
-  scrubbing in front of it, and the address is in public DNS permanently. A
-  per-IP rate limit is the obvious follow-up and is not done yet.
+  scrubbing in front of it, and the address is in public DNS permanently.
+
+  A per-IP rate limit was considered and deliberately not built: usage is watched
+  through Oracle's instance metrics instead, and the limit gets written if
+  something actually abuses the box rather than in anticipation. Request logging
+  was declined on the same grounds, which is worth stating plainly because it is
+  the sharper half of the trade — nothing records a client IP, so abuse is
+  visible in aggregate load but the caller cannot be identified or blocked
+  individually without adding a log first.
 
   The rollback is one click, and cleaner than expected: flipping the record back
   to orange restores everything, because a publicly-trusted certificate satisfies

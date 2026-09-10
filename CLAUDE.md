@@ -61,6 +61,12 @@ rewrite. Locally the two can share a tree; on the box they must not.
 - **Port 80 must stay open on the box.** Nothing serves on it but the redirect to
   HTTPS — it is there so Caddy can answer the ACME HTTP-01 challenge when the
   certificate renews every 60 days. Close it and the site dies 30 days later.
+- **There is no rate limit and no access log, on purpose.** Going direct gave up
+  Cloudflare's WAF, and the replacement is deliberately not more software: usage
+  is watched through Oracle's instance metrics (CPU and network), and a rate
+  limit gets built if something actually abuses the box. A consequence to accept
+  with it — nothing records a client IP, so an abusive caller can be seen in the
+  aggregate but not identified. Adding a log is the first step if that day comes.
 - **`cloudflare/cache-rules.json` looks live and is not.** Every rule tests
   `http.host eq "assets.latam-tools.com.br"`, which no longer passes through
   Cloudflare, so none of them can match. They are kept so that re-proxying
