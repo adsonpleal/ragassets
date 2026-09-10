@@ -6,6 +6,75 @@ continuously (no version tags), so entries are grouped by date.
 ## 2026-09-09
 
 ### Changed
+- **`assets.latam-tools.com.br` is grey-clouded: Cloudflare is DNS only for this
+  host.** Browsers reach the box directly and Caddy holds a Let's Encrypt
+  certificate. The zone still proxies the four sibling projects; this hostname is
+  the exception.
+
+  The CDN was losing to the origin it was fronting, and the reason was routing
+  rather than caching. Cloudflare's anycast sent roughly a quarter of Brazilian
+  requests to Miami or Newark instead of Rio, and the penalty applied to cache
+  hits as much as misses:
+
+  | serving colo | cached render | uncached render |
+  |---|---|---|
+  | GIG (Rio) | 122 ms | ~135 ms |
+  | MIA (Miami) | 412 ms | ~840 ms |
+  | EWR (Newark) | 452 ms | — |
+
+  That is what "it was fast yesterday and slow today" was. It is a lottery per
+  connection, not a steady tax, and every request multiplexed onto a connection
+  that landed badly pays the same penalty — which is why a paperdoll rotation
+  showed five requests at a uniform 650 ms.
+
+  The cache was not buying enough to justify the detour. 98.7% of the 228,002
+  `/image` requests reaching the origin in a day were for URLs never requested
+  before, because the query encodes an entire character configuration. Stripping
+  the frontend's `v=` tag, which changes on every release, would have recovered
+  5,097 of them — 2%. From a Rio colo a miss cost only ~15 ms more than a hit, so
+  even where the cache did work it was saving very little.
+
+  Direct, from Brazil, the same never-seen render costs **19 ms**, against a
+  best-case 135 ms and a common-case 650 ms through the edge. The origin itself
+  has been flat at a 2-4 ms p50 for the whole period; none of this was ever
+  render time.
+
+  What was given up: Cloudflare's DDoS absorption, its WAF, Always Online, tiered
+  caching, and the hidden origin IP. This box is now directly addressable with no
+  scrubbing in front of it, and the address is in public DNS permanently. A
+  per-IP rate limit is the obvious follow-up and is not done yet.
+
+  The rollback is one click, and cleaner than expected: flipping the record back
+  to orange restores everything, because a publicly-trusted certificate satisfies
+  Full (strict) exactly as the Cloudflare Origin CA one did. The cache rules were
+  left in place, dormant, so re-proxying does not silently lose render caching.
+
+### Cleanup
+- **ACME replaces the Cloudflare Origin certificate.** The old one is valid only
+  to Cloudflare and rejected by every browser, which was fine while no browser
+  saw it. Caddy now obtains and renews a Let's Encrypt certificate over HTTP-01,
+  so **port 80 must stay open** — not for visitors, who are redirected, but for
+  the renewal. This could not have been done before the flip: Cloudflare
+  terminated `:80` at the edge and Always Use HTTPS turned the challenge into a
+  redirect. Issuance took 8 seconds once the record was grey.
+- **`/raw` compression became browser-facing.** Caddy already gzipped and zstd'd
+  those tables for the origin-to-edge leg, since Cloudflare recompressed for the
+  browser. With no edge there is no second pass, so that directive is now the
+  only thing between clients and an 8.8 MB `items.json`. Verified: 9,256,022
+  bytes uncompressed, 1,215,153 gzip, 1,164,702 zstd.
+- **The patch cycle's edge purge is dormant**, along with `cloudflare/cache-rules.json`.
+  Both are kept for the rollback path and marked as inert where they live. The
+  purge existed because the stably-named indexes are served `immutable`; serving
+  direct fixes that outright rather than working around it, since a new visitor
+  now gets current bytes with no edge copy to go stale. Leaving `CF_ZONE_ID` and
+  `CF_PURGE_TOKEN` out of `patch.env` is the intended state.
+- **Docs corrected where they had become actively misleading**: `CLAUDE.md` said
+  Cloudflare was a CDN cache and that the origin IP was hidden, `README.md`'s
+  request-flow diagram put Cloudflare in the path, and the gateway, the systemd
+  unit and `tools/provision-oracle.sh` all described a topology that no longer
+  exists.
+
+### Performance
 - **APNG frames are written as dirty rectangles, not full-canvas repaints.**
   Every frame after the first now carries only the box enclosing its visible
   pixels, placed back at an `fcTL` offset, with `DISPOSE_OP_BACKGROUND` clearing

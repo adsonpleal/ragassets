@@ -56,10 +56,9 @@ One Go binary renders in-process and serves every route from a local tree. The
 public instance is that same binary, with a CDN in front of it:
 
 ```
-client ──GET /image?job=1002&...──▶  Cloudflare (DNS + cache)
-                                       │  cache rules make renders cacheable
-                                       ▼
-                                     Caddy (TLS, gzip on /raw)
+client ──GET /image?job=1002&...──▶  Caddy (TLS, gzip on /raw)
+                                       │  Cloudflare is DNS only for this
+                                       │  host — the record is grey-clouded
                                        ▼
                                      gateway (Go)
                                        │  render in-process, stream bytes
@@ -936,8 +935,8 @@ Every directory is configurable, and each defaults to the compose mount point:
 
 The public instance is one Oracle Cloud ARM box — `VM.Standard.A1.Flex`,
 2 OCPU, 12 GB, Ubuntu 24.04 aarch64, 100 GB boot at VPU 10 — running the gateway
-and Caddy as native systemd services, with Cloudflare in front for DNS and
-caching. Those numbers sit inside the Always Free allowance (4 OCPU / 24 GB
+and Caddy as native systemd services, with Cloudflare providing DNS only —
+the `assets` record is grey-clouded, so browsers reach this box directly. Those numbers sit inside the Always Free allowance (4 OCPU / 24 GB
 Ampere, 200 GB block storage), so the box is free whatever the account's billing
 status. `tools/provision-oracle.sh` sets it up and is safe to re-run;
 `deploy/` holds the units it installs.
@@ -1014,14 +1013,22 @@ split, which would break the sibling projects polling `items.json`.
 
 What the config does, and why:
 
-- **DNS**: `assets` → the box's IP, **proxied**. SSL/TLS mode **Full (strict)**,
-  with a Cloudflare Origin certificate on Caddy. No AAAA record. DNS and the SSL
-  mode are deliberately *not* automated — a bad apply there takes the site off
-  the internet, and both change roughly never.
-- **Origin certificate**: Cloudflare signs a CSR generated on the box, so the
-  private key never transits a browser or this repository. Installed at
-  `/etc/caddy/cf-origin.{pem,key}`, `root:caddy`, mode 0640, valid 15 years.
-- **Cache rules**, in order. Cloudflare Free decides what to cache by *file
+- **DNS**: `assets` → the box's IP, **DNS only (grey cloud)** since 2026-09-09.
+  No AAAA record. DNS is deliberately *not* automated — a bad apply there takes
+  the site off the internet, and it changes roughly never. Flipping the cloud
+  back to orange is the entire rollback: a publicly-trusted certificate satisfies
+  Full (strict) just as an Origin CA one did.
+- **Certificate**: Let's Encrypt, obtained and renewed by Caddy over ACME
+  HTTP-01, which is why **port 80 must stay open**. This replaced a Cloudflare
+  Origin CA certificate, which every browser rejects and which was only ever
+  valid because no browser saw it. ACME could not have worked while the record
+  was proxied: Cloudflare terminated :80 at the edge and Always Use HTTPS turned
+  the challenge into a redirect.
+- **Cache rules**, in order. **All three are dormant** as of the grey-cloud
+  cutover: every one tests `http.host eq "assets.latam-tools.com.br"`, and that
+  host no longer passes through Cloudflare, so none can match. They are kept
+  rather than deleted so re-proxying restores the policy in one click. What they
+  did, and would do again: Cloudflare Free decides what to cache by *file
   extension*, and `/image?job=…` has none — so the URLs that cost the most to
   produce are precisely the ones it would not cache by default:
   1. `/` and `/healthz` → **Bypass cache**.
@@ -1034,10 +1041,13 @@ What the config does, and why:
 - **Browser Cache TTL: Respect Existing Headers.** A fixed value overrides the
   origin and would collapse the immutable/300 s split — which would break the
   sibling projects that poll `/raw/items.json` on every client update.
-- **Smart Tiered Cache: on.** One origin, one region, a global audience, and 95%
-  of icon requests repeating across only 8k distinct URLs. This is the difference
-  between two ARM cores absorbing the miss traffic and not.
-- **Always Online: on.** Free, and this instance explicitly has no SLA.
+- **Smart Tiered Cache: on.** Zone-wide, so it still serves the four sibling
+  projects. It no longer does anything for ragassets, whose traffic stops
+  reaching Cloudflare at all; the icon-repetition argument that originally
+  justified it is now moot for this host.
+- **Always Online: on.** Zone-wide and free. It can no longer help ragassets
+  either: with the record grey-clouded there is no edge in the path to serve a
+  stale copy when this box is down.
 - **Off**: Polish and Mirage (they recompress images, which would break the
   byte-for-byte contract the golden tests defend), and Bot Fight Mode (it
   challenges the programmatic `/raw` pollers).

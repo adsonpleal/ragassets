@@ -12,13 +12,22 @@ client's GRF; `gateway/` renders and serves them.
 Workers, not EC2, not Docker — both of those are historical and the CHANGELOG
 still describes them, so check dates before trusting an old entry.
 
-Cloudflare is **DNS and CDN cache only**. Its config is committed in
-`cloudflare/` and applied by `.github/workflows/cloudflare.yml`; do not change
-cache rules by clicking in the dashboard.
+Cloudflare is **DNS only for this host**, since 2026-09-09. The `assets` record
+is grey-clouded: browsers reach the box directly and Caddy holds a Let's Encrypt
+certificate. Measurements are in the CHANGELOG; the short version is that a
+quarter of Brazilian requests were being routed to Miami or Newark and paying
+3.5x for it, on cache hits as much as misses, while 98.7% of renders were
+uncacheable anyway.
 
-**Connection details (host, SSH key) are deliberately not in this repository** —
-it is public, and the DNS record is proxied so the origin IP is otherwise hidden.
-They live in:
+The zone config in `cloudflare/` is still committed and still applied by
+`.github/workflows/cloudflare.yml` — the zone-wide settings there affect four
+sibling projects that are still proxied, and the cache rules are kept dormant
+rather than deleted so that re-proxying is a one-click rollback. Do not change
+either by clicking in the dashboard.
+
+**The origin IP is public now** — one `dig assets.latam-tools.com.br` returns it,
+so stop treating it as a secret. What is still deliberately not in this
+repository is the SSH key and anything else that grants access. It lives in:
 
 - the `deploy` skill (`.claude/skills/deploy/`, gitignored) — say "deploy" or
   "ship it" to load it, and it documents the whole procedure
@@ -49,6 +58,13 @@ rewrite. Locally the two can share a tree; on the box they must not.
   process serves a patched sprite stale and 404s a new effect file forever.
 - **A missing sprite returns 500, not 404.** Pre-existing; the render fails rather
   than reporting absence.
+- **Port 80 must stay open on the box.** Nothing serves on it but the redirect to
+  HTTPS — it is there so Caddy can answer the ACME HTTP-01 challenge when the
+  certificate renews every 60 days. Close it and the site dies 30 days later.
+- **`cloudflare/cache-rules.json` looks live and is not.** Every rule tests
+  `http.host eq "assets.latam-tools.com.br"`, which no longer passes through
+  Cloudflare, so none of them can match. They are kept so that re-proxying
+  restores render caching in one click.
 
 ## Before changing cache headers or ETags
 

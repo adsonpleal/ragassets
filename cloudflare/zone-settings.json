@@ -43,11 +43,13 @@
     "value": "on",
     "$why": [
       "Its own endpoint (/zones/{zone}/argo/tiered_caching), not a plain setting.",
-      "Matters more here than anywhere else in the config: one origin, in one",
-      "region, serving a global audience, with 95% of icon requests repeating",
-      "across only 8k distinct URLs. Turns N colo misses into one origin fetch,",
-      "which is the difference between two ARM cores absorbing miss traffic and",
-      "not."
+      "",
+      "It was turned on for ragassets — one origin, in one region, serving a",
+      "global audience, with 95% of icon requests repeating across only 8k",
+      "distinct URLs — and that argument expired on 2026-09-09, when the assets",
+      "record was grey-clouded and its traffic stopped reaching Cloudflare at",
+      "all. Left on because this setting is zone-wide and the four sibling",
+      "projects are still proxied, and because it costs nothing to keep."
     ]
   }
 }

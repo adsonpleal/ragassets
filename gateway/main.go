@@ -316,8 +316,10 @@ func fileETag(fi os.FileInfo) string {
 // api.SetErrorHeaders and api.SetMissingHeaders document both halves.
 //
 // The Worker had these wired in and this server did not, because nothing
-// downstream of it cached. Cloudflare now caches this origin for real, which
-// turns a missing header from harmless into the failure above.
+// downstream of it cached. Something always does now: the edge cached this
+// origin for real while it was proxied, and since the grey-cloud cutover the
+// browser is the only cache left — which makes these headers the whole defence
+// rather than a belt beside Cloudflare's braces.
 func notFound(w http.ResponseWriter, r *http.Request) {
 	api.SetMissingHeaders(w)
 	http.NotFound(w, r)

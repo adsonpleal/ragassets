@@ -161,12 +161,15 @@ Provisioned. What this script cannot do, in the order it is needed:
   4. Enable the gateway ONLY once mirror/data exists — it exits otherwise.
        sudo systemctl enable --now ragassets-gateway
 
-  5. Cloudflare Origin certificate into /etc/caddy/cf-origin.{pem,key}, owned
-     root:caddy, mode 0640. Zone SSL mode: Full (strict).
+  5. Nothing to install for TLS: the assets record is grey-clouded (DNS only),
+     so Caddy gets a Let's Encrypt certificate over ACME HTTP-01 by itself on
+     first start. Port 80 must be reachable from the internet for that, and for
+     every renewal after it. There is no Cloudflare Origin certificate any more.
 
-  6. /etc/ragassets/patch.env, root:root 0600, if you want the Discord post and
-     the cache purge: DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, CF_ZONE_ID,
-     CF_PURGE_TOKEN. Never in the repo — it is public.
+  6. /etc/ragassets/patch.env, root:root 0600, if you want the Discord post:
+     DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID. Never in the repo — it is public.
+     CF_ZONE_ID and CF_PURGE_TOKEN are only read by the edge purge, which does
+     nothing while this host is grey-clouded; set them only if it is re-proxied.
 
   7. Seed the poll BEFORE enabling the timer, or the first cycle asks for the
      whole archive history and is refused at MAX_PATCHES:

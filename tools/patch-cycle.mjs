@@ -443,13 +443,27 @@ async function cycle({ fromSeq, head, args, state }) {
   return { mapsRebuiltAt };
 }
 
-// Cloudflare's free plan gives purge-by-URL, capped at 30 URLs per call; prefix
-// and tag purge are Enterprise. That rules out invalidating renders, and it does
-// not matter: a patch that adds a sprite creates new ids and therefore new URLs,
-// so nothing stale exists. A patch that *redraws* an existing sprite is the
-// genuine gap — the URL and its query-derived ETag are unchanged, so the edge
-// keeps the old pixels. Purge Everything is the only lever, at the cost of a
-// fully cold render cache, and it is a human's call.
+// DORMANT since 2026-09-09, when assets.latam-tools.com.br was grey-clouded.
+// There is no edge cache in front of this origin any more, so there is nothing
+// for a purge to invalidate. The intended state on the box is therefore to leave
+// CF_ZONE_ID and CF_PURGE_TOKEN out of /etc/ragassets/patch.env, which makes the
+// call below skip and say so. It is kept, rather than deleted, because
+// re-proxying the record is the rollback plan and this would be needed again the
+// same day.
+//
+// Note that the grey cloud fixed the stale-index problem outright rather than
+// working around it: these files are served immutable at a stable URL, so the
+// purge was the only thing making a patched index visible to a new visitor.
+// Direct from the origin, a new visitor simply gets the current bytes.
+//
+// The rest of the original reasoning, for whoever re-proxies. Cloudflare's free
+// plan gives purge-by-URL, capped at 30 URLs per call; prefix and tag purge are
+// Enterprise. That rules out invalidating renders, and it does not matter: a
+// patch that adds a sprite creates new ids and therefore new URLs, so nothing
+// stale exists. A patch that *redraws* an existing sprite is the genuine gap —
+// the URL and its query-derived ETag are unchanged, so the edge keeps the old
+// pixels. Purge Everything is the only lever, at the cost of a fully cold render
+// cache, and it is a human's call.
 //
 // What is purgeable is the handful of stably-named indexes that change on every
 // patch and would otherwise sit behind their own Cache-Control until it expires.
@@ -475,7 +489,7 @@ async function purgeCloudflare() {
   const token = process.env.CF_PURGE_TOKEN;
   const origin = process.env.RAGASSETS_SITE_URL || "https://assets.latam-tools.com.br";
   if (!zone || !token) {
-    log("no CF_ZONE_ID/CF_PURGE_TOKEN; skipping the cache purge");
+    log("no CF_ZONE_ID/CF_PURGE_TOKEN; skipping the edge purge (expected while grey-clouded)");
     return;
   }
   const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${zone}/purge_cache`, {
@@ -484,7 +498,7 @@ async function purgeCloudflare() {
     body: JSON.stringify({ files: PURGE_PATHS.map((p) => origin + p) }),
   });
   if (!res.ok) throw new Error(`purge: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
-  log(`purged ${PURGE_PATHS.length} index URL(s)`);
+  log(`purged ${PURGE_PATHS.length} index URL(s) at the edge — note this is a no-op while the host is grey-clouded`);
 }
 
 main().catch((e) => {
