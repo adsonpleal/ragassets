@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+**Entries are a record of what was true when they were written, not of what is
+true now, and the architecture underneath them changed twice.** Anything dated
+before **2026-09-08** describes production as a Cloudflare Worker over an R2
+bucket, with a KV namespace and a wasm build of the renderer; all of that was
+deleted that day. Anything before **2026-09-09** assumes the origin sits behind
+a proxied (orange-clouded) record and is edge-cached; it is grey-clouded now, so
+Cloudflare provides DNS for this host and nothing else. Measurements, cache-hit
+rates and `CF-Cache-Status` observations in older entries were real when taken
+and do not describe the system today. Check the date before trusting an entry;
+`CLAUDE.md` and `README.md` describe the current state.
+
 ## 2026-09-10
 
 ### Added

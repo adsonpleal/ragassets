@@ -2,15 +2,22 @@ name: Apply Cloudflare config
 
 # NEVER add `pull_request` to this workflow, and never relax the branch filter.
 #
-# This is the one job in the repository that holds a credential, which makes it
-# the one that has to be paranoid. The repository is public: a pull_request
-# trigger runs a fork's code, and a fork's code with a zone-scoped Cloudflare
-# token could rewrite the cache rules of a live domain. GitHub does not expose
-# secrets to fork PRs by default, but that default is a setting, and this comment
-# is here so nobody changes it casually.
+# This job holds a zone-scoped Cloudflare token (deploy.yml holds the other
+# credential, an SSH key into the origin), which makes it one of the two that
+# have to be paranoid. The repository is public: a pull_request trigger runs a
+# fork's code, and a fork's code with this token could rewrite the cache rules of
+# a live domain. GitHub does not expose secrets to fork PRs by default, but that
+# default is a setting, and this comment is here so nobody changes it casually.
 #
 # The token must be zone-scoped (Cache Rules:Edit, Zone Settings:Edit on
 # latam-tools.com.br only), never a Global API Key.
+#
+# This workflow is NOT fossil, however much of it reads that way after the
+# grey-cloud cutover. ragassets itself no longer passes through Cloudflare, so
+# the cache rules here cannot match it — but zone-settings.json is zone-wide and
+# still governs latam-market, short, simulador-latam-ro and latam-social, and the
+# cache rules are kept rather than deleted so that re-proxying this host is one
+# click. Deleting either would break the siblings or throw away the rollback.
 on:
   push:
     branches: [main]
@@ -53,8 +60,15 @@ jobs:
         run: node tools/apply-cloudflare.mjs
 
       # Proves the rules do what they claim rather than merely that the API
-      # accepted them. Skipped until DNS points at the origin, because while the
-      # Worker still serves this hostname there is no origin fetch to cache.
+      # accepted them.
+      #
+      # It is a no-op today and expected to stay one: `assets` was grey-clouded
+      # on 2026-09-09, so its traffic never reaches Cloudflare and no rule here
+      # can match it. The step is kept rather than deleted because it is exactly
+      # the check that has to pass if the record is ever flipped back to orange,
+      # and rewriting it from memory at that point is how a silent cache
+      # regression ships. A missing CF-Cache-Status is therefore the correct
+      # answer, not a skip waiting on something.
       - name: Verify /image is cacheable
         env:
           HOST: https://assets.latam-tools.com.br
@@ -64,7 +78,9 @@ jobs:
           second=$(curl -sS -o /dev/null -D - "$url" | tr -d '\r' | awk -F': ' '/^cf-cache-status/{print $2}')
           echo "cf-cache-status: $first then $second"
           if [ -z "$first" ]; then
-            echo "no CF-Cache-Status header — this hostname is not served by an origin yet (Worker route?)"
+            echo "no CF-Cache-Status header — expected: this host is grey-clouded (DNS only),"
+            echo "so nothing passes through Cloudflare. This check means something again only"
+            echo "if the assets record is flipped back to orange."
             exit 0
           fi
           [ "$second" = "HIT" ] || { echo "expected HIT on the second request, got '$second'"; exit 1; }

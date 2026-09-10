@@ -86,20 +86,26 @@ func (f forbiddenExistence) Has(key string) bool {
 }
 
 // TestGoldenThroughPrefetchedSource is the acceptance test for the split between
-// planning and rendering, and the gate for moving the renderer off a local disk.
-//
-// It renders each golden case the way a Workers build will have to: resolve the
-// plan, fetch exactly the keys the plan names into memory, then render from that
-// map with no filesystem underneath. Passing proves three things at once —
+// planning and rendering: it renders each golden case by resolving the plan,
+// fetching exactly the keys that plan names into memory, then rendering from
+// that map with no filesystem underneath. Passing proves three things at once —
 // Plan.Keys is complete (a missing key fails the render or changes the pixels),
 // RenderPlanned needs no probes, and the result is byte-identical to rendering
 // straight off disk.
+//
+// The split was built so the renderer could run in a Cloudflare Worker over an
+// object store, which was deleted on 2026-09-08; production reads a local disk
+// and nothing today renders from a prefetched map. The test is kept because the
+// property is worth pinning on its own: it is what proves the planner names
+// every file it needs up front, and any future move off local disk starts by
+// making this pass again rather than by rediscovering which probes were
+// hiding in the renderer.
 func TestGoldenThroughPrefetchedSource(t *testing.T) {
 	root := filepath.Join("testdata", "fixtures")
 	tables := resolve.DefaultTables()
 
-	// Planning still uses the real tree, exactly as a Worker would consult a
-	// baked existence manifest.
+	// Planning still uses the real tree: only the render half is being held to
+	// the no-filesystem contract here.
 	planner := New(root, tables)
 
 	for _, c := range goldenCases() {

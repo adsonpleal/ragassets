@@ -8,14 +8,17 @@ import (
 	"testing"
 )
 
-// The migration to an object store cannot keep resolveCI: R2 offers no ReadDir
-// and no cheap Stat, so case-insensitive resolution has to become a plain
-// lowercase key lookup, with every key normalised at upload time.
+// Lowercasing must stay injective over the texture tree: two files differing
+// solely in case would collide into one key, and one of them would be lost by
+// anything that addresses this tree case-insensitively. This test pins that
+// invariant against the real client rather than assuming it.
 //
-// That substitution is only sound while lowercasing is injective over the tree —
-// two files differing solely in case would collide into one object and one would
-// be lost. This test pins that invariant so it is checked against the real client
-// rather than assumed.
+// It was written for a migration that no longer exists — serving these files out
+// of an R2 bucket, which has no ReadDir and no cheap Stat and so would have had
+// to replace resolveCI with a flat lowercase key lookup. That path was deleted
+// with the Worker on 2026-09-08. The invariant outlived it: any store keyed by a
+// normalised name has the same collision, and so does a case-insensitive
+// filesystem, which is what a Windows development box is.
 //
 // It deliberately does NOT assert the tree is already all-lowercase. It happens
 // to be, for this client, but extract-grf.mjs preserves whatever casing the GRF

@@ -53,7 +53,8 @@ monsters. Every one is just a URL — see the [API](#get-image) below.
 ## How it works
 
 One Go binary renders in-process and serves every route from a local tree. The
-public instance is that same binary, with a CDN in front of it:
+public instance is that same binary, reached directly — there is no CDN in front
+of it:
 
 ```
 client ──GET /image?job=1002&...──▶  Caddy (TLS, gzip on /raw)
@@ -90,9 +91,11 @@ ran as a Cloudflare Worker over an R2 bucket. Two measurements ended that.
   the cache, so a response it returns is never stored — confirmed in production,
   where `/image` came back with no `CF-Cache-Status` header at all and re-rendered
   on every request. The Worker carried its own per-colo render cache to
-  compensate. A plain origin behind a proxied record has the zone cache work
-  normally, which is why the cache rules in [Running it in
-  production](#running-it-in-production) are load-bearing rather than tuning.
+  compensate. A plain origin behind a proxied record would have had the zone
+  cache work normally, and that was the argument for the cache rules in [Running
+  it in production](#running-it-in-production). It did not survive contact with
+  the numbers: the record was grey-clouded on 2026-09-09, and those rules have
+  been dormant ever since. Nothing caches this host but the browser.
 
 - **Renders are served directly; caching is delegated to the client.** The
   gateway keeps **no disk cache** — every render is fast and in-process. Each
@@ -935,8 +938,9 @@ Every directory is configurable, and each defaults to the compose mount point:
 
 The public instance is one Oracle Cloud ARM box — `VM.Standard.A1.Flex`,
 2 OCPU, 12 GB, Ubuntu 24.04 aarch64, 100 GB boot at VPU 10 — running the gateway
-and Caddy as native systemd services, with Cloudflare providing DNS only —
-the `assets` record is grey-clouded, so browsers reach this box directly. Those numbers sit inside the Always Free allowance (4 OCPU / 24 GB
+and Caddy as native systemd services. Cloudflare provides DNS for this host and
+nothing else — the `assets` record is grey-clouded, so browsers reach this box
+directly. Those numbers sit inside the Always Free allowance (4 OCPU / 24 GB
 Ampere, 200 GB block storage), so the box is free whatever the account's billing
 status. `tools/provision-oracle.sh` sets it up and is safe to re-run;
 `deploy/` holds the units it installs.
@@ -1056,14 +1060,17 @@ Nothing sets cache headers except the Go server (`internal/api`). Caddy sets
 none, and the rules above tell Cloudflare to honour what the origin says rather
 than to invent a policy of its own.
 
-**Invalidation has one real gap.** Purge-by-URL is capped at 30 URLs per call and
-prefix purge is Enterprise-only, so there is no wholesale lever short of Purge
-Everything. Adding a sprite creates new ids and therefore new URLs, so nothing
-stale exists. *Redrawing* an existing sprite does not: the URL and its
-query-derived ETag are unchanged, so the edge — and a browser holding a year-long
-`immutable` entry — keeps the old pixels. One sprite maps to unboundedly many
-`/image` query permutations, so no finite purge list exists. Accept it, or fire
-one Purge Everything and pay for a cold render cache.
+**Invalidation has one real gap, and it is now the browser's.** Adding a sprite
+creates new ids and therefore new URLs, so nothing stale exists. *Redrawing* an
+existing sprite does not: the URL and its query-derived ETag are unchanged, so a
+browser holding a year-long `immutable` entry keeps the old pixels until it
+expires. Nothing can be purged on its behalf. One sprite maps to unboundedly many
+`/image` query permutations, so no finite invalidation list exists even in
+principle, and the only lever that ever worked wholesale was a Cloudflare Purge
+Everything, which does nothing for a host that no longer passes through it.
+Accept it, or change the URL. The patch cycle still purges the ~13 stably-named
+index URLs, which is a no-op while grey-clouded and correct again the moment the
+record flips back to orange.
 
 ### Automated asset updates
 
@@ -1125,18 +1132,21 @@ gateway/internal/api/     # the HTTP contract: query→request, ETags, cache hea
 gateway/cmd/gen-resolver/ # offline tool: bakes id→sprite-name tables from the client .lub
 gateway/cmd/gen-skin-table/ # offline tool: bakes per-sprite skin-ramp palette indices
 gateway/cmd/gen-tables/   # offline tool: turns those JSON tables into Go source (no JSON at startup)
-caddy/ragassets.caddy     # the live site block: Cloudflare Origin cert, gzip on /raw, proxy to :8080
+caddy/ragassets.caddy     # the live site block: Let's Encrypt via ACME, gzip on /raw, proxy to :8080
 deploy/                   # the systemd units, the timer, and the one-line sudoers rule
+deploy/deploy-from-ci.sh  # what the CI deploy key is allowed to run, and the only thing
 tools/provision-oracle.sh # idempotent setup for the Oracle box — the rebuild plan, in code
 tools/patch-cycle.mjs     # ONE client-update cycle: poll, apply, rebuild, restart, announce
-cloudflare/               # the zone config as data: cache rules and zone settings
+cloudflare/               # the zone config as data — zone-wide settings for the sibling
+                          #   projects; its cache rules are dormant for this host (grey-clouded)
 tools/apply-cloudflare.mjs # applies cloudflare/ — idempotent, no state file
 tools/apply-patches.mjs   # download and unpack client patches (.gpf and .rgz)
 tools/patchlist.mjs       # the patch index parser, shared by the poller and the applier
 tools/diff-origins.sh     # compare two origins byte-for-byte — the cutover gate
 tools/post-novidades.mjs  # announce an asset update in #novidades
-.github/workflows/ci.yml  # tests only — no deploy, no credentials, never on pull_request
-.github/workflows/cloudflare.yml # applies cloudflare/ on push to main; the one job with a token
+.github/workflows/ci.yml  # tests only — no credentials, never on pull_request
+.github/workflows/deploy.yml # deploys to the box after a green CI run; holds the SSH key
+.github/workflows/cloudflare.yml # applies cloudflare/ on push to main; holds the zone token
 mirror/                   # YOUR merged client: the whole GRF plus every patch (git-ignored)
 resources/                # what the extractor derives from it (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*

@@ -3,10 +3,10 @@ name: CI
 # NEVER add `pull_request` here, and never add credentials to this workflow.
 # This is a public repository: a pull_request trigger runs a fork's code, so any
 # secret this job could reach is a secret a stranger can exfiltrate. The rule
-# predates the self-hosted origin — it guarded the R2 and Cloudflare credentials
-# the old deploy held — and it matters more now, not less, because the natural
-# next credential to add here is an SSH key into the box that serves production.
-# If a deploy job is ever added, it belongs behind `push` on a protected branch.
+# predates the self-hosted origin, where it guarded the R2 and Cloudflare Worker
+# credentials the old deploy held. Those are gone; the reason is not. This job
+# stays credential-free so that it is the safe one, and a green run here is what
+# triggers deploy.yml, which is where the SSH key into the origin lives.
 on:
   push:
     branches: [main]
