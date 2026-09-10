@@ -187,3 +187,39 @@ func (fakeTables) JobName(id uint32) string {
 	}
 	return ""
 }
+
+// The mounted-job predicate reads the animal out of the body sprite's name, so
+// every job that rides one has to answer true and every job that walks has to
+// answer false — including the two mounts that carry the rider below the waist.
+func TestIsMountedJob(t *testing.T) {
+	r := New(NopTables{})
+	for _, c := range []struct {
+		job  uint32
+		want bool
+		what string
+	}{
+		{13, true, "peco peco knight"},
+		{21, true, "grand peco crusader"},
+		{4014, true, "lord peco"},
+		{4022, true, "peco paladin"},
+		{4082, true, "gryphon royal guard"},
+		{4084, true, "warg ranger"},
+		{4086, true, "madogear"},
+		{4140, true, "cerberus guillotine cross"},
+		{4199, true, "lion knight"},
+		{4245, true, "haetae sky emperor"},
+		{4265, true, "dragon knight riding"},
+		{4280, true, "dragon knight chicken"},
+		{4309, true, "sky emperor riding"},
+		{1, false, "swordman"},
+		{14, false, "crusader"},
+		{4252, false, "dragon knight on foot"},
+		{4114, false, "toad ninja — the toad sits below the waist"},
+		{4124, false, "poring novice — the poring sits below the waist"},
+		{1002, false, "poring, a monster and not a player job"},
+	} {
+		if got := r.IsMountedJob(c.job, rotype.MadogearRobot); got != c.want {
+			t.Errorf("IsMountedJob(%d) [%s] = %v, want %v", c.job, c.what, got, c.want)
+		}
+	}
+}

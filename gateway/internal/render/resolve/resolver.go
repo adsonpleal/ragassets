@@ -82,6 +82,47 @@ func (r *Resolver) ImfName(jobID uint32, gender rotype.Gender, mado rotype.Madog
 	return r.static.imfNames[j] + "_" + gender.String()
 }
 
+// mountSpriteTokens are the fragments that mark a job whose body sprite is a
+// rider *on* an animal — one drawing that holds both, with the animal's head and
+// neck in front of the rider's chest. There is no client table for this: the
+// client never needed one, because it has no rule that depends on it (see
+// IsMountedJob), so the set is read off the job-name table, which names every
+// mount in the sprite it ships (페코 peco, 사자 lion, 그리폰 gryphon, 늑대 wolf,
+// 쁘띠 dragon, 알파카 alpaca, 멧돼지 boar, 타조 ostrich, 여우 fox, 켈베로스 cerberus,
+// 해태 haetae, plus the latin *_riding / *_chicken / wolf_ / madogear names).
+//
+// Deliberately absent: 포링 (poring) and 두꺼비 / frog_ (toad). Those two carry the
+// rider below the waist and leave the chest clear, so the occlusion IsMountedJob
+// exists for never happens on them.
+var mountSpriteTokens = []string{
+	"페코", "사자", "그리폰", "늑대", "쁘띠", "알파카", "멧돼지", "타조", "여우",
+	"켈베로스", "해태", "마도기어",
+	"_riding", "_chicken", "wolf_", "madogear", "peco_",
+}
+
+// IsMountedJob reports whether a player job rides a mount that is drawn in front
+// of the rider's chest, which decides whether an accessory that hangs below the
+// rider's collar is occluded by the animal (see engine.mountOccludes).
+//
+// It is keyed on the body sprite's name rather than on a job-id list because the
+// name is the only place the client records the mount at all, and a new mount
+// arrives as a new job id with the same animal name.
+func (r *Resolver) IsMountedJob(jobID uint32, mado rotype.MadogearType) bool {
+	if !IsPlayer(jobID) {
+		return false
+	}
+	if IsMadogear(jobID) {
+		return true
+	}
+	name := r.JobSpriteName(jobID, mado)
+	for _, tok := range mountSpriteTokens {
+		if strings.Contains(name, tok) {
+			return true
+		}
+	}
+	return false
+}
+
 // PlayerBodySprite returns the body sprite path.
 func (r *Resolver) PlayerBodySprite(jobID uint32, gender rotype.Gender, mado rotype.MadogearType) string {
 	if !IsPlayer(jobID) {

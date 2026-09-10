@@ -3,6 +3,45 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-09-10
+
+### Fixed
+- **A mount now covers the costume hanging in front of it.** Riding a peco with
+  a bib-style costume (`job=21&headgear=2095`, the Deviruchi apron) painted the
+  costume over the peco's face: the accessory hangs at the rider's chest, and on
+  a mount that is exactly where the animal's head is. The same thing happened on
+  every mount and with every costume that hangs — the 20th-anniversary set, long
+  costume hair, stoles.
+
+  The animal is not a layer the renderer can order. It is drawn into the body
+  sprite together with the rider, in one image, so "the peco's head is in front
+  of the rider's chest" is a fact about the drawing and not about z-order. What
+  the renderer can order is the accessory, and for a mounted job the answer is
+  now behind the body: shadow, accessory, body, head. The rider's face stays in
+  front of the animal (putting the head behind it hides the face), and so does
+  anything worn on the head or the face.
+
+  Which accessories move is decided from their own geometry, because nothing in
+  the client's data separates them — a hat and a bib are both "accessory,
+  attached to the head". An accessory whose drawing reaches more than 24px below
+  the body's head attach point is taken to be hanging onto the animal. Measured
+  from the attach point rather than from the art, that number is the same for
+  every job, and it sits in the gap between what is worn on the face (a mask, a
+  cigarette, a wide-brimmed hat: at most ~17px below the collar) and what hangs
+  from the neck (a bib costume starts around 35). The decision is made once per
+  render over the whole action, so an accessory cannot change layer mid-animation.
+
+  `Resolver.IsMountedJob` reads the animal out of the body sprite's name (페코,
+  사자, 그리폰, 늑대, 쁘띠, 알파카, 멧돼지, 타조, 여우, 켈베로스, 해태, plus the
+  latin `*_riding`/`*_chicken` names and madogear). The poring and toad mounts are
+  deliberately excluded: they carry the rider below the waist and leave the chest
+  clear. There is no client table for any of this — the client has no rule that
+  needs one, and `TB_Layer_Priority`'s `isIgnoreRiding` flag, the one place riding
+  appears, only marks the shoulder-pet accessories without saying what it does.
+
+  Renders of jobs on foot are byte-identical; the change is confined to the
+  mounted jobs, and to the accessories that hang.
+
 ## 2026-09-09
 
 ### Changed

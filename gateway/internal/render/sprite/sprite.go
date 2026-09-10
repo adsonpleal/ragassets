@@ -61,6 +61,12 @@ type Sprite struct {
 	// TB_Layer_Priority table (a negative per-direction priority), so it can flip
 	// as the character turns; the headgearBehind request param forces it on.
 	Behind bool
+	// MountOccluded marks an accessory that hangs low enough to reach the mount a
+	// rider is sitting on, which draws it behind the body for every direction. It
+	// is decided once per render from the sprite's own geometry (the animal is
+	// part of the body drawing, so nothing else can tell them apart) and then
+	// folded into Behind.
+	MountOccluded bool
 
 	// OffsetAdjust is an extra placement offset, applied with or without a parent
 	// (doram headgear positioning; a hat effect's head offset).

@@ -9,6 +9,7 @@ import (
 	"github.com/ragassets/gateway/internal/render/raster"
 	"github.com/ragassets/gateway/internal/render/resolve"
 	"github.com/ragassets/gateway/internal/render/rotype"
+	"github.com/ragassets/gateway/internal/render/sprite"
 )
 
 func newEngine(t *testing.T) *Engine {
@@ -554,5 +555,55 @@ func TestHatEffectOnlyForItsOwnHeadgear(t *testing.T) {
 	}
 	if got := e.loadHatEffect(p.HatEffect[0]); got != nil {
 		t.Errorf("headgear 1 (goggles) grew a hat effect: %v", got.Act)
+	}
+}
+
+// A mount is drawn into the body sprite with its head in front of the rider's
+// chest, so an accessory that hangs down there has to end up behind the body —
+// while what is worn on the head or the face has to stay in front of it, and a
+// character on foot must not be touched at all.
+func TestMountOccludesHangingAccessories(t *testing.T) {
+	e := newEngine(t)
+	const (
+		apron     = 2095 // costume Deviruchi apron: a bib on the chest
+		helm      = 40   // helm: sits on the head
+		sunglass  = 12   // sunglasses: sit on the face
+		pecoCrusa = 21   // grand peco crusader
+		crusader  = 14   // the same job on foot
+	)
+	for _, c := range []struct {
+		name     string
+		job      uint32
+		headgear uint32
+		want     bool
+	}{
+		{"apron on a peco", pecoCrusa, apron, true},
+		{"helm on a peco", pecoCrusa, helm, false},
+		{"sunglasses on a peco", pecoCrusa, sunglass, false},
+		{"apron on foot", crusader, apron, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			req := baseReq()
+			req.Job = c.job
+			req.Head = 1
+			req.Headgear = []uint32{c.headgear}
+			frame := req.Frame
+			sprites, _, err := e.processPlayer(req, e.Plan(req), &frame)
+			if err != nil {
+				t.Fatalf("processPlayer: %v", err)
+			}
+			var acc *sprite.Sprite
+			for _, s := range sprites {
+				if s.Type == sprite.TypeAccessory {
+					acc = s
+				}
+			}
+			if acc == nil {
+				t.Fatalf("headgear %d did not load", c.headgear)
+			}
+			if acc.MountOccluded != c.want {
+				t.Errorf("MountOccluded = %v, want %v", acc.MountOccluded, c.want)
+			}
+		})
 	}
 }

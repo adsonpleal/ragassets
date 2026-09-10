@@ -289,6 +289,13 @@ func (e *Engine) processPlayer(req Request, p Plan, requestFrame *int) ([]*sprit
 		}
 	}
 
+	// A mount is drawn into the body sprite, its head and neck in front of the
+	// rider's chest, so any accessory that hangs down there has to go behind the
+	// body — the single decision the accessory layers can't make per sprite.
+	if head != nil && e.res.IsMountedJob(jobID, req.Madogear) {
+		markMountOccluded(int(req.Action), body, sprites)
+	}
+
 	// Garment (robe). Not parented (zrenderer note: garments aren't attached).
 	if req.Garment > 0 && jobID != resolve.NoJobID && !resolve.IsMadogear(jobID) {
 		if gm := e.loadGarment(p.Garment); gm != nil {
@@ -302,6 +309,43 @@ func (e *Engine) processPlayer(req Request, p Plan, requestFrame *int) ([]*sprit
 	applySkin(req, body, bodyName, head, headName)
 
 	return sprites, interval, nil
+}
+
+// mountHangSlack is how far below the rider's collar — the body's head attach
+// point — an accessory's drawing may reach before the mount is taken to be in
+// front of it, in RO screen pixels.
+//
+// It sorts the two kinds of accessory apart by the only thing that separates
+// them, which is where their art sits: what is worn on the head or the face
+// reaches at most ~17px below the attach point (a wide-brimmed hat, a mask, a
+// cigarette), while what hangs from the neck onto the chest starts around 35 (a
+// bib-style costume, a stole, a full-length costume). 24 is the gap between the
+// two, and it is the same number for every job because it is measured from the
+// attach point rather than from the drawing.
+const mountHangSlack = 24
+
+// markMountOccluded flags the accessories that hang low enough to reach the
+// animal a mounted job is sitting on. Only the accessory's own geometry can tell:
+// the mount is drawn into the body sprite, so nothing in the client's tables
+// distinguishes "hat, above the animal" from "bib, over the animal's head".
+//
+// The extent is taken over the whole action rather than one frame, so an
+// accessory cannot flip layers mid-animation.
+func markMountOccluded(action int, body *sprite.Sprite, sprites []*sprite.Sprite) {
+	if len(body.Act.AttachPoints(action, 0)) == 0 {
+		return
+	}
+	collar := int(body.Act.AttachPoint(action, 0, 0).Y)
+	for _, s := range sprites {
+		if s.Type != sprite.TypeAccessory {
+			continue
+		}
+		box := s.DrawObjectsOfAction(action).BoundingBox
+		if box.IsInfinite() {
+			continue
+		}
+		s.MountOccluded = box.Y2-collar > mountHangSlack
+	}
 }
 
 // hatEffectYOffset raises a hat effect above the character's origin, the
@@ -582,7 +626,7 @@ func (e *Engine) sortDelegate(sprites []*sprite.Sprite, req Request, bodyImf *ro
 				// Per-direction behind/front from the client's layer-priority table
 				// (so e.g. the Sun God's Ornament hangs behind you facing the camera
 				// and in front when you face away).
-				s.Behind = e.accessoryBehind(req, s.AccessoryID, direction)
+				s.Behind = e.accessoryBehind(req, s, direction)
 				s.ZIndex = sprite.ZIndexForSprite(s, direction, -1, -1, nil)
 			case s.Type == sprite.TypePlayerHead && bodyImf != nil:
 				s.ZIndex = sprite.ZIndexForSprite(s, direction, int(req.Action), f, bodyImf)
@@ -610,12 +654,13 @@ func (e *Engine) sortDelegate(sprites []*sprite.Sprite, req Request, bodyImf *ro
 // facing direction. The client's TB_Layer_Priority table is authoritative (a
 // negative per-direction priority means behind); the headgearBehind request param
 // is a manual override that forces behind in all directions for ids the table
-// doesn't cover.
-func (e *Engine) accessoryBehind(req Request, accessoryID uint32, direction int) bool {
-	if containsU32(req.HeadgearBehind, accessoryID) {
+// doesn't cover. A mount in front of the rider's chest forces it too, in every
+// direction (see markMountOccluded).
+func (e *Engine) accessoryBehind(req Request, s *sprite.Sprite, direction int) bool {
+	if s.MountOccluded || containsU32(req.HeadgearBehind, s.AccessoryID) {
 		return true
 	}
-	behind, _ := e.tables.HeadgearBehind(accessoryID, direction)
+	behind, _ := e.tables.HeadgearBehind(s.AccessoryID, direction)
 	return behind
 }
 
