@@ -3,6 +3,57 @@
 All notable changes to this project are documented here. The project deploys
 continuously (no version tags), so entries are grouped by date.
 
+## 2026-09-09
+
+### Changed
+- **APNG frames are written as dirty rectangles, not full-canvas repaints.**
+  Every frame after the first now carries only the box enclosing its visible
+  pixels, placed back at an `fcTL` offset, with `DISPOSE_OP_BACKGROUND` clearing
+  that box before the next frame draws. The composited animation is identical;
+  what changes is how much of it deflate has to read.
+
+  The renderer was never the slow part. Profiling the worst request in a day of
+  the access log — a 24-frame 320x320 animation with two headgears and a garment
+  — put rasterising at 4.8 ms and the APNG encoder at 40 ms, with 56% of all CPU
+  samples inside `compress/flate`. The sprite occupies 55x110 of that canvas, so
+  the encoder was spending nine tenths of the request compressing transparent
+  padding. A caller asking for `canvas=320x320` wants the frame that size; it
+  does not follow that every frame has to be *stored* that size.
+
+  Lowering the compression level is the obvious alternative and it does not work:
+  `BestSpeed` measured both slower (41.9 ms vs 36.0 ms) and 75% larger, because
+  long runs of identical transparent pixels are exactly what the default level's
+  lazy matching is good at. The win has to come from feeding deflate less, not
+  from asking it to try less hard.
+
+  | canvas | encode before | after |
+  |---|---|---|
+  | 320x320 | 36.4 ms | 12.2 ms |
+  | 248x232 | 12.0 ms | 5.4 ms |
+  | 208x210 | 26.8 ms | 25.9 ms |
+  | 76x112 | 1.6 ms | 1.1 ms |
+
+  The gain is proportional to how much padding was asked for, which is why
+  208x210 barely moves: that shape is a three-headgear costume whose sprite
+  genuinely fills its canvas. End to end the 320x320 request goes from 44 ms to
+  19 ms and from 92 KB to 67 KB. This matters at the tail rather than the median
+  — origin p50 was already 3 ms — but the tail is what a browser loading a dozen
+  previews at once actually feels: the box has two cores, so 70 ms of CPU per
+  render queues into whole seconds under a burst, and 320x320 was 1% of a day's
+  requests and 20% of every response over 100 ms.
+
+  The first frame stays full-size deliberately. `IHDR` takes the image's
+  dimensions from it and the APNG spec pins its `fcTL` to the canvas, so cropping
+  it would silently resize the output the caller asked for.
+
+  Because this moves bytes under an ETag that is a hash of the query and not of
+  the content, `tools/diff-origins.sh` reports differences by design and cannot
+  be the gate. The gate is pixel equality instead, checked three ways across 14
+  request shapes taken from the production log: recomposited through the APNG
+  library, through Pillow, and through ffmpeg, for `/image` and `/gif` both.
+  Anything already holding a cached render keeps the older, larger bytes until
+  its URL changes, which is correct — they draw the same picture.
+
 ## 2026-09-08
 
 ### Added
