@@ -22,7 +22,7 @@ node_modules/
 # file when it exists — but it is a live login, so it must never be committed.
 .dp-cookies.json
 
-# Go build artifacts (the gateway is normally built inside Docker)
+# Go build artifacts (built in place: cd gateway && go build -o ragassets-gateway .)
 /gateway/ragassets-gateway
 /gateway/*.exe
 

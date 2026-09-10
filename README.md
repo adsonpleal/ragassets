@@ -32,7 +32,8 @@ anything) at it:
 
 It's a small hobby server with **no SLA** — it may be slow, rate-limited, or go
 away at any time, so please don't build anything critical on it. For real or
-heavy use, **self-host** (it's a few minutes with Docker — see [Running it](#running-it)).
+heavy use, **self-host** (one `go build` and a directory of assets — see
+[Running it](#running-it)).
 
 ### Gallery
 
@@ -912,27 +913,28 @@ Liveness check — returns `200 ok`.
 
 ## Running it
 
-A single self-contained service, built from `./gateway`, that renders in-process
-and reads assets from `./resources`.
+One binary. It renders in-process and reads assets straight off disk, so there
+is nothing to orchestrate and no container to build.
 
 ```bash
 # 1. Provide game assets (see "Resources" below) into ./resources
-# 2. Bring it up
-docker compose up --build
+# 2. Build and run, pointing it at that tree
+cd gateway && go build -o ragassets-gateway .
+RESOURCE_DIR=../resources ICONS_DIR=../resources/icons ILLUST_DIR=../resources/illust EFFECTS_DIR=../resources/effects MAPS_DIR=../resources/maps BGM_DIR=../resources/bgm SOUNDS_DIR=../resources/sounds RAW_DIR=../resources/raw GATEWAY_PORT=8080 ./ragassets-gateway
 ```
 
-- The gateway is published on **`http://localhost:8080`** (override with
-  `GATEWAY_PORT`, see `.env.example`).
-- `./resources` is mounted read-only at `/resources` (set via `RESOURCE_DIR`).
-  There is no render cache to persist — renders are served directly and cached by
+- The gateway listens on **`http://localhost:8080`** (override with
+  `GATEWAY_PORT`).
+- **Set the directories explicitly.** Each falls back to an absolute path at the
+  filesystem root (`/resources`, `/icons`, …), which is a leftover from when this
+  ran in a container and is almost certainly not where your tree is. A missing
+  directory is logged at startup and its routes 404, except `RESOURCE_DIR`, whose
+  absence is fatal — the renderer has nothing to read.
+- There is no render cache to persist. Renders are served directly and cached by
   the client (see [How it works](#how-it-works)).
-- Compose is for local development. The public instance runs the gateway and
-  Caddy as native systemd services on one small ARM box; there is no Docker in
-  production. See [Running it in production](#running-it-in-production).
-
-Every directory is configurable, and each defaults to the compose mount point:
-`RESOURCE_DIR`, `ICONS_DIR`, `ILLUST_DIR`, `EFFECTS_DIR`, `MAPS_DIR`, `BGM_DIR`,
-`SOUNDS_DIR`, `RAW_DIR`, plus `GATEWAY_PORT`.
+- Production runs this same binary under systemd, with those variables set in
+  `deploy/ragassets-gateway.service`. See
+  [Running it in production](#running-it-in-production).
 
 ### Running it in production
 
@@ -1125,7 +1127,6 @@ to add is an SSH key into the box that serves production.
 ### Layout
 
 ```
-docker-compose.yml        # the gateway service (local development)
 gateway/                  # the Go gateway + in-process renderer (this project)
 gateway/internal/render/  # the native zrenderer reimplementation (parsers, raster, engine)
 gateway/internal/api/     # the HTTP contract: query→request, ETags, cache headers

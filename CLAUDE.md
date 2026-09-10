@@ -9,8 +9,12 @@ client's GRF; `gateway/` renders and serves them.
 ## Where production runs
 
 **One self-hosted Oracle Cloud ARM box**, since 2026-09-08. Not Cloudflare
-Workers, not EC2, not Docker — both of those are historical and the CHANGELOG
-still describes them, so check dates before trusting an old entry.
+Workers, not EC2, not Docker. All three are historical, and the CHANGELOG still
+describes them, so check dates before trusting an old entry — its header says
+which architecture each period is written against. The Docker path is gone from
+the repo entirely as of 2026-09-10: no compose file, no Dockerfile. Local
+development is `go build` in `gateway/` with the directory variables set, the
+same binary production runs.
 
 Cloudflare is **DNS only for this host**, since 2026-09-09. The `assets` record
 is grey-clouded: browsers reach the box directly and Caddy holds a Let's Encrypt

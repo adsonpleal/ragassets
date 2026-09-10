@@ -36,7 +36,9 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Configuration (from environment, with sane defaults for docker-compose)
+// Configuration (from environment). The defaults are absolute paths at the
+// filesystem root, left over from running in a container; every real deployment
+// sets these explicitly (see deploy/ragassets-gateway.service).
 // ---------------------------------------------------------------------------
 
 type config struct {

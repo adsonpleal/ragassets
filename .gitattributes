@@ -1,5 +1,5 @@
-# Normalize line endings to LF. These files are read inside Linux containers
-# (Caddyfile, Dockerfile, *.go); CRLF could corrupt config values.
+# Normalize line endings to LF. These files are read on the Linux origin box
+# (Caddyfile, systemd units, shell scripts, *.go); CRLF could corrupt config values.
 * text=auto eol=lf
 *.png binary
 *.spr binary
