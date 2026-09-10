@@ -5,6 +5,68 @@ continuously (no version tags), so entries are grouped by date.
 
 ## 2026-09-10
 
+### Added
+- **Pushing to `main` deploys again.** The repository has had no automated deploy
+  since the 2026-09-08 cutover: `deploy.yml` shipped the Cloudflare Worker, and
+  when the Worker was deleted the file became a test-only `ci.yml`. Deploying has
+  been a hand-run SSH session ever since. A new `deploy.yml` closes that, and the
+  two halves are `.github/workflows/deploy.yml` on the runner and
+  `deploy/deploy-from-ci.sh` on the box.
+
+  It runs on `workflow_run` after CI rather than on `push`, for two reasons. The
+  tests gate the deploy without the suite running twice. And it deploys
+  `workflow_run.head_sha` — the commit CI actually tested — not the tip of
+  `main`, which are different commits whenever a second push lands mid-run, and
+  taking the tip would ship an untested commit under a green check.
+
+  The binary is still built on the box, because it is aarch64. The runner does
+  nothing but hold the key and ask.
+
+- **The deploy key can only deploy.** This repository is public and both existing
+  workflows carry a warning that the next credential anyone would add here is an
+  SSH key into the origin. So the key is restricted server-side by a forced
+  command in `authorized_keys`: whatever the client sends arrives as
+  `SSH_ORIGINAL_COMMAND` and is read as data, never executed. It cannot open a
+  shell, allocate a pty or forward a port. The box then refuses any commit that
+  is not already an ancestor of `origin/main`, which is what turns "it can only
+  deploy `main`" from a comment into a rule — without it the key could ship a
+  commit pushed to a throwaway branch. It needs no sudo rights beyond the single
+  no-wildcard `systemctl restart` line that `deploy/ragassets.sudoers` already
+  grants the patch cycle. The host key is pinned; the origin IP is public, so
+  that pin is the only thing between the runner and an impostor.
+
+- **A failed deploy puts the old binary back.** `go build` writes beside the
+  running binary and the install is a rename, so an interrupted build cannot
+  leave a truncated file where systemd expects an executable. The previous binary
+  is kept, and if the restarted gateway does not answer `/healthz` within twenty
+  seconds it is restored and restarted. "The unit is active" is not the same as
+  "it answers": the gateway `log.Fatalf`s at boot when the mirror is missing, and
+  `Restart=always` makes a crash-loop look alive between attempts. The check then
+  asks for a real render and a real icon, because a gateway that answers
+  `/healthz` and 500s on every sprite is the failure worth catching. This is a
+  code rollback only — the CDN path is still gone and still fixed forward.
+
+- **A drifted systemd unit is now reported instead of ignored.** The deploy ships
+  code and not units, deliberately: installing a unit means being able to rewrite
+  `ExecStart`, which would turn the deploy key from "can deploy" into "can run
+  anything as root". So it diffs `deploy/*.service` and `deploy/*.timer` against
+  `/etc/systemd/system/` and says which drifted, leaving the install to a human.
+  Without it the failure is silent in the worst way — systemd prints "unit file
+  changed on disk" into the restart output, the deploy goes green, and the box
+  keeps running the old unit. The first real deploy found exactly this: the
+  installed `ragassets-gateway.service` still carried the pre-cutover comment
+  saying Cloudflare caches in front of Caddy. Comment-only, no directive changed,
+  now synced and reloaded.
+
+- **The deploy takes the patch cycle's lock.** `apply-patches.mjs` spawns
+  `extract-grf.mjs` by a relative path several times per cycle, so a `git reset`
+  between two of those spawns produces a run that used two different extractors —
+  a bug that surfaces months later in the output rather than in a log. Both sides
+  now hold `/run/lock/ragassets-patch.lock`. The deploy waits up to ten minutes
+  and then fails rather than blocking behind a multi-hour maps rebuild, since it
+  is re-runnable; a cycle that fires during a deploy fails its own `flock -n` and
+  the timer retries in ten minutes.
+
 ### Fixed
 - **A mount now covers the costume hanging in front of it.** Riding a peco with
   a bib-style costume (`job=21&headgear=2095`, the Deviruchi apron) painted the

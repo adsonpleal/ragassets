@@ -25,6 +25,15 @@ sibling projects that are still proxied, and the cache rules are kept dormant
 rather than deleted so that re-proxying is a one-click rollback. Do not change
 either by clicking in the dashboard.
 
+**Pushing to `main` deploys.** CI runs, and a green CI run starts
+`.github/workflows/deploy.yml`, which SSHes in and runs the box's copy of
+`deploy/deploy-from-ci.sh` — fetch, refuse anything not already on `origin/main`,
+build on the box (it is aarch64), restart, roll the binary back if `/healthz`
+does not answer. The key it uses is pinned to a forced command in the box's
+`authorized_keys`, so it can do that and nothing else; a plain copy of that key
+in `authorized_keys` would turn it into a shell key. Deploy by hand only when the
+workflow is what is broken, or when there is nothing to push.
+
 **The origin IP is public now** — one `dig assets.latam-tools.com.br` returns it,
 so stop treating it as a secret. What is still deliberately not in this
 repository is the SSH key and anything else that grants access. It lives in:
@@ -83,6 +92,7 @@ bytes.
 
 - Commit straight to `main`.
 - `.github/workflows/` must never gain a `pull_request` trigger. The repo is
-  public and one workflow holds a Cloudflare token.
+  public and two workflows hold credentials: a Cloudflare token, and an SSH key
+  into the origin. A `pull_request` trigger runs a fork's code with both.
 - No secrets in the repo, ever. They live in `/etc/ragassets/patch.env` on the
   box, root-owned 0600.

@@ -1,0 +1,129 @@
+name: Deploy to the origin
+
+# NEVER add `pull_request` here, and never widen the branch filter.
+#
+# This is the second job in the repository that holds a credential, and it is
+# the more dangerous of the two: the secret is an SSH key into the box that
+# serves production. The repository is public. A `pull_request` trigger runs a
+# fork's code, and a fork's code with this key would own the origin. GitHub does
+# not hand secrets to fork PRs by default, but that default is a setting, and
+# this comment is here so nobody changes it casually.
+#
+# Two things keep the blast radius small, and both must stay true:
+#
+#   1. The key is restricted server-side by a forced command in the box's
+#      authorized_keys (see deploy/deploy-from-ci.sh). It cannot open a shell,
+#      forward a port or run anything else — it can deploy a commit that is
+#      already an ancestor of origin/main, and nothing more. Adding a plain,
+#      unrestricted key alongside it would silently undo this.
+#   2. The host key is pinned from DEPLOY_KNOWN_HOSTS. The origin IP is public
+#      (`dig assets.latam-tools.com.br`), so the only thing standing between the
+#      runner and an impostor is that pin. Never replace it with
+#      StrictHostKeyChecking=no.
+
+# workflow_run, not a second `push` trigger. The tests in ci.yml must gate the
+# deploy, and this is the way to depend on them without running the suite twice:
+# CI runs on the push, and a green CI run starts this. A red one does not,
+# because of the conclusion check below.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two overlapping deploys would race to `git reset` the same checkout and then
+# race to restart the gateway; the loser silently wins. cancel-in-progress stays
+# false — a half-finished deploy that is cancelled between the build and the
+# restart leaves a new binary that nothing is running.
+concurrency:
+  group: origin-deploy
+  cancel-in-progress: false
+
+env:
+  # Not a secret, deliberately. `dig assets.latam-tools.com.br` returns it, and
+  # pretending otherwise makes the workflow harder to read for no gain.
+  ORIGIN_HOST: 129.159.50.6
+  ORIGIN_USER: ubuntu
+  VERIFY_HOST: https://assets.latam-tools.com.br
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # A CI run that failed, was cancelled, or timed out must not deploy.
+    # workflow_dispatch carries no workflow_run object, so it is allowed through
+    # explicitly rather than by the absence of a conclusion.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      # The commit to deploy is the one CI actually tested, NOT the tip of main.
+      # Those differ whenever a second push lands while CI is running, and taking
+      # the tip would deploy an untested commit under a green check.
+      - name: Resolve the commit
+        run: |
+          sha="${{ github.event.workflow_run.head_sha || github.sha }}"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "refusing to deploy '$sha' — not a full commit sha"; exit 1; }
+          echo "DEPLOY_SHA=$sha" >> "$GITHUB_ENV"
+          echo "deploying $sha"
+
+      # 0600 and a pinned known_hosts. Both secrets are required: an empty
+      # DEPLOY_KNOWN_HOSTS would otherwise fall through to a prompt, and ssh in
+      # batch mode turns that into a confusing "Host key verification failed"
+      # rather than saying which secret is missing.
+      - name: Set up SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          [ -n "$DEPLOY_SSH_KEY" ] || { echo "secret DEPLOY_SSH_KEY is not set"; exit 1; }
+          [ -n "$DEPLOY_KNOWN_HOSTS" ] || { echo "secret DEPLOY_KNOWN_HOSTS is not set"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/origin
+          chmod 600 ~/.ssh/origin
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      # The argument is advisory: authorized_keys pins a forced command, so the
+      # box runs deploy/deploy-from-ci.sh no matter what is sent here, and reads
+      # this string out of SSH_ORIGINAL_COMMAND. Sending the sha rather than a
+      # command name is the point — the box decides what "deploy" means.
+      #
+      # The build, the restart, the health check and the rollback all happen over
+      # there, because the binary is aarch64 and must be built on the box.
+      - name: Deploy
+        run: |
+          ssh -i ~/.ssh/origin \
+              -o IdentitiesOnly=yes \
+              -o BatchMode=yes \
+              -o ConnectTimeout=20 \
+              -o ServerAliveInterval=30 \
+              "$ORIGIN_USER@$ORIGIN_HOST" "deploy $DEPLOY_SHA"
+
+      # The box already proved itself on localhost before this step runs. This
+      # one proves the public path — DNS, the open port, Caddy's certificate and
+      # the proxy — which the box cannot check about itself.
+      #
+      # The icon route is checked by name because it is the one that is easy to
+      # get wrong: it is /icons/item/501.png, and there is no /icon route at all.
+      - name: Verify over the public URL
+        run: |
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "$VERIFY_HOST/healthz")
+          [ "$code" = "200" ] || { echo "healthz returned $code"; exit 1; }
+          echo "healthz ok"
+
+          curl -sSf "$VERIFY_HOST/image?job=1002&action=0" -o /tmp/render.png
+          head -c 8 /tmp/render.png | grep -q $'\x89PNG' || { echo "not a PNG"; exit 1; }
+          size=$(wc -c < /tmp/render.png)
+          [ "$size" -gt 500 ] || { echo "render suspiciously small: $size bytes"; exit 1; }
+          echo "render ok ($size bytes)"
+
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "$VERIFY_HOST/icons/item/501.png")
+          [ "$code" = "200" ] || { echo "icon route returned $code"; exit 1; }
+          echo "icons ok"
