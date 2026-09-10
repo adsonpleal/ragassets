@@ -177,7 +177,14 @@ Provisioned. What this script cannot do, in the order it is needed:
        sudo systemctl start ragassets-patch.service    # one cycle, by hand
        sudo systemctl enable --now ragassets-patch.timer
 
-  8. VCN security list, in the Oracle console: tcp/22 from your address only,
-     tcp/80 and tcp/443 from anywhere. The iptables half is already done.
+  8. VCN security list, in the Oracle console: tcp/80 and tcp/443 from anywhere,
+     and tcp/22 wide enough for the GitHub runners that deploy.yml SSHes from —
+     their ranges are in https://api.github.com/meta under `actions`, and they
+     are large and they change. The live box has had 22 open to 0.0.0.0/0 since
+     it was built; this line used to say "from your address only", which was
+     never what was applied. Narrowing it now would stop deploys, so if you do,
+     narrow it to the runner ranges and not to one address. Key-only auth is
+     what carries the weight: `sudo sshd -T | grep -i passwordauthentication`
+     must say `no`. The iptables half is already done.
 
 CHECKLIST
