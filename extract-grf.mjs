@@ -1212,14 +1212,15 @@ function indexRobeSprites(robeRoot) {
   return perFolder;
 }
 
-// Whether the garment folder still has an image bank of its own after a prune —
-// a folder-root .spr, or a per-job sprite that survived.
-// hasRobeRootSprite reports whether the folder ships artwork at its root, in
-// either the classic or the nested layout. Captured into the index so the prune
-// decision needs no filesystem.
-function hasRobeRootSprite(robeRoot, folder) {
+// robeRootSpriteHash returns the md5 of the folder's root .spr — its own artwork
+// — in either the classic or the nested layout, or null when it ships none.
+// Captured into the index so the prune decision needs no filesystem.
+function robeRootSpriteHash(robeRoot, folder) {
   const dir = join(robeRoot, folder);
-  return existsSync(join(dir, `${folder}.spr`)) || existsSync(join(dir, folder, `${folder}.spr`));
+  for (const p of [join(dir, `${folder}.spr`), join(dir, folder, `${folder}.spr`)]) {
+    if (existsSync(p)) return createHash("md5").update(readFileSync(p)).digest("hex");
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1237,14 +1238,16 @@ function hasRobeRootSprite(robeRoot, folder) {
 // object keys to delete without the objects being anywhere near it.
 //
 // ROBE_INDEX_VERSION guards the shape. Bump it if the schema changes, so a stale
-// index is refused rather than silently producing a wrong prune list.
+// index is refused rather than silently producing a wrong prune list:
+// robePrunePlan throws on one, and --prune-robes --index rebuilds it from the tree.
 // ---------------------------------------------------------------------------
 
-const ROBE_INDEX_VERSION = 1;
+// v2 added rootHash, which the sibling-copy rule needs.
+export const ROBE_INDEX_VERSION = 2;
 
 /**
  * buildRobeIndex(resourcesDir) reads the robe tree and records what pruning
- * needs: every per-job sprite's hash, and whether the folder has a root sprite.
+ * needs: every per-job sprite's hash, and the folder's root sprite hash.
  *
  * Paths are forward-slashed and relative to resourcesDir, so they map straight
  * onto object keys as well as onto the tree.
@@ -1254,10 +1257,12 @@ export function buildRobeIndex(resourcesDir) {
   const robeRoot = join(root, "data", "sprite", kROBE);
   const folders = {};
   for (const [folder, entries] of indexRobeSprites(robeRoot)) {
+    const rootHash = robeRootSpriteHash(robeRoot, folder);
     folders[folder] = {
-      // robeHasSprite's filesystem probe, captured once so the decision below
-      // needs no filesystem at all.
-      root: hasRobeRootSprite(robeRoot, folder),
+      // Filesystem probes, captured once so the decision below needs no
+      // filesystem at all.
+      root: rootHash !== null,
+      rootHash,
       sprites: entries.map((e) => ({
         path: relPosix(root, e.path),
         hash: e.hash,
@@ -1287,20 +1292,67 @@ export function robePrunePlan(index) {
     Object.entries(index.folders).map(([folder, f]) => [folder, f.sprites]),
   );
   const leftovers = robeTemplateHashes(perFolder, minFolders);
+  const copies = robeSiblingCopies(index.folders);
 
   const remove = [];
   const folders = [];
   const emptied = [];
   for (const [folder, f] of Object.entries(index.folders)) {
-    const hits = f.sprites.filter((s) => leftovers.has(s.hash));
+    const copy = copies.get(folder);
+    const hits = f.sprites.filter((s) => leftovers.has(s.hash) || copy?.hashes.has(s.hash));
     if (!hits.length) continue;
     const survivors = f.sprites.length - hits.length;
-    folders.push({ folder, removed: hits.length, survivors });
+    folders.push({ folder, removed: hits.length, survivors, copiedFrom: copy ? [...copy.from] : [] });
     if (survivors === 0 && !f.root) emptied.push(folder);
     for (const h of hits) remove.push(h.path);
   }
   folders.sort((a, b) => b.removed - a.removed);
   return { remove, folders, emptied, leftoverHashes: leftovers.size };
+}
+
+// robeSiblingCopies finds robe folders Gravity built by copying ANOTHER garment's
+// folder rather than the backpack template — the same mistake, with a donor too
+// rare for the ≥10-folder rule to see. c_pitaya_r_bag ([Visual] Cesta de Pitaya
+// Vermelha, view 245) is c_pitaya_g_bag's folder with a red root .spr dropped in:
+// 343 of its 355 per-job sprites are the green basket, so every job but the three
+// new 4th-class bodies rendered green. huse_luk_r_wing (Asas de Garuda, 160) is
+// angelribbonwing's the same way.
+//
+// The evidence is exact rather than statistical: folder F has its own root .spr,
+// and one of F's per-job slots is byte-identical to a DIFFERENT garment G's root
+// .spr. That slot cannot be F's artwork — F's artwork is its root — so F was
+// copied from G, and every per-job sprite in F whose content G also carries (G's
+// root or G's per-job bank) is G's leftover. Folders that share one root .spr
+// (c_g_daehyon_sword_tw / c_t_bear_bag / c_valkyrie_wing) are the same artwork and
+// never count as donors to each other. A folder with no root .spr is skipped: its
+// per-job sprites are all the artwork it has, so there is nothing to fall back to.
+//
+// Returns Map<folder, { from: Set<donor>, hashes: Set<hash> }>.
+export function robeSiblingCopies(folders) {
+  const rootOwners = new Map(); // root hash -> [folder]
+  for (const [folder, f] of Object.entries(folders)) {
+    if (!f.rootHash) continue;
+    if (!rootOwners.has(f.rootHash)) rootOwners.set(f.rootHash, []);
+    rootOwners.get(f.rootHash).push(folder);
+  }
+  const out = new Map();
+  for (const [folder, f] of Object.entries(folders)) {
+    if (!f.rootHash) continue;
+    for (const { hash } of f.sprites) {
+      if (hash === f.rootHash) continue;
+      for (const donor of rootOwners.get(hash) ?? []) {
+        if (!out.has(folder)) out.set(folder, { from: new Set(), hashes: new Set() });
+        const copy = out.get(folder);
+        if (copy.from.has(donor)) continue;
+        copy.from.add(donor);
+        copy.hashes.add(hash);
+        for (const s of folders[donor].sprites) copy.hashes.add(s.hash);
+      }
+    }
+    // The folder's own artwork is never a leftover, even if a donor carries it.
+    out.get(folder)?.hashes.delete(f.rootHash);
+  }
+  return out;
 }
 
 // relPosix renders an absolute path relative to root with forward slashes.
@@ -1319,7 +1371,20 @@ function pruneRobes(resourcesDir, { dryRun = false, indexPath = null } = {}) {
   let index;
   if (indexPath) {
     console.error(`Reading robe index ${indexPath}…`);
-    index = JSON.parse(readFileSync(indexPath, "utf8"));
+    try {
+      index = JSON.parse(readFileSync(indexPath, "utf8"));
+    } catch (e) {
+      console.error(`  unreadable (${e.message})`);
+      index = null;
+    }
+    // The patch cycle keeps this index across deploys, so a schema bump — or a
+    // write cut short — would otherwise fail every patch until someone deleted
+    // the file by hand. The tree it describes is right here, so rebuild it.
+    if (index?.version !== ROBE_INDEX_VERSION) {
+      console.error(`  index is version ${index?.version}, expected ${ROBE_INDEX_VERSION} — rebuilding`);
+      index = buildRobeIndex(resourcesDir);
+      if (!dryRun) writeFileSync(indexPath, JSON.stringify(index));
+    }
   } else {
     console.error(`Indexing ${robeRoot}…`);
     index = buildRobeIndex(resourcesDir);
@@ -1343,10 +1408,11 @@ function pruneRobes(resourcesDir, { dryRun = false, indexPath = null } = {}) {
   const rows = plan.folders;
   const emptied = plan.emptied;
   for (const r of rows) {
-    console.error(`  ${r.folder.padEnd(26)} ${String(r.removed).padStart(4)} removed, ${r.survivors} kept`);
+    const from = r.copiedFrom.length ? `  (copy of ${r.copiedFrom.join(", ")})` : "";
+    console.error(`  ${r.folder.padEnd(26)} ${String(r.removed).padStart(4)} removed, ${r.survivors} kept${from}`);
   }
   console.error(
-    `\n${dryRun ? "Would remove" : "Removed"} ${removed} backpack leftover(s) from ${rows.length} folder(s).`,
+    `\n${dryRun ? "Would remove" : "Removed"} ${removed} template leftover(s) from ${rows.length} folder(s).`,
   );
   // A folder with nothing left has no artwork anywhere in the client, so its
   // costume is not a sprite at all — it is a .str world effect --effects should

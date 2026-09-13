@@ -14,6 +14,56 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-09-13
+
+### Fixed
+- **Garments that rendered as a *different* garment.** `garment=245`
+  (*[Visual] Cesta de Pitaya Vermelha*) returned byte-identical images to
+  `garment=129` (the green basket) on every job but the three new 4th-class
+  bodies. Same mistake as the 2026-08-29 backpack leftovers, with a rarer donor:
+  Gravity built `로브/c_pitaya_r_bag/` by copying `c_pitaya_g_bag/`, dropped a red
+  folder-root `.spr` in, and left 343 of the 355 per-job `.spr` as the green one.
+  The ≥10-folder rule cannot see a donor shared by two folders.
+
+  `--prune-robes` gained a second rule, and its evidence is exact rather than
+  statistical: folder F has its own root `.spr`, and one of F's per-job slots is
+  byte-identical to a **different** garment G's root `.spr`. F's artwork is its
+  root, so that slot is G's, F was copied from G, and every per-job sprite in F
+  whose content G also carries (root or per-job bank) goes. Folders that share one
+  root `.spr` are the same artwork and never donors to each other; a folder with
+  no root `.spr` is never touched, since there is nothing to fall back to.
+
+  In this client it removes 701 sprites from 6 folders: `c_pitaya_r_bag` (245,
+  343 ← c_pitaya_g_bag), `huse_luk_r_wing` (160 *Asas de Garuda*, 330 ←
+  angelribbonwing — red wings, were drawing white ones), `c_surf_board` (180
+  *Prancha de Surf Azul*, 21 ← c_surf_board_poring — the female 2nd/3rd-job slots
+  drew the Poring board), `c_g_daehyon_sword_tw` (3 ← c_t_bear_bag; the folder
+  even ships a stray `c_t_bear_bag.spr` at its root), `c_cat_fork` (2 ←
+  thanatos_sword), `wing_of_angel_move_gd` (2 ← wing_of_angel_move). Donors
+  render byte-identically before and after. Verified by rendering 245/129,
+  160/42 and 180/186 locally before and after, both genders.
+
+- **The robe index is version 2** (adds `rootHash`). `--prune-robes --index`
+  rebuilds a stale or unreadable index in place instead of refusing it, so the
+  patch cycle's `/var/lib/ragassets/robe-index.json` heals itself on its next run
+  rather than failing every patch until someone deletes it.
+
+- **The patch cycle never refreshed the robe index.** It was built once, on the
+  first cycle, and every later prune planned against that snapshot of the tree.
+  A garment folder added by a later patch was never pruned at all, and a slot a
+  patch redrew would have been deleted on the strength of the hash it used to
+  have. The cycle now rebuilds the index whenever a patch ships anything under
+  `data/sprite/`, which costs the ~31s the index was meant to save, only on the
+  cycles that can change the answer.
+
+  **Deploying this code does not fix production by itself**: the leftovers live
+  in the box's `mirror/`, which the patch cycle only prunes when a patch arrives.
+  Run `flock /run/lock/ragassets-patch.lock node extract-grf.mjs --prune-robes
+  mirror --index /var/lib/ragassets/robe-index.json` in `~/ragassets` once and
+  restart the gateway (the parse cache holds the old sprites). A browser that
+  already fetched one of these renders keeps it: renders are `immutable` under a
+  query-derived ETag, so only a changed URL reaches it.
+
 ## 2026-09-10
 
 ### Added

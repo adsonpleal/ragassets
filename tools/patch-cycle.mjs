@@ -348,17 +348,19 @@ async function cycle({ fromSeq, head, args, state }) {
     run("cp", ["-a", `${src}/.`, `${dst}/`]);
   }
 
-  // Gravity copies the adventurer-backpack sprites into every robe folder, and a
-  // patch re-introduces them. The index makes this ~0.2s instead of ~31s over
-  // 56k sprites.
-  if (existsSync(ROBE_INDEX)) {
-    node(["extract-grf.mjs", "--prune-robes", MIRROR, "--index", ROBE_INDEX]);
-  } else {
-    log(`no robe index at ${ROBE_INDEX}; building one (slow, once)`);
+  // Gravity copies the adventurer-backpack sprites — or another garment's — into
+  // robe folders, and a patch re-introduces them. The index makes this ~0.2s
+  // instead of ~31s, but it describes the tree as it was when it was built. After
+  // a patch that ships sprites it is wrong in both directions: a new garment
+  // folder is not in it and is never pruned, and a slot the patch redrew is
+  // deleted on the strength of the hash it used to have. So rebuild it then.
+  const spritesArrived = files.some((f) => /^data\/sprite\//i.test(f));
+  if (!existsSync(ROBE_INDEX) || spritesArrived) {
+    log(existsSync(ROBE_INDEX) ? "sprites arrived; rebuilding the robe index" : `no robe index at ${ROBE_INDEX}; building one`);
     mkdirSync(dirname(ROBE_INDEX), { recursive: true });
     node(["extract-grf.mjs", "--robe-index", ROBE_INDEX, "--grf", MIRROR]);
-    node(["extract-grf.mjs", "--prune-robes", MIRROR, "--index", ROBE_INDEX]);
   }
+  node(["extract-grf.mjs", "--prune-robes", MIRROR, "--index", ROBE_INDEX]);
 
   // A patch that ships luafiles514 changes the id -> sprite-name tables that are
   // baked into the binary by cmd/gen-resolver and cmd/gen-tables. Rebuilding

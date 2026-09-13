@@ -1319,6 +1319,11 @@ the sprite files deleted afterwards to confirm the index path never touches them
 The index also yields the delete list directly, which is what lets the update
 pipeline prune object storage where the files are not local at all.
 
+An index describes the tree as it was when built, so it goes stale the moment
+sprites change: `tools/patch-cycle.mjs` rebuilds it whenever a patch ships
+anything under `data/sprite/`, and `--prune-robes --index` rebuilds one of an
+old version (or one it cannot parse) rather than planning from it.
+
 A leftover is identified **by content**, never by position: 201 of the 218 robe
 folders are healthy, and plenty of them (`c_giant_white_rabbit`, `c_niflheim_key`,
 `c_samba_carnival`) ship genuine per-job image banks that differ from their root
@@ -1329,6 +1334,16 @@ in 18–20 folders each, the next-largest sharing group is 4, and all eight deco
 to the backpack (seven of them are the same bag drawn for a different body — the
 per-job variants `모험가배낭`'s own folder no longer ships, which is why matching
 only `모험가배낭/모험가배낭.spr` byte-for-byte would miss ~260 of the bad slots).
+
+Gravity sometimes copies another *garment's* folder instead of the backpack's —
+`c_pitaya_r_bag` is `c_pitaya_g_bag` with a red root `.spr`, so it rendered
+green. Two folders sharing a content is below the threshold, so a second rule
+covers it: when a folder has its own root `.spr` and one of its per-job slots is
+byte-identical to a different garment's root `.spr`, the folder was copied from
+that garment, and every per-job sprite whose content that garment also carries is
+removed. Folders sharing one root `.spr` are never donors to each other, and a
+folder with no root `.spr` is never touched. The prune log names the donor
+(`copy of c_pitaya_g_bag`).
 
 The step also reports any folder left with no sprite at all. That garment has no
 artwork anywhere in the client, which means its visual is a `.str` effect —

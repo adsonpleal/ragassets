@@ -1663,6 +1663,54 @@ test("robePrunePlan paths are forward-slashed and relative to the resources root
   }
 });
 
+// The same mistake with a rarer donor: Gravity built c_pitaya_r_bag by copying
+// c_pitaya_g_bag's folder, so the red basket's per-job slots hold the green one.
+function writeSpr(root, rel, content) {
+  const p = join(root, "data", "sprite", ROBE, ...rel.split("/"));
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, Buffer.from(content));
+}
+
+test("robePrunePlan removes a garment's copy of another garment's artwork", () => {
+  const root = mkdtempSync(join(tmpdir(), "ragassets-robe-"));
+  try {
+    // green: root art GREEN, per-job bank of GREEN plus a body variant GREEN-ALT.
+    writeSpr(root, "green/green.spr", "GREEN");
+    writeSpr(root, `green/${MALE}/swordman.spr`, "GREEN");
+    writeSpr(root, `green/${MALE}/priest.spr`, "GREEN-ALT");
+    // red: its own root art RED, but copied from green — only the new body is red.
+    writeSpr(root, "red/red.spr", "RED");
+    writeSpr(root, `red/${MALE}/swordman.spr`, "GREEN");
+    writeSpr(root, `red/${MALE}/priest.spr`, "GREEN-ALT");
+    writeSpr(root, `red/${MALE}/druid.spr`, "RED");
+
+    const plan = robePrunePlan(buildRobeIndex(root));
+    assert.deepEqual(plan.remove.sort(), [
+      `data/sprite/${ROBE}/red/${MALE}/priest.spr`,
+      `data/sprite/${ROBE}/red/${MALE}/swordman.spr`,
+    ]);
+    assert.deepEqual(plan.folders, [{ folder: "red", removed: 2, survivors: 1, copiedFrom: ["green"] }]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("robePrunePlan never treats folders sharing one root artwork as copies", () => {
+  // Two garments with the same root .spr are the same artwork, and a folder with
+  // no root .spr has nothing to fall back to — neither may lose a sprite.
+  const root = mkdtempSync(join(tmpdir(), "ragassets-robe-"));
+  try {
+    writeSpr(root, "a/a.spr", "SAME");
+    writeSpr(root, `a/${MALE}/swordman.spr`, "SAME");
+    writeSpr(root, "b/b.spr", "SAME");
+    writeSpr(root, `b/${MALE}/swordman.spr`, "SAME");
+    writeSpr(root, `rootless/${MALE}/swordman.spr`, "SAME");
+    assert.deepEqual(robePrunePlan(buildRobeIndex(root)).remove, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("robePrunePlan refuses an index of an unknown version", () => {
   // A stale index must fail loudly: a wrong prune list deletes real artwork.
   assert.throws(() => robePrunePlan({ version: 99, folders: {} }), /rebuild it/);
@@ -1673,9 +1721,11 @@ test("buildRobeIndex records the root sprite and every per-job hash", () => {
   const root = robeTree({ folders: ["a", "b"], backpackIn: ["a"], rootSpriteIn: ["b"] });
   try {
     const index = buildRobeIndex(root);
-    assert.equal(index.version, 1);
+    assert.equal(index.version, 2);
     assert.equal(index.folders.a.root, false);
+    assert.equal(index.folders.a.rootHash, null);
     assert.equal(index.folders.b.root, true);
+    assert.match(index.folders.b.rootHash, /^[0-9a-f]{32}$/);
     assert.equal(index.folders.a.sprites.length, 2); // genuine + backpack
     assert.equal(index.folders.b.sprites.length, 1);
     assert.ok(index.folders.a.sprites.every((s) => /^[0-9a-f]{32}$/.test(s.hash)));
