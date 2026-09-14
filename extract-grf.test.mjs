@@ -670,6 +670,16 @@ function luaRecord(obj) {
   return luaTable(Object.entries(obj));
 }
 
+test("projectItems trims the trailing spaces some client names carry", () => {
+  const items = projectItems(
+    luaTable([
+      [300239, luaRecord({ identifiedDisplayName: "Carta Maya Silente       " })],
+      [1, luaRecord({ identifiedDisplayName: "   " })], // nothing left: unnamed
+    ]),
+  );
+  assert.deepEqual(items.map((i) => i.name), [null, "Carta Maya Silente"]);
+});
+
 test("projectItems keeps the bare name and slot count apart, sorted by id", () => {
   const items = projectItems(
     luaTable([

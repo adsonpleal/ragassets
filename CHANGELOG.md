@@ -74,6 +74,10 @@ and do not describe the system today. Check the date before trusting an entry;
   player skill's.
 
 ### Fixed
+- **Item names are trimmed too.** Seven shipped with trailing spaces, up to seven
+  of them (`"Carta Maya Silente       "`, 300239; `"N-DEFM       "`, 29528). No
+  other field of `items.json` changes.
+
 - **A patch that changed only `data/luafiles514/` never rebuilt `/raw`** or the
   skill/status icons. The raw rebuild keyed on `System/*.lub`, but every table
   except `items.json` reads the GRF, so a patch that named a new skill without

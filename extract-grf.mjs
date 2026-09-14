@@ -5760,7 +5760,8 @@ export function projectItems(tbl, aegisMap = new Map(), views = null, packages =
   if (!(tbl instanceof LuaTable)) return out;
   for (const [id, entry] of tbl.map) {
     if (typeof id !== "number" || !(entry instanceof LuaTable)) continue;
-    const name = decodeClientString(entry.get("identifiedDisplayName")) || null;
+    // Trimmed: a few client names end in spaces ("Carta Maya Silente       ").
+    const name = (decodeClientString(entry.get("identifiedDisplayName")) || "").trim() || null;
     const classNum = entry.get("ClassNum");
     const view = typeof classNum === "number" && classNum > 0 ? Math.round(classNum) : 0;
     const equipSlots = parseSlots(entry.get("identifiedDescriptionName"));
