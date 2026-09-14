@@ -45,6 +45,24 @@ and do not describe the system today. Check the date before trusting an entry;
   whose constant supports no name (`NPC_KEEPING`, GM and event skills, the
   unreleased `6001`–`6006`) stay out and are printed by `--raw`.
 
+  Then checked against 664 replays: they reference 762 distinct skill ids, and
+  six were still missing. Those are now named. 492 `ITEM_ENCHANTARMS` is
+  *Encantar Arma*, what the Elemental Converters cast, seen in 63 replays.
+  753 `NPC_DAMAGE_HEAL` copies *Curar*, and 778 `NPC_STRIP_SHADOW` is *Remover
+  Equipamento Sombrio*. 473 `SM_SELFPROVOKE` is *Provocar (em si mesmo)*.
+  2573 `RL_B_FLICKER_ATK` is *Ignição (Armadilha Aderente)* with parent 2556,
+  since it always follows an Ignição. 5306 is not in LATAM's `skillid.lub` at
+  all. It is added through `SKID_ADDITIONS` under kRO's
+  `AG_DESTRUCTIVE_HURRICANE_BUFF`, as *Tufão Destrutivo (bônus)* with parent
+  5215. Every skill id in those replays now resolves.
+
+  Two client names changed. Vigília Noturna's gun modes (5496, 5497) shipped
+  under the base skill's exact name and are now *Vigília Noturna
+  (metralhadora)* / *(espingarda)* (`SAME_NAME_SUFFIXES`, only while the names
+  stay identical). They get no `parent`, because replays send the use under
+  those ids and only the damage under 5405. Skill names are also trimmed: 2280,
+  5240, 8048 and 8059 carried a trailing space.
+
 - **Follow-up hits without an icon are served their parent's** at
   `/icons/skill/{id}.png`: 38 of them, e.g. 5236 now draws Flecha Escarlate.
 - **Monster skills get a generic icon.** The GRF ships no icon BMP for any

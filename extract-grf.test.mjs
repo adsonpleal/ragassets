@@ -17,6 +17,7 @@ import {
   projectSkills,
   resolveUnnamedSkills,
   skillFollowUps,
+  withSkidAdditions,
   projectStatus,
   runChunk,
   projectRandomOpt,
@@ -966,6 +967,54 @@ test("sameAs entries copy a name without a parent, and markers are not reported"
 
   const { report } = resolveUnnamedSkills(skid, new Map(projectSkills(client).map((s) => [s.id, s.name])));
   assert.deepEqual(report.unnamed, ["201 NPC_KEEPING"]);
+});
+
+// Vigília Noturna's gun modes are the client's own rows under the base skill's
+// exact name. They are suffixed while that stays true, never given a parent (the
+// use arrives under their id), and left alone once a patch names them apart.
+test("same-name modes are suffixed only while the client names them like the base skill", () => {
+  const skid = new Map([
+    ["NW_THE_VIGILANTE_AT_NIGHT", 5405],
+    ["NW_THE_VIGILANTE_AT_NIGHT_GUN_GATLING", 5496],
+    ["NW_THE_VIGILANTE_AT_NIGHT_GUN_SHOTGUN", 5497],
+  ]);
+  const skills = projectSkills(
+    names([
+      [5405, "Vigília Noturna "], // trailing space, as the client ships some
+      [5496, "Vigília Noturna"],
+      [5497, "Rajada de Espingarda"],
+    ]),
+    null,
+    null,
+    null,
+    skid,
+  );
+  assert.deepEqual(
+    skills.map((s) => [s.id, s.name, s.parent ?? null]),
+    [
+      [5405, "Vigília Noturna", null],
+      [5496, "Vigília Noturna (metralhadora)", null],
+      [5497, "Rajada de Espingarda", null],
+    ],
+  );
+});
+
+// An id skillid.lub does not define at all is added under its kRO constant, but
+// only while the client defines neither: a real entry always replaces it.
+test("withSkidAdditions adds a missing skill id only while the client has no entry for it", () => {
+  const client = new Map([["AG_DESTRUCTIVE_HURRICANE", 5215]]);
+  const skills = projectSkills(names([[5215, "Tufão Destrutivo"]]), null, null, null, withSkidAdditions(client));
+  assert.deepEqual(skills[1], {
+    id: 5306,
+    name: "Tufão Destrutivo (bônus)",
+    maxLevel: null,
+    description: null,
+    delay: null,
+    parent: 5215,
+  });
+
+  const taken = new Map([...client, ["SOMETHING_ELSE", 5306]]);
+  assert.equal(withSkidAdditions(taken).has("AG_DESTRUCTIVE_HURRICANE_BUFF"), false);
 });
 
 // --icons borrows a parent's icon for exactly these pairs, so the relation has

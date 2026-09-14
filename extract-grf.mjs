@@ -2260,7 +2260,7 @@ function extractIcons(grfPath, outBase, args) {
     // (skills.json names it after the parent too).
     let borrowed = 0;
     const borrowedIds = new Set();
-    for (const [id, { parentId }] of skillFollowUps(skillIds)) {
+    for (const [id, { parentId }] of skillFollowUps(withSkidAdditions(skillIds))) {
       if (skillIcons.has(id) || !skillIcons.has(parentId)) continue;
       if (writeIcon("skill", id, skillIcons.get(parentId))) {
         borrowed++;
@@ -5882,7 +5882,8 @@ export function projectSkills(list, descriptions = null, delays = null, info = n
   const names = new Map();
   for (const [key, entry] of list.map) {
     if (typeof key !== "number") continue;
-    const name = entry instanceof LuaTable ? decodeClientString(entry.get("SkillName")) : null;
+    // Trimmed: a handful of client names carry a trailing space ("Lava Quente ").
+    const name = entry instanceof LuaTable ? (decodeClientString(entry.get("SkillName")) || "").trim() : "";
     if (name) names.set(Math.round(key), name);
   }
   const { filled, parents } = skid ? resolveUnnamedSkills(skid, names) : { filled: new Map(), parents: new Map() };
@@ -5914,7 +5915,8 @@ export function projectSkills(list, descriptions = null, delays = null, info = n
 // replay used to print "skill#686" or keep its own table of names, so this is
 // the one place /raw deliberately goes beyond the client — and only where the
 // client is silent. A name the client ships always wins, the moment a patch
-// ships it; nothing here can rename a skill the client already names.
+// ships it. The single exception is SAME_NAME_SUFFIXES, which suffixes a client
+// name that is word for word another skill's, and stops the moment it isn't.
 //
 // There are two kinds of fill:
 //
@@ -5963,6 +5965,40 @@ export const FOLLOW_UP_OVERRIDES = {
   GN_FIRE_EXPANSION_ACID: { parent: "GN_FIRE_EXPANSION", suffix: "ácido" },
   SR_CRESCENTELBOW_AUTOSPELL: { parent: "SR_CRESCENTELBOW", suffix: "contra-ataque" },
   LG_OVERBRAND_BRANDISH: { parent: "LG_OVERBRAND", suffix: "brandir" },
+  // Ignição detonating the Armadilha Aderente traps; replays send it right
+  // after an RL_FLICKER use.
+  RL_B_FLICKER_ATK: { parent: "RL_FLICKER", suffix: "Armadilha Aderente" },
+  // Not in LATAM's skillid.lub at all — see SKID_ADDITIONS.
+  AG_DESTRUCTIVE_HURRICANE_BUFF: { parent: "AG_DESTRUCTIVE_HURRICANE", suffix: "bônus" },
+};
+
+// Skill ids the server sends that LATAM's skillid.lub does not define, so there
+// is no constant to hang a name on. The constants are kRO's, as divine-pride
+// lists them. Merged in only while the client defines neither the constant nor
+// the id; once it does, its own entry is used.
+export const SKID_ADDITIONS = {
+  // A self-targeted use right after AG_DESTRUCTIVE_HURRICANE.
+  AG_DESTRUCTIVE_HURRICANE_BUFF: 5306,
+};
+
+export function withSkidAdditions(skid) {
+  const out = new Map(skid);
+  const ids = new Set(skid.values());
+  for (const [konst, id] of Object.entries(SKID_ADDITIONS)) {
+    if (!out.has(konst) && !ids.has(id)) out.set(konst, id);
+  }
+  return out;
+}
+
+// Casts the client names exactly like the skill they are a mode of, so two rows
+// would read the same. The server sends the *use* under these ids and the damage
+// under the base skill's, so they are not follow-up hits and get no `parent`:
+// with one, a consumer would count no uses of the skill at all. They get a
+// suffix only while their client name is still the base skill's — a patch that
+// gives one a name of its own wins. The suffixes are the tooltip's own words.
+export const SAME_NAME_SUFFIXES = {
+  NW_THE_VIGILANTE_AT_NIGHT_GUN_GATLING: { of: "NW_THE_VIGILANTE_AT_NIGHT", suffix: "metralhadora" },
+  NW_THE_VIGILANTE_AT_NIGHT_GUN_SHOTGUN: { of: "NW_THE_VIGILANTE_AT_NIGHT", suffix: "espingarda" },
 };
 
 // Constants the suffix rule matches that are skills in their own right, cast on
@@ -6074,6 +6110,8 @@ export const UNNAMED_SKILL_NAMES = {
   NPC_POISON_BUSTER: { sameAs: "SO_POISON_BUSTER" },
   NPC_WIDEDISPEL: "Desencantar em Área",
   NPC_ALL_STAT_DOWN: "Redução de Atributos",
+  // Self-cast by bosses (Eddga, Ifrit, Senhor dos Orcs, Schmidt Corrompido).
+  NPC_DAMAGE_HEAL: { sameAs: "AL_HEAL" },
   NPC_GRADUAL_GRAVITY: "Gravidade Gradual",
   NPC_MOVE_COORDINATE: "Mover para Coordenada",
   NPC_RELIEVE_ON: "Alívio (ativar)",
@@ -6083,6 +6121,8 @@ export const UNNAMED_SKILL_NAMES = {
   // The client names the `2` variant and not the original.
   NPC_DEADLYCURSE: { sameAs: "NPC_DEADLYCURSE2" },
   NPC_RANDOMBREAK: "Quebra Aleatória",
+  // Betelgeuse. The client calls shadow gear "Sombrio".
+  NPC_STRIP_SHADOW: "Remover Equipamento Sombrio",
   NPC_CANE_OF_EVIL_EYE: "Bengala do Olho Maligno",
   NPC_CURSE_OF_RED_CUBE: "Maldição do Cubo Vermelho",
   NPC_CURSE_OF_BLUE_CUBE: "Maldição do Cubo Azul",
@@ -6103,6 +6143,12 @@ export const UNNAMED_SKILL_NAMES = {
   // upgrades them.
   SU_CN_METEOR2: { sameAs: "SU_CN_METEOR" },
   SU_LUNATICCARROTBEAT2: { sameAs: "SU_LUNATICCARROTBEAT" },
+  // Provocar, cast on oneself.
+  SM_SELFPROVOKE: "Provocar (em si mesmo)",
+  // What an Elemental Converter or Água Amaldiçoada casts; the level is the
+  // element (2 água, 3 terra, 4 fogo, 8 sombrio). Named after the constant and
+  // the converters' "Encanta a arma atual…".
+  ITEM_ENCHANTARMS: "Encantar Arma",
   ALL_ASSISTANT_VENDING: "Assistente de Comércio",
   ALL_ASSISTANT_BUYING: "Assistente de Compras",
 };
@@ -6183,6 +6229,16 @@ export function resolveUnnamedSkills(skid, names) {
   }
   for (const konst of Object.keys(FOLLOW_UP_OVERRIDES)) {
     if (!skid.has(konst)) report.unknown.push(konst);
+  }
+
+  // Filled last and from the client's names only, so the comparison is always
+  // against what the client ships.
+  for (const [konst, { of, suffix }] of Object.entries(SAME_NAME_SUFFIXES)) {
+    const id = skid.get(konst);
+    const base = names.get(skid.get(of));
+    if (id === undefined || base === undefined) report.unknown.push(konst);
+    else if (names.get(id) === base) filled.set(id, `${base} (${suffix})`);
+    else if (names.has(id)) report.shadowed.push(konst);
   }
 
   const seen = new Set();
@@ -6898,8 +6954,15 @@ function extractRawTables(grfPath, outDir, args) {
     // fallback can never mistake SKILL_DESCRIPT for the skill name table.
     const skillGlobals = globalsOf("skillid", "skillinfolist");
     const skillNames = namedTable(skillGlobals, "SkillInfoList_string", "SKID");
-    const skid = skidMap(skillGlobals.get("SKID"));
-    if (!skid.size) throw new Error(`${RAW_LUB_PATHS.skillid}: no SKID table`);
+    const clientSkid = skidMap(skillGlobals.get("SKID"));
+    if (!clientSkid.size) throw new Error(`${RAW_LUB_PATHS.skillid}: no SKID table`);
+    const skid = withSkidAdditions(clientSkid);
+    const clientSkidIds = new Set(clientSkid.values());
+    for (const [konst, id] of Object.entries(SKID_ADDITIONS)) {
+      if (clientSkid.has(konst) || clientSkidIds.has(id)) {
+        console.error(`  skillid.lub now defines ${konst} or id ${id} — delete it from SKID_ADDITIONS`);
+      }
+    }
     const skillDescript = globalsOf("skillid", "skilldescript").get("SKILL_DESCRIPT");
     if (!(skillDescript instanceof LuaTable)) {
       throw new Error(`${RAW_LUB_PATHS.skilldescript}: no SKILL_DESCRIPT table`);

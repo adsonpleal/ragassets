@@ -923,6 +923,14 @@ redundant.
   client already names `NPC_DRAGONBREATH`). Those carry no `parent`: each is a
   cast of its own.
 
+Two narrower cases. `SKID_ADDITIONS` covers ids the server sends that LATAM's
+`skillid.lub` doesn't define at all (5306, kRO's `AG_DESTRUCTIVE_HURRICANE_BUFF`),
+and steps aside once the client defines the id. `SAME_NAME_SUFFIXES` suffixes
+the client's own name for a skill's modes when it is word for word the base
+skill's — Vigília Noturna's gun modes become `"Vigília Noturna (metralhadora)"`
+and `"(espingarda)"` — without `parent`, since the server sends the *use* under
+those ids. Client names are also trimmed; four ship with a trailing space.
+
 Ids whose constant says nothing a name could be built from — `NPC_KEEPING`,
 event and GM skills, unreleased 4th-class skills — stay out of the table, and
 `--raw` prints them. Range markers (`WL_STARTMARK`, `NPC_LAST`) are never cast
