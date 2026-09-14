@@ -773,7 +773,7 @@ themselves.
 |---|---|
 | `GET /raw/items.json` | Every item: `id, name, slots, aegisName, resourceName, description, view, spriteView, spriteBlank, viewKind, equipSlots, costume` — plus `contains` on the 1,498 that are boxes. |
 | `GET /raw/jobs.json` | Every class: `id, jt, name, hasIcon`. |
-| `GET /raw/skills.json` | Every skill: `id, name, maxLevel, description, delay`. |
+| `GET /raw/skills.json` | Every skill: `id, name, maxLevel, description, delay` — plus `parent` on follow-up hits. Includes the ids the client leaves unnamed that a name can be built for; see [Unnamed skills](#unnamed-skills). |
 | `GET /raw/status.json` | Status-effect (EFST) `id` → `name`. |
 | `GET /raw/randomopt.json` | Random-option `id` → display template (`"ATQM +%d"`). |
 | `GET /raw/classes.json` | Classes with palettes, swatches and alternative outfits. |
@@ -783,7 +783,9 @@ themselves.
 Every table is a **flat JSON array sorted by `id`**, written compact. They are a
 deliberately *faithful* projection of the client, not a curated one: naming
 overrides, slot-suffix formatting and per-project reshaping stay in each
-consumer's own sync step, so this stays one unopinionated upstream.
+consumer's own sync step, so this stays one unopinionated upstream. The single
+exception is skill names for ids the client leaves unnamed, below — and even
+there a name the client ships always wins.
 
 `name` is the **bare** identified name — the client appends the `[3]` slot suffix
 at display time, so `slots` is a separate number and a consumer that wants
@@ -893,6 +895,44 @@ client never released carry `MaxLv: 0`; that zero is the client's own, while a
 skill with no row at all would be `null`. The tooltips corroborate the numbers:
 of the 1,179 that spell out a *Nível máximo*, 1,178 match, the one exception
 (2535 Loja de Compras) being wording drift between the two client tables.
+
+#### Unnamed skills
+
+`skillid.lub` defines ~240 skill ids that `SkillInfoList` gives no name, and
+the server uses some of them — a replay carries Crimson Arrow's explosion and a
+monster's `NPC_*` skills under ids like these, which used to show up as
+`skill#686` in every consumer. `skills.json` fills in the ones a name can be
+justified for, **only while the client leaves them unnamed**: the first patch
+that names one replaces ours, and `--raw` logs which table entries that has made
+redundant.
+
+- **Follow-up hits** — the second id a skill's later hits arrive under — are
+  named after the parent plus a pt-BR suffix, `"Flecha Escarlate (explosão)"`,
+  and carry `parent`, the parent's id, so a consumer can count one use rather
+  than one per packet. The pairs are read off the SKID constants
+  (`<PARENT>_ATK`, `_FIRE`/`_WATER`/`_WIND`/`_GROUND`/`_POISON`, `_MELEE`,
+  `_MAGIC`, …), with `FOLLOW_UP_OVERRIDES` for the ones that don't line up —
+  the `WL_SUMMON_ATK_*` spheres, say. Because the relation comes from the
+  constant, `parent` is also on the follow-ups the client *does* name (Magni
+  Lumen → Gemini Lumen, the elemental spirits' `_ATK` hits), and stays when a
+  patch names one of ours. Rows that aren't follow-ups have no `parent` key.
+- **Everything else** gets a name from `UNNAMED_SKILL_NAMES` in
+  `extract-grf.mjs`: a pt-BR reading of what the constant says
+  (`NPC_KILLING_AURA` → `"Aura Assassina"`), or the client's own name for the
+  skill it copies (`NPC_CHEAL` → AB_CHEAL's `"Sopro Divino"`, the way the
+  client already names `NPC_DRAGONBREATH`). Those carry no `parent`: each is a
+  cast of its own.
+
+Ids whose constant says nothing a name could be built from — `NPC_KEEPING`,
+event and GM skills, unreleased 4th-class skills — stay out of the table, and
+`--raw` prints them. Range markers (`WL_STARTMARK`, `NPC_LAST`) are never cast
+and are not listed. The filled rows usually have `description: null` and often
+no `maxLevel` or `delay`, because the client has no rows for them there either.
+
+`/icons/skill/{id}.png` follows the same rule for follow-ups: one the client
+ships no icon for is served its parent's. Nothing else borrows an icon — the
+client ships none for its monster skills, and a missing icon is better than a
+player skill's that merely looks related.
 
 Unlike every other endpoint here these files are **mutable at a stable URL** —
 they change whenever the client does — so they are served with a short
@@ -1520,7 +1560,8 @@ Writes `items.json`, `jobs.json`, `skills.json`, `randomopt.json`, `status.json`
 `classes.json` and `hair.json` into `resources/raw/`, which the gateway serves at
 [`/raw/...`](#get-raw---client-data-tables-items-jobs-skills-monsters). This is
 the step that lets every other project stop extracting the client for itself, so
-re-run it after a client update. It reads `System/iteminfo_new.lub` from next to
+re-run it after a client update — on the box the patch cycle does, whenever a
+patch ships `data/luafiles514/`. It reads `System/iteminfo_new.lub` from next to
 the GRF (override with `--iteminfo`) plus the job, skill, status, random-option
 and box-contents tables from inside it, and refuses to write an empty table — or
 a `skills.json` where fewer than half the skills kept their description (or fewer

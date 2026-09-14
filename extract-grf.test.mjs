@@ -15,6 +15,8 @@ import {
   projectItems,
   projectPackages,
   projectSkills,
+  resolveUnnamedSkills,
+  skillFollowUps,
   projectStatus,
   runChunk,
   projectRandomOpt,
@@ -853,6 +855,138 @@ test("projectSkills reads maxLevel off the info table, not off the delay arrays"
 
   assert.deepEqual(skills.map((s) => [s.id, s.maxLevel]), [[89, 10], [155, 1], [700, null]]);
   assert.equal(skills[1].delay.castFixed.length, 3); // padded past its one level
+});
+
+const names = (entries) => luaTable(entries.map(([id, name]) => [id, luaRecord({ SkillName: name })]));
+
+// A follow-up hit is named after its parent from the SKID constants alone, so a
+// new element or _ATK id needs no table entry — only the pairs the constants
+// get wrong do.
+test("projectSkills names the follow-up hits the client leaves unnamed after their parent", () => {
+  const skid = new Map([
+    ["WL_TETRAVORTEX", 2217],
+    ["WL_TETRAVORTEX_FIRE", 2218],
+    ["WL_SUMMONSTONE", 2229],
+    ["WL_SUMMON_ATK_GROUND", 2228], // no stem: paired by FOLLOW_UP_OVERRIDES
+    ["AG_CRIMSON_ARROW", 5235],
+    ["AG_CRIMSON_ARROW_ATK", 5236], // derived parent, overridden suffix
+    ["SU_PICKYPECK", 5033],
+    ["SU_PICKYPECK_DOUBLE_ATK", 5034], // not read as _ATK
+    ["RK_DRAGONBREATH", 2008],
+    ["RK_DRAGONBREATH_WATER", 5004], // matches the rule, is its own skill
+    ["NPC_MAXPAIN", 716],
+    ["NPC_MAXPAIN_ATK", 717], // parent unnamed everywhere: nothing to build on
+  ]);
+  const skills = projectSkills(
+    names([
+      [2217, "Tetra Vortex"],
+      [2229, "Invocar Esfera de Terra"],
+      [5235, "Flecha Escarlate"],
+      [5033, "Chilique de Picky"],
+      [2008, "Sopro do Dragão"],
+      [5004, "Bafo do Dragão"],
+    ]),
+    null,
+    null,
+    null,
+    skid,
+  );
+  const row = (id) => skills.find((s) => s.id === id);
+
+  assert.deepEqual(row(2218), { id: 2218, name: "Tetra Vortex (fogo)", maxLevel: null, description: null, delay: null, parent: 2217 });
+  assert.deepEqual([row(2228).name, row(2228).parent], ["Invocar Esfera de Terra (ataque)", 2229]);
+  assert.deepEqual([row(5236).name, row(5236).parent], ["Flecha Escarlate (explosão)", 5235]);
+  assert.deepEqual([row(5034).name, row(5034).parent], ["Chilique de Picky (ataque duplo)", 5033]);
+  assert.ok(!("parent" in row(5004)));
+  assert.ok(!("parent" in row(2217)));
+  assert.equal(row(717), undefined);
+});
+
+// Client names always win, from the first patch that ships one. The parent is a
+// fact about the constant, so it survives the rename — otherwise a patch naming
+// a follow-up would silently double what a consumer counts for it.
+test("a client name overrides ours, and a named follow-up keeps its parent", () => {
+  const skid = new Map([
+    ["WL_TETRAVORTEX", 2217],
+    ["WL_TETRAVORTEX_FIRE", 2218],
+    ["NPC_KILLING_AURA", 783],
+    ["NPC_RANDOMBREAK", 777],
+  ]);
+  const client = names([
+    [2217, "Tetra Vortex"],
+    [2218, "Vórtice de Fogo"],
+    [783, "Aura Letal"],
+  ]);
+  const skills = projectSkills(client, null, null, null, skid);
+  assert.deepEqual(
+    skills.map((s) => [s.id, s.name, s.parent ?? null]),
+    [
+      [777, "Quebra Aleatória", null],
+      [783, "Aura Letal", null],
+      [2217, "Tetra Vortex", null],
+      [2218, "Vórtice de Fogo", 2217],
+    ],
+  );
+
+  const { report } = resolveUnnamedSkills(skid, new Map(projectSkills(client).map((s) => [s.id, s.name])));
+  assert.deepEqual(report.shadowed, ["NPC_KILLING_AURA"]);
+});
+
+// { sameAs } copies a name — the client's, or one this file gave — and never a
+// parent: these are casts of their own. Range markers are not reported as
+// unnamed skills, and an id nothing names stays out of the table.
+test("sameAs entries copy a name without a parent, and markers are not reported", () => {
+  const skid = new Map([
+    ["AB_CHEAL", 2043],
+    ["NPC_CHEAL", 729],
+    ["NPC_DEADLYCURSE", 776],
+    ["NPC_DEADLYCURSE2", 779],
+    ["NPC_BLEEDING", 660],
+    ["NPC_BLEEDING2", 764],
+    ["NPC_KEEPING", 201],
+    ["WL_STARTMARK", 2200],
+    ["NPC_LAST", 785],
+  ]);
+  const client = names([
+    [2043, "Sopro Divino"],
+    [779, "Praga Mortal"],
+  ]);
+  const skills = projectSkills(client, null, null, null, skid);
+  assert.deepEqual(
+    skills.map((s) => [s.id, s.name, s.parent ?? null]),
+    [
+      [660, "Sangramento", null],
+      [729, "Sopro Divino", null],
+      [764, "Sangramento", null],
+      [776, "Praga Mortal", null],
+      [779, "Praga Mortal", null],
+      [2043, "Sopro Divino", null],
+    ],
+  );
+
+  const { report } = resolveUnnamedSkills(skid, new Map(projectSkills(client).map((s) => [s.id, s.name])));
+  assert.deepEqual(report.unnamed, ["201 NPC_KEEPING"]);
+});
+
+// --icons borrows a parent's icon for exactly these pairs, so the relation has
+// to be computable from skillid.lub alone.
+test("skillFollowUps reads the parent of every follow-up off the constants", () => {
+  const followUps = skillFollowUps(
+    new Map([
+      ["AB_DUPLELIGHT", 2054],
+      ["AB_DUPLELIGHT_MELEE", 2055],
+      ["GN_FIRE_EXPANSION", 2486],
+      ["GN_FIRE_EXPANSION_ACID", 2489],
+      ["BO_ACIDIFIED_ZONE_FIRE", 5343], // stem is not a skill
+    ]),
+  );
+  assert.deepEqual(
+    [...followUps].map(([id, f]) => [id, f.parentId, f.suffix]),
+    [
+      [2055, 2054, "corpo a corpo"],
+      [2489, 2486, "ácido"],
+    ],
+  );
 });
 
 // descript[1] is the tooltip title: sometimes a bare string, sometimes a

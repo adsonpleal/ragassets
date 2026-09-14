@@ -209,7 +209,10 @@ function usage() {
       "  render ids) and hair.json (hair styles + dye swatches per race/gender) —",
       "  into <out-dir> (normally resources/raw, served at /raw/<name>.json).",
       "  They are a faithful projection of the client: per-project naming overrides",
-      "  and reshaping stay in each consumer's own sync step.",
+      "  and reshaping stay in each consumer's own sync step. The exception is",
+      "  skills.json, which also names the skill ids the client leaves unnamed",
+      "  (a name the client ships always wins) and marks follow-up hits with",
+      "  `parent`.",
       "  A box's item row carries `contains`: its drop list (id + the client's raw",
       "  prob weight + group). Rows that are not boxes leave the key out entirely.",
     ].join("\n"),
@@ -1783,14 +1786,19 @@ function parseSkillIds(map) {
     map.get("data/luafiles514/lua files/skillinfoz/skillid.lua");
   if (!bytes) return ids;
   try {
-    const skid = runChunk(bytes).get("SKID");
-    if (skid instanceof LuaTable) {
-      for (const [konst, id] of skid.map) {
-        if (typeof konst === "string" && typeof id === "number") ids.set(konst, id);
-      }
-    }
+    return skidMap(runChunk(bytes).get("SKID"));
   } catch (err) {
     console.error(`! skillid.lub could not be executed (${err.message}); skipping skill icons`);
+  }
+  return ids;
+}
+
+// The SKID table as const -> id.
+export function skidMap(tbl) {
+  const ids = new Map();
+  if (!(tbl instanceof LuaTable)) return ids;
+  for (const [konst, id] of tbl.map) {
+    if (typeof konst === "string" && typeof id === "number") ids.set(konst, Math.round(id));
   }
   return ids;
 }
@@ -2243,10 +2251,21 @@ function extractIcons(grfPath, outBase, args) {
       "data/luafiles514/lua files/skillinfoz/skillid.lua",
     ]);
     const skillIds = parseSkillIds(fileMap);
+    const skillIcons = new Map(); // id -> the entry its icon was written from
     for (const [konst, id] of skillIds) {
       const entry = idx.get(`${UI}/item/${konst.toLowerCase()}.bmp`);
-      if (entry) writeIcon("skill", id, entry);
+      if (entry && writeIcon("skill", id, entry)) skillIcons.set(id, entry);
     }
+    // A follow-up hit the client ships no icon for is drawn with its parent's
+    // (skills.json names it after the parent too). Nothing else is borrowed: a
+    // monster skill with no icon of its own stays a 404 rather than wearing the
+    // icon of a player skill it merely resembles.
+    let borrowed = 0;
+    for (const [id, { parentId }] of skillFollowUps(skillIds)) {
+      if (skillIcons.has(id) || !skillIcons.has(parentId)) continue;
+      if (writeIcon("skill", id, skillIcons.get(parentId))) borrowed++;
+    }
+    if (borrowed) console.error(`  ${borrowed} follow-up skill icons borrowed from their parent`);
 
     // Class icons keyed directly by numeric job id (skip the _die variants).
     const jobRe = new RegExp(
@@ -5572,7 +5591,9 @@ function extractMobIds(grfPath, outFile) {
 // curated one. Consumer-specific overrides (ragreplaystats' JOB_NAME_OVERRIDE
 // and FOOD_STATUS_NAMES, its `[3]` slot suffix, latam-ro-calc's slot bitmask)
 // stay in each consumer's transform, so this stays a single unopinionated
-// upstream and each project keeps its exact existing output.
+// upstream and each project keeps its exact existing output. The one exception
+// is skills.json naming the skill ids the client leaves unnamed, which every
+// replay consumer needs identically — see UNNAMED_SKILL_NAMES.
 //
 // Everything is written compact: unlike mobs.json these are never committed, so
 // there is no diff to keep readable and the bytes go over the wire on every
@@ -5829,14 +5850,24 @@ function projectNamed(tbl, nameOf) {
 // A skill with no description block keeps `description: null` rather than being
 // dropped or emptied: consumers index skills.json by id and expect every named
 // skill to stay listed. `delay` and `maxLevel` follow the same rule.
-export function projectSkills(list, descriptions = null, delays = null, info = null) {
+//
+// `skid` (SKID const -> id) turns on the one curated part of this table: ids the
+// client leaves unnamed get a name from UNNAMED_SKILL_NAMES or from their parent
+// skill, and follow-up hits carry `parent` — see resolveUnnamedSkills. Without
+// it the projection is the client's names alone.
+export function projectSkills(list, descriptions = null, delays = null, info = null, skid = null) {
   const out = [];
   if (!(list instanceof LuaTable)) return out;
+  const names = new Map();
   for (const [key, entry] of list.map) {
     if (typeof key !== "number") continue;
     const name = entry instanceof LuaTable ? decodeClientString(entry.get("SkillName")) : null;
-    if (!name) continue;
-    const id = Math.round(key);
+    if (name) names.set(Math.round(key), name);
+  }
+  const { filled, parents } = skid ? resolveUnnamedSkills(skid, names) : { filled: new Map(), parents: new Map() };
+  for (const [id, name] of filled) names.set(id, name);
+
+  for (const [id, name] of names) {
     const maxLv = info?.get(id) instanceof LuaTable ? info.get(id).get("MaxLv") : null;
     out.push({
       id,
@@ -5844,9 +5875,298 @@ export function projectSkills(list, descriptions = null, delays = null, info = n
       maxLevel: typeof maxLv === "number" ? Math.round(maxLv) : null,
       description: joinDescriptionLines(descriptions?.get(id)) || null,
       delay: skillDelay(delays?.get(id)),
+      // Only a follow-up hit carries the key, and only when its parent has a
+      // row to point at. Read it as `skill.parent ?? null`.
+      ...(names.has(parents.get(id)) ? { parent: parents.get(id) } : {}),
     });
   }
   return out.sort((a, b) => a.id - b.id);
+}
+
+// ---------------------------------------------------------------------------
+// Skills the client leaves unnamed
+// ---------------------------------------------------------------------------
+//
+// skillid.lub defines ~240 ids that SkillInfoList gives no name, and the server
+// uses some of them: a replay carries the explosion of Crimson Arrow under its
+// own id, and a monster's NPC_* skills under theirs. Every consumer that shows a
+// replay used to print "skill#686" or keep its own table of names, so this is
+// the one place /raw deliberately goes beyond the client — and only where the
+// client is silent. A name the client ships always wins, the moment a patch
+// ships it; nothing here can rename a skill the client already names.
+//
+// There are two kinds of fill:
+//
+// - A follow-up hit is a second id the server sends for a named skill's later
+//   hits (WL_TETRAVORTEX_FIRE after WL_TETRAVORTEX). It is named after its
+//   parent plus a pt-BR suffix, and carries `parent` so a consumer can count a
+//   use once rather than once per packet. The relation is read off the SKID
+//   constants, so it holds whether or not the client names the child: a patch
+//   that names one changes its name, not what it counts towards.
+// - Everything else gets a name from UNNAMED_SKILL_NAMES, written from what the
+//   constant plainly says, or copied from the client's own name for the skill
+//   it mirrors. Ids whose constant says nothing a name can be built from stay
+//   out of skills.json rather than get an invented one.
+
+// Suffixes that mark a follow-up hit when the constant left over is itself a
+// skill. Longest first, so _DOUBLE_ATK is not read as _ATK on SU_PICKYPECK_DOUBLE.
+const FOLLOW_UP_SUFFIXES = [
+  ["_DOUBLE_ATK", "ataque duplo"],
+  ["_DOTDAMAGE", "dano contínuo"],
+  ["_PLUSATK", "ataque adicional"],
+  ["_GROUND", "terra"],
+  ["_POISON", "veneno"],
+  ["_WATER", "água"],
+  ["_MAGIC", "mágico"],
+  ["_MELEE", "corpo a corpo"],
+  ["_ATK2", "ataque 2"],
+  ["_FIRE", "fogo"],
+  ["_WIND", "vento"],
+  ["_ATK", "ataque"],
+];
+
+// Follow-ups the suffix rule gets wrong or cannot see. `parent` is a SKID const
+// and replaces the derived parent; `suffix` replaces the derived suffix.
+export const FOLLOW_UP_OVERRIDES = {
+  // The spheres are summoned by WL_SUMMONFB/BL/WB/STONE, which share no stem
+  // with the attacks that release them — and ground pairs with STONE (2229).
+  WL_SUMMON_ATK_FIRE: { parent: "WL_SUMMONFB", suffix: "ataque" },
+  WL_SUMMON_ATK_WIND: { parent: "WL_SUMMONBL", suffix: "ataque" },
+  WL_SUMMON_ATK_WATER: { parent: "WL_SUMMONWB", suffix: "ataque" },
+  WL_SUMMON_ATK_GROUND: { parent: "WL_SUMMONSTONE", suffix: "ataque" },
+  AG_CRIMSON_ARROW_ATK: { suffix: "explosão" },
+  OB_OBOROGENSOU_TRANSITION_ATK: { parent: "OB_OBOROGENSOU", suffix: "ataque de transição" },
+  GN_SLINGITEM_RANGEMELEEATK: { parent: "GN_SLINGITEM", suffix: "ataque à distância" },
+  GN_FIRE_EXPANSION_SMOKE_POWDER: { parent: "GN_FIRE_EXPANSION", suffix: "pó de fumaça" },
+  GN_FIRE_EXPANSION_TEAR_GAS: { parent: "GN_FIRE_EXPANSION", suffix: "gás lacrimogêneo" },
+  GN_FIRE_EXPANSION_ACID: { parent: "GN_FIRE_EXPANSION", suffix: "ácido" },
+  SR_CRESCENTELBOW_AUTOSPELL: { parent: "SR_CRESCENTELBOW", suffix: "contra-ataque" },
+  LG_OVERBRAND_BRANDISH: { parent: "LG_OVERBRAND", suffix: "brandir" },
+};
+
+// Constants the suffix rule matches that are skills in their own right, cast on
+// their own: counting them as hits of the stem would erase every use of them.
+const NOT_FOLLOW_UPS = new Set(["RK_DRAGONBREATH_WATER"]);
+
+// Names for unnamed ids that are not follow-ups, keyed by SKID const. A string
+// is the name; { sameAs } copies the name of another skill (client-named or from
+// this table) — the client's own convention for a monster's copy of a player
+// skill (NPC_DRAGONBREATH ships as RK_DRAGONBREATH's "Sopro do Dragão") and for
+// the `2` variants of one skill (NPC_WIDEBLEEDING2). Neither kind gets `parent`:
+// each of these is a cast of its own, and a consumer that folded them into the
+// skill they mirror would stop counting them. Element words follow the client's
+// descriptions (Sombrio, Maldito, Fantasma — telekinesis is ghost).
+export const UNNAMED_SKILL_NAMES = {
+  NPC_PIERCINGATT: "Ataque Perfurante",
+  NPC_MENTALBREAKER: "Quebra Mental",
+  NPC_RANGEATTACK: "Ataque à Distância",
+  NPC_ATTRICHANGE: "Mudar Propriedade",
+  NPC_CHANGEWATER: "Mudar Propriedade (Água)",
+  NPC_CHANGEGROUND: "Mudar Propriedade (Terra)",
+  NPC_CHANGEFIRE: "Mudar Propriedade (Fogo)",
+  NPC_CHANGEWIND: "Mudar Propriedade (Vento)",
+  NPC_CHANGEPOISON: "Mudar Propriedade (Veneno)",
+  NPC_CHANGEHOLY: "Mudar Propriedade (Sagrado)",
+  NPC_CHANGEDARKNESS: "Mudar Propriedade (Sombrio)",
+  NPC_CHANGETELEKINESIS: "Mudar Propriedade (Fantasma)",
+  NPC_CHANGEUNDEAD: "Mudar Propriedade (Maldito)",
+  NPC_CHANGEUNDEAD2: { sameAs: "NPC_CHANGEUNDEAD" },
+  NPC_CRITICALSLASH: "Golpe Crítico",
+  NPC_COMBOATTACK: "Ataque Combinado",
+  NPC_GUIDEDATTACK: "Ataque Guiado",
+  NPC_SELFDESTRUCTION: "Autodestruição",
+  NPC_SPLASHATTACK: "Ataque em Área",
+  NPC_SUICIDE: "Suicídio",
+  NPC_POISON: { sameAs: "TF_POISON" },
+  NPC_BLINDATTACK: "Ataque Cegante",
+  NPC_SILENCEATTACK: "Ataque Silenciador",
+  NPC_STUNATTACK: "Ataque Atordoante",
+  NPC_PETRIFYATTACK: "Ataque Petrificante",
+  NPC_CURSEATTACK: "Ataque Amaldiçoante",
+  NPC_SLEEPATTACK: "Ataque Sonífero",
+  NPC_RANDOMATTACK: "Ataque Aleatório",
+  NPC_WATERATTACK: "Ataque de Água",
+  NPC_GROUNDATTACK: "Ataque de Terra",
+  NPC_FIREATTACK: "Ataque de Fogo",
+  NPC_WINDATTACK: "Ataque de Vento",
+  NPC_POISONATTACK: "Ataque de Veneno",
+  NPC_HOLYATTACK: "Ataque Sagrado",
+  NPC_DARKNESSATTACK: "Ataque Sombrio",
+  NPC_TELEKINESISATTACK: "Ataque Fantasma",
+  NPC_UNDEADATTACK: "Ataque Maldito",
+  NPC_MAGICALATTACK: "Ataque Mágico",
+  NPC_METAMORPHOSIS: "Metamorfose",
+  NPC_PROVOCATION: "Provocação",
+  NPC_SMOKING: "Fumar",
+  NPC_SUMMONSLAVE: "Invocar Servos",
+  NPC_CALLSLAVE: "Chamar Servos",
+  NPC_SUMMONMONSTER: "Invocar Monstro",
+  NPC_EMOTION: "Emoção",
+  NPC_EMOTION_ON: "Emoção (ativar)",
+  NPC_TRANSFORMATION: "Transformação",
+  NPC_BLOODDRAIN: "Drenar Sangue",
+  NPC_ENERGYDRAIN: "Drenar Energia",
+  NPC_DARKBREATH: "Sopro Sombrio",
+  NPC_DARKBLESSING: "Bênção Sombria",
+  NPC_BARRIER: "Barreira",
+  NPC_LICK: "Lamber",
+  NPC_HALLUCINATION: "Alucinação",
+  NPC_REBIRTH: "Renascimento",
+  NPC_RANDOMMOVE: "Movimento Aleatório",
+  NPC_SPEEDUP: "Aumentar Velocidade",
+  NPC_REVENGE: "Vingança",
+  NPC_DARKCROSS: "Cruz Sombria",
+  NPC_GRANDDARKNESS: "Grande Escuridão",
+  NPC_DARKSTRIKE: "Golpe Sombrio",
+  NPC_DARKTHUNDER: "Trovão Sombrio",
+  NPC_STOP: "Parar",
+  NPC_WEAPONBRAKER: "Quebrar Arma",
+  NPC_ARMORBRAKE: "Quebrar Armadura",
+  NPC_HELMBRAKE: "Quebrar Capacete",
+  NPC_SHIELDBRAKE: "Quebrar Escudo",
+  NPC_POWERUP: "Aumentar Poder",
+  NPC_AGIUP: "Aumentar Agilidade",
+  NPC_SIEGEMODE: "Modo de Cerco",
+  NPC_INVISIBLE: "Invisibilidade",
+  NPC_RUN: "Fugir",
+  NPC_FIREBREATH: "Sopro de Fogo",
+  NPC_ICEBREATH: "Sopro de Gelo",
+  NPC_ICEBREATH2: { sameAs: "NPC_ICEBREATH" },
+  NPC_THUNDERBREATH: "Sopro do Trovão",
+  NPC_ACIDBREATH: "Sopro Ácido",
+  NPC_ACIDBREATH2: { sameAs: "NPC_ACIDBREATH" },
+  NPC_DARKNESSBREATH: "Sopro das Trevas",
+  NPC_BLEEDING: "Sangramento",
+  NPC_BLEEDING2: { sameAs: "NPC_BLEEDING" },
+  NPC_EXPULSION: "Expulsão",
+  NPC_TALK: "Falar",
+  NPC_INVINCIBLE: "Invencibilidade",
+  NPC_INVINCIBLEOFF: "Invencibilidade (desativar)",
+  NPC_ICEEXPLO: "Explosão de Gelo",
+  NPC_DANCINGBLADE: "Lâminas Dançantes",
+  NPC_DARKPIERCING: "Perfuração Sombria",
+  NPC_DEATHSUMMON: "Invocação da Morte",
+  NPC_HELLBURNING: "Chamas Infernais",
+  NPC_CHEAL: { sameAs: "AB_CHEAL" },
+  NPC_VENOMIMPRESS: { sameAs: "GC_VENOMIMPRESS" },
+  NPC_PHANTOMTHRUST: { sameAs: "RK_PHANTOMTHRUST" },
+  NPC_POISON_BUSTER: { sameAs: "SO_POISON_BUSTER" },
+  NPC_WIDEDISPEL: "Desencantar em Área",
+  NPC_ALL_STAT_DOWN: "Redução de Atributos",
+  NPC_GRADUAL_GRAVITY: "Gravidade Gradual",
+  NPC_MOVE_COORDINATE: "Mover para Coordenada",
+  NPC_RELIEVE_ON: "Alívio (ativar)",
+  NPC_RELIEVE_OFF: "Alívio (desativar)",
+  NPC_LOCKON_LASER: "Laser de Mira",
+  NPC_SEEDTRAP: "Armadilha de Sementes",
+  // The client names the `2` variant and not the original.
+  NPC_DEADLYCURSE: { sameAs: "NPC_DEADLYCURSE2" },
+  NPC_RANDOMBREAK: "Quebra Aleatória",
+  NPC_CANE_OF_EVIL_EYE: "Bengala do Olho Maligno",
+  NPC_CURSE_OF_RED_CUBE: "Maldição do Cubo Vermelho",
+  NPC_CURSE_OF_BLUE_CUBE: "Maldição do Cubo Azul",
+  NPC_KILLING_AURA: "Aura Assassina",
+  // Cast by the plants BO_WOODENWARRIOR, BO_HELLTREE and BO_WOODEN_FAIRY grow,
+  // whose client names ("Cultivar Bárbaro" …) supply the qualifier.
+  NPC_BO_THROWROCK: "Arremesso de Pedra (Bárbaro)",
+  NPC_BO_WOODEN_ATTACK: "Ataque de Madeira (Bárbaro)",
+  NPC_BO_HELL_HOWLING: "Uivo Infernal (Árvore Infernal)",
+  NPC_BO_HELL_DUSTY: "Poeira Infernal (Árvore Infernal)",
+  NPC_BO_FAIRY_DUSTY: "Poeira de Fada (Fada)",
+  // Item and event casts of a player skill.
+  CASH_BLESSING: { sameAs: "AL_BLESSING" },
+  CASH_INCAGI: { sameAs: "AL_INCAGI" },
+  CASH_ASSUMPTIO: { sameAs: "HP_ASSUMPTIO" },
+  EVT_FULL_THROTTLE: { sameAs: "ALL_FULL_THROTTLE" },
+  // Catnip Meteor and Lunatic Carrot Beat, cast while carrying the item that
+  // upgrades them.
+  SU_CN_METEOR2: { sameAs: "SU_CN_METEOR" },
+  SU_LUNATICCARROTBEAT2: { sameAs: "SU_LUNATICCARROTBEAT" },
+  ALL_ASSISTANT_VENDING: "Assistente de Comércio",
+  ALL_ASSISTANT_BUYING: "Assistente de Compras",
+};
+
+// Range markers and system slots in SKID. They are never cast, so an unnamed one
+// is not worth reporting.
+const SKID_MARKER = /(^|_)(STARTMARK|ENDMARK|START_MARK|BEGIN|START|END|LAST|999)$|^SYS_/;
+
+// SKID const -> id -> parent id, for every follow-up hit the constants describe.
+// Also used by --icons, which gives a follow-up with no icon its parent's.
+export function skillFollowUps(skid) {
+  const parents = new Map();
+  for (const [konst, id] of skid) {
+    if (NOT_FOLLOW_UPS.has(konst)) continue;
+    const override = FOLLOW_UP_OVERRIDES[konst];
+    let parent = override?.parent;
+    let suffix = override?.suffix;
+    if (!parent) {
+      for (const [end, label] of FOLLOW_UP_SUFFIXES) {
+        if (konst.endsWith(end) && skid.has(konst.slice(0, -end.length))) {
+          parent = konst.slice(0, -end.length);
+          suffix ??= label;
+          break;
+        }
+      }
+    }
+    const parentId = skid.get(parent);
+    if (parentId !== undefined && parentId !== id && suffix) parents.set(id, { parentId, suffix, konst, parent });
+  }
+  return parents;
+}
+
+// Names for the ids `names` (id -> the client's name) leaves empty, and the
+// parent of every follow-up hit. `report` lists what the tables could not use:
+// `shadowed`, entries the client now names (safe to delete); `unknown`, entries
+// that resolve to nothing (a constant SKID no longer defines, or a sameAs with
+// no name to copy); and `unnamed`, ids that neither the client nor this file
+// names.
+export function resolveUnnamedSkills(skid, names) {
+  const filled = new Map();
+  const report = { shadowed: [], unknown: [], unnamed: [] };
+  const nameOf = (konst) => {
+    const id = skid.get(konst);
+    return id === undefined ? undefined : (names.get(id) ?? filled.get(id));
+  };
+
+  // Plain names first, so a sameAs or a follow-up can build on one of them.
+  const entries = Object.entries(UNNAMED_SKILL_NAMES);
+  for (const pass of ["string", "object"]) {
+    for (const [konst, value] of entries) {
+      if (typeof value !== pass) continue;
+      const id = skid.get(konst);
+      if (id === undefined) {
+        if (pass === "string") report.unknown.push(konst);
+        continue;
+      }
+      if (names.has(id)) {
+        report.shadowed.push(konst);
+        continue;
+      }
+      const name = typeof value === "string" ? value : nameOf(value.sameAs);
+      if (name) filled.set(id, name);
+      else report.unknown.push(`${konst} (its sameAs ${value.sameAs} has no name)`);
+    }
+  }
+
+  const followUps = skillFollowUps(skid);
+  const parents = new Map();
+  for (const [id, { parentId, suffix, parent }] of followUps) {
+    parents.set(id, parentId);
+    if (names.has(id) || filled.has(id)) continue;
+    const parentName = nameOf(parent);
+    if (parentName) filled.set(id, `${parentName} (${suffix})`);
+  }
+  for (const konst of Object.keys(FOLLOW_UP_OVERRIDES)) {
+    if (!skid.has(konst)) report.unknown.push(konst);
+  }
+
+  const seen = new Set();
+  for (const [konst, id] of skid) {
+    if (seen.has(id) || names.has(id) || filled.has(id)) continue;
+    seen.add(id);
+    if (!SKID_MARKER.test(konst)) report.unnamed.push(`${id} ${konst}`);
+  }
+  return { filled, parents, report };
 }
 
 // SKILL_DELAY_LIST is what the client's "Conjuração e Espera" window prints: one
@@ -6551,7 +6871,10 @@ function extractRawTables(grfPath, outDir, args) {
     // themselves by; the names come from the former, the tooltips the latter.
     // They run into separate globals so that namedTable's "biggest table"
     // fallback can never mistake SKILL_DESCRIPT for the skill name table.
-    const skillNames = namedTable(globalsOf("skillid", "skillinfolist"), "SkillInfoList_string", "SKID");
+    const skillGlobals = globalsOf("skillid", "skillinfolist");
+    const skillNames = namedTable(skillGlobals, "SkillInfoList_string", "SKID");
+    const skid = skidMap(skillGlobals.get("SKID"));
+    if (!skid.size) throw new Error(`${RAW_LUB_PATHS.skillid}: no SKID table`);
     const skillDescript = globalsOf("skillid", "skilldescript").get("SKILL_DESCRIPT");
     if (!(skillDescript instanceof LuaTable)) {
       throw new Error(`${RAW_LUB_PATHS.skilldescript}: no SKILL_DESCRIPT table`);
@@ -6570,29 +6893,47 @@ function extractRawTables(grfPath, outDir, args) {
     if (!(skillInfo instanceof LuaTable)) {
       throw new Error(`${RAW_LUB_PATHS.skillinfodata}: no SkillInfoList_data table`);
     }
-    const skills = projectSkills(skillNames, skillDescript, skillDelayList, skillInfo);
-    const described = skills.filter((s) => s.description).length;
-    const timed = skills.filter((s) => s.delay).length;
-    const levelled = skills.filter((s) => s.maxLevel !== null).length;
+    const skills = projectSkills(skillNames, skillDescript, skillDelayList, skillInfo, skid);
+    // The checks below hold the client's own rows to account, not the ones this
+    // file adds: an id the client leaves unnamed rarely has a tooltip or an info
+    // row either, and counting those would lower every bar they set.
+    const clientNamed = new Map(projectSkills(skillNames).map((s) => [s.id, s.name]));
+    const own = skills.filter((s) => clientNamed.has(s.id));
+    const described = own.filter((s) => s.description).length;
+    const timed = own.filter((s) => s.delay).length;
+    const levelled = own.filter((s) => s.maxLevel !== null).length;
     console.error(
-      `skills: ${described}/${skills.length} carry a description, ${timed} carry cast/delay times, ${levelled} a max level`,
+      `skills: ${described}/${own.length} carry a description, ${timed} carry cast/delay times, ${levelled} a max level`,
     );
+    // Say what the curated names did, so a patch that starts naming one of them
+    // (or drops a constant) shows up in the cycle's log instead of going unseen.
+    const { report } = resolveUnnamedSkills(skid, clientNamed);
+    console.error(
+      `  ${skills.length - own.length} more named by UNNAMED_SKILL_NAMES or their parent; ${skills.filter((s) => "parent" in s).length} follow-up hits carry a parent`,
+    );
+    if (report.shadowed.length) {
+      console.error(`  the client now names ${report.shadowed.join(", ")} — delete them from UNNAMED_SKILL_NAMES`);
+    }
+    if (report.unknown.length) console.error(`  ! unresolved skill-name entries: ${report.unknown.join(", ")}`);
+    if (report.unnamed.length) {
+      console.error(`  ${report.unnamed.length} skill ids still have no name: ${report.unnamed.join(", ")}`);
+    }
     // Every named skill has a max level in the current client, so anything short
     // of all of them means the two tables have drifted apart, not that the
     // client stopped shipping one.
-    if (levelled < skills.length) {
-      console.error(`  ! ${skills.length - levelled} skills have no MaxLv in ${RAW_LUB_PATHS.skillinfodata}`);
+    if (levelled < own.length) {
+      console.error(`  ! ${own.length - levelled} skills have no MaxLv in ${RAW_LUB_PATHS.skillinfodata}`);
     }
     // A wholesale miss means the tooltips came from the wrong chunk (or a
     // re-keyed one), which reads downstream as "the client dropped them".
-    if (described < skills.length * 0.5) {
-      throw new Error(`skills.json: only ${described}/${skills.length} descriptions — check ${RAW_LUB_PATHS.skilldescript}`);
+    if (described < own.length * 0.5) {
+      throw new Error(`skills.json: only ${described}/${own.length} descriptions — check ${RAW_LUB_PATHS.skilldescript}`);
     }
     // Same trap for the timings, at a lower bar: only ~60% of the named skills
     // have a delay row at all (passives never do), so the failure to catch is
     // the table going empty, not it being partial.
-    if (timed < skills.length * 0.25) {
-      throw new Error(`skills.json: only ${timed}/${skills.length} with cast/delay times — check ${RAW_LUB_PATHS.skilldelay}`);
+    if (timed < own.length * 0.25) {
+      throw new Error(`skills.json: only ${timed}/${own.length} with cast/delay times — check ${RAW_LUB_PATHS.skilldelay}`);
     }
     write("skills.json", skills);
 

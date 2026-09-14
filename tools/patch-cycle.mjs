@@ -126,15 +126,24 @@ const REBUILDS = [
     name: "raw",
     out: () => join(DERIVED, "raw"),
     flag: "--raw",
-    touched: (f) => /^System\/.*\.lub$/i.test(f),
+    // Only items.json reads System/; every other table — skill names among them,
+    // which is how a patch that names a skill replaces the name we filled in —
+    // comes from luafiles514 and two text tables inside the GRF.
+    touched: (f) =>
+      /^System\/.*\.lub$/i.test(f) ||
+      /^data\/luafiles514\//i.test(f) ||
+      /^data\/(msgstringtable_ml\.csv|itemmoveinfov5\.txt)$/i.test(f),
   },
   {
     name: "icons",
     out: () => join(DERIVED, "icons"),
     flag: "--icons",
+    // skillid.lub decides which id each skill icon is written under, and
+    // stateicon/ which id each status icon is.
     touched: (f) =>
       /^System\/iteminfo/i.test(f) ||
-      /^data\/texture\/[^/]+\/(item|collection|basic_interface)\//i.test(f),
+      /^data\/texture\/[^/]+\/(item|collection|basic_interface)\//i.test(f) ||
+      /^data\/luafiles514\/lua files\/(skillinfoz|stateicon)\//i.test(f),
   },
   {
     name: "illust",

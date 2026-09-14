@@ -14,6 +14,52 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-09-14
+
+### Added
+- **`/raw/skills.json` names the skill ids the client leaves unnamed.**
+  `skillid.lub` defines 1,801 skill ids and `SkillInfoList` names 1,559 of them.
+  Replays carry some of the rest (Crimson Arrow's explosion, the Tetra Vortex
+  elements, every monster's `NPC_*` skills), so RagnaRecap printed `skill#686`
+  and kept two hand-written tables to patch over it. Those names now come from
+  here, and the table grows from 1,559 rows to 1,726. This is the first
+  curated content in `/raw`, and it is fenced off: an id is only filled while
+  the client leaves it unnamed, the first patch that names one wins, and
+  `--raw` logs which table entries that has made redundant.
+
+  46 **follow-up hits** are named after their parent plus a pt-BR suffix
+  (`Flecha Escarlate (explosão)`) and carry a new `parent` field. The pairs are
+  derived from the SKID constants (`_ATK`, `_FIRE`, `_MELEE`, …), with
+  `FOLLOW_UP_OVERRIDES` for the ones that don't line up: the `WL_SUMMON_ATK_*`
+  spheres, where ground pairs with `WL_SUMMONSTONE`, and the Fire Expansion
+  variants. Because the relation comes from the constant, **12 rows the client
+  already names gained `parent` too**: Magni/Modi Lumen → Gemini Lumen, both
+  Chuva Estelar hits, Atirar Rosas, Invocação do Abismo, and the six elemental
+  spirit `_ATK` hits. `parent` also survives a patch that names a follow-up, so
+  that patch cannot change what a consumer counts.
+
+  121 more ids get a name from `UNNAMED_SKILL_NAMES`. Most are a pt-BR reading of
+  a monster skill's constant. Some copy the client's name for the skill they
+  mirror (`NPC_CHEAL` → *Sopro Divino*) or for the other half of a `2` pair
+  (`NPC_DEADLYCURSE` ← *Praga Mortal*), and none of these get a `parent`. 40 ids
+  whose constant supports no name (`NPC_KEEPING`, GM and event skills, the
+  unreleased `6001`–`6006`) stay out and are printed by `--raw`.
+
+- **Follow-up hits without an icon are served their parent's** at
+  `/icons/skill/{id}.png`: 38 of them, e.g. 5236 now draws Flecha Escarlate.
+  Monster skills borrow nothing. The GRF ships no icon BMP for any `NPC_*` skill,
+  named or not (708 Cometa, 768, 779 included), and a player skill's icon would
+  be a wrong one.
+
+### Fixed
+- **A patch that changed only `data/luafiles514/` never rebuilt `/raw`** or the
+  skill/status icons. The raw rebuild keyed on `System/*.lub`, but every table
+  except `items.json` reads the GRF, so a patch that named a new skill without
+  touching `iteminfo` left the old name live. It went unnoticed only because
+  maintenances ship both. The patch cycle now rebuilds `/raw` on any
+  `data/luafiles514/` file (or `msgstringtable_ml.csv` / `itemmoveinfov5.txt`)
+  and the icons on `skillinfoz/` or `stateicon/`.
+
 ## 2026-09-13
 
 ### Fixed
