@@ -930,9 +930,11 @@ and are not listed. The filled rows usually have `description: null` and often
 no `maxLevel` or `delay`, because the client has no rows for them there either.
 
 `/icons/skill/{id}.png` follows the same rule for follow-ups: one the client
-ships no icon for is served its parent's. Nothing else borrows an icon — the
-client ships none for its monster skills, and a missing icon is better than a
-player skill's that merely looks related.
+ships no icon for is served its parent's. The client ships no icon for any
+`NPC_*` skill, so every monster skill — all 200 in the current client, named or
+not — is served one generic icon instead: the one divine-pride uses for them,
+which is the client's own `item/hfli_sbr44.bmp` (S.B.R.44, 8012). A monster
+copy of a player skill gets that too, never the player skill's icon.
 
 Unlike every other endpoint here these files are **mutable at a stable URL** —
 they change whenever the client does — so they are served with a short

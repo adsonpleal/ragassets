@@ -47,9 +47,13 @@ and do not describe the system today. Check the date before trusting an entry;
 
 - **Follow-up hits without an icon are served their parent's** at
   `/icons/skill/{id}.png`: 38 of them, e.g. 5236 now draws Flecha Escarlate.
-  Monster skills borrow nothing. The GRF ships no icon BMP for any `NPC_*` skill,
-  named or not (708 Cometa, 768, 779 included), and a player skill's icon would
-  be a wrong one.
+- **Monster skills get a generic icon.** The GRF ships no icon BMP for any
+  `NPC_*` skill, named or not (708 Cometa, 768, 779 included), so all 200 were
+  404s. They now serve the icon divine-pride shows for every monster skill. That
+  is pixel-for-pixel the client's own `item/hfli_sbr44.bmp`, the homunculus
+  skill S.B.R.44 (8012), so it comes out of the GRF like every other icon. A
+  monster copy of a player skill (`NPC_CHEAL`) gets the generic icon, not the
+  player skill's.
 
 ### Fixed
 - **A patch that changed only `data/luafiles514/` never rebuilt `/raw`** or the

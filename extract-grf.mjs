@@ -2257,15 +2257,36 @@ function extractIcons(grfPath, outBase, args) {
       if (entry && writeIcon("skill", id, entry)) skillIcons.set(id, entry);
     }
     // A follow-up hit the client ships no icon for is drawn with its parent's
-    // (skills.json names it after the parent too). Nothing else is borrowed: a
-    // monster skill with no icon of its own stays a 404 rather than wearing the
-    // icon of a player skill it merely resembles.
+    // (skills.json names it after the parent too).
     let borrowed = 0;
+    const borrowedIds = new Set();
     for (const [id, { parentId }] of skillFollowUps(skillIds)) {
       if (skillIcons.has(id) || !skillIcons.has(parentId)) continue;
-      if (writeIcon("skill", id, skillIcons.get(parentId))) borrowed++;
+      if (writeIcon("skill", id, skillIcons.get(parentId))) {
+        borrowed++;
+        borrowedIds.add(id);
+      }
     }
     if (borrowed) console.error(`  ${borrowed} follow-up skill icons borrowed from their parent`);
+
+    // The client ships no icon for any NPC_* skill, so every monster skill
+    // without one gets a single generic icon — the one divine-pride shows for
+    // them all, which is pixel-for-pixel the client's own S.B.R.44 icon. It is
+    // never a player skill's lookalike: NPC_CHEAL gets this, not AB_CHEAL's.
+    const monsterIcon = idx.get(`${UI}/item/${MONSTER_SKILL_ICON}.bmp`);
+    if (!monsterIcon) {
+      console.error(`  ! item/${MONSTER_SKILL_ICON}.bmp not in the GRF — monster skills get no icon`);
+    } else {
+      let generic = 0;
+      const done = new Set();
+      for (const [konst, id] of skillIds) {
+        if (!konst.startsWith("NPC_") || SKID_MARKER.test(konst)) continue;
+        if (skillIcons.has(id) || borrowedIds.has(id) || done.has(id)) continue;
+        done.add(id);
+        if (writeIcon("skill", id, monsterIcon)) generic++;
+      }
+      console.error(`  ${generic} monster skills drawn with the generic icon`);
+    }
 
     // Class icons keyed directly by numeric job id (skip the _die variants).
     const jobRe = new RegExp(
@@ -6086,8 +6107,12 @@ export const UNNAMED_SKILL_NAMES = {
   ALL_ASSISTANT_BUYING: "Assistente de Compras",
 };
 
+// The icon (an item/ BMP basename) every monster skill without its own is drawn
+// with — HFLI_SBR44's, see extractIcons.
+const MONSTER_SKILL_ICON = "hfli_sbr44";
+
 // Range markers and system slots in SKID. They are never cast, so an unnamed one
-// is not worth reporting.
+// is not worth reporting, nor given an icon.
 const SKID_MARKER = /(^|_)(STARTMARK|ENDMARK|START_MARK|BEGIN|START|END|LAST|999)$|^SYS_/;
 
 // SKID const -> id -> parent id, for every follow-up hit the constants describe.
