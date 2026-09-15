@@ -382,13 +382,28 @@ function findBestEntry(grf, want) {
   return best;
 }
 
-function sanitizePath(name) {
+// sanitizePath turns an archive entry name into the relative path --extract
+// writes it to.
+//
+// Everything under data/ is folded to lowercase. data.grf itself ships every
+// name lowercase, so that is the mirror's convention and what the renderer and
+// every mode here look paths up by — but patches ship Gravity's own spelling
+// (data/sprite/악세사리/남/남_C_CLB_BS_Hood_B.Spr). On a case-sensitive disk an
+// unfolded patch file is invisible to the renderer when new, and when it
+// replaces an existing file it lands beside the old copy, which keeps being
+// served. Folding here, per archive, also keeps sequence order meaningful when
+// two patches spell the same file differently.
+//
+// The loose files outside data/ (System/itemInfo.lua, BGM/) keep their case:
+// they mirror a client install, and are read by their real names.
+export function sanitizePath(name) {
   let s = name.replace(/\\/g, "/").replace(/^\/+/, "");
   if (/^[A-Za-z]:/.test(s)) s = s.slice(2).replace(/^\/+/, "");
   if (!s) return null;
   for (const part of s.split("/")) {
     if (part === ".." || part === ".") return null;
   }
+  if (/^data\//i.test(s)) s = s.toLowerCase();
   return s;
 }
 

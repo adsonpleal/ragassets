@@ -58,7 +58,22 @@ import {
   buildRobeIndex,
   robePrunePlan,
   robeTemplateHashes,
+  sanitizePath,
 } from "./extract-grf.mjs";
+
+// The 2026-09-15 Baby Shark patch shipped mixed-case names; unfolded, the
+// renderer's lowercase lookups missed every one of them on the box's disk.
+test("sanitizePath folds data/ to lowercase and leaves loose client files alone", () => {
+  assert.equal(
+    sanitizePath("Data\\sprite\\악세사리\\남\\남_C_CLB_BS_Hood_B.Spr"),
+    "data/sprite/악세사리/남/남_c_clb_bs_hood_b.spr",
+  );
+  assert.equal(sanitizePath("data/LuaFiles514/Lua Files/datainfo/accname.lub"), "data/luafiles514/lua files/datainfo/accname.lub");
+  assert.equal(sanitizePath("System/itemInfo.lua"), "System/itemInfo.lua");
+  assert.equal(sanitizePath("BGM/998.mp3"), "BGM/998.mp3");
+  assert.equal(sanitizePath("dataX/Foo.txt"), "dataX/Foo.txt");
+  assert.equal(sanitizePath("data/../System/x"), null);
+});
 
 // The real data/fogparametertable.txt lays out each record across five
 // "#"-terminated lines, with the colour as a packed 0xAARRGGBB D3DCOLOR.
