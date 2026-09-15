@@ -23,8 +23,6 @@ type reader struct {
 
 func newReader(buf []byte) *reader { return &reader{buf: buf} }
 
-func (r *reader) remaining() int { return len(r.buf) - r.off }
-
 func (r *reader) need(n int) bool {
 	if r.err != nil {
 		return false
@@ -34,15 +32,6 @@ func (r *reader) need(n int) bool {
 		return false
 	}
 	return true
-}
-
-func (r *reader) u8() uint8 {
-	if !r.need(1) {
-		return 0
-	}
-	v := r.buf[r.off]
-	r.off++
-	return v
 }
 
 func (r *reader) u16() uint16 {

@@ -2,9 +2,8 @@ name: Deploy to the origin
 
 # NEVER add `pull_request` here, and never widen the branch filter.
 #
-# This is the second job in the repository that holds a credential, and it is
-# the more dangerous of the two: the secret is an SSH key into the box that
-# serves production. The repository is public. A `pull_request` trigger runs a
+# This is the only job in the repository that holds a credential: an SSH key
+# into the box that serves production. The repository is public. A `pull_request` trigger runs a
 # fork's code, and a fork's code with this key would own the origin. GitHub does
 # not hand secrets to fork PRs by default, but that default is a setting, and
 # this comment is here so nobody changes it casually.

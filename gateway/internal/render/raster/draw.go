@@ -13,13 +13,6 @@ type DrawObject struct {
 	Children    []DrawObject
 }
 
-// Zero reports whether the draw object is empty (no transform/bounds), the
-// equivalent of DrawObject.init in zrenderer.
-func (o DrawObject) Zero() bool {
-	return o.BoundingBox == geom.Box{} && len(o.Children) == 0 &&
-		o.Transform.M == geom.Mat3{} && o.Tint == Color{}
-}
-
 // DrawSprite composites one transformed source image onto dest. For every pixel
 // of the transformed bounding box it maps back through the inverse transform
 // (nearest-neighbour) into the source, then tints and alpha-blends. Mirrors

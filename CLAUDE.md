@@ -23,11 +23,9 @@ quarter of Brazilian requests were being routed to Miami or Newark and paying
 3.5x for it, on cache hits as much as misses, while 98.7% of renders were
 uncacheable anyway.
 
-The zone config in `cloudflare/` is still committed and still applied by
-`.github/workflows/cloudflare.yml` — the zone-wide settings there affect four
-sibling projects that are still proxied, and the cache rules are kept dormant
-rather than deleted so that re-proxying is a one-click rollback. Do not change
-either by clicking in the dashboard.
+The Cloudflare zone is managed by hand in the dashboard, not from this repo, as
+of 2026-09-14. Its zone-wide settings still govern four sibling projects that are
+proxied, so treat a change there as a change to those projects.
 
 **Pushing to `main` deploys.** CI runs, and a green CI run starts
 `.github/workflows/deploy.yml`, which SSHes in and runs the box's copy of
@@ -80,23 +78,19 @@ rewrite. Locally the two can share a tree; on the box they must not.
   limit gets built if something actually abuses the box. A consequence to accept
   with it — nothing records a client IP, so an abusive caller can be seen in the
   aggregate but not identified. Adding a log is the first step if that day comes.
-- **`cloudflare/cache-rules.json` looks live and is not.** Every rule tests
-  `http.host eq "assets.latam-tools.com.br"`, which no longer passes through
-  Cloudflare, so none of them can match. They are kept so that re-proxying
-  restores render caching in one click.
 
 ## Before changing cache headers or ETags
 
 Clients hold these for a year. `internal/api` owns every `Cache-Control` and
-`ETag`; Caddy and Cloudflare deliberately set none of their own. `tools/diff-origins.sh`
-compares two origins byte-for-byte and is the gate for any change that could move
-bytes.
+`ETag`; Caddy deliberately sets none of its own. The golden render tests are the
+byte gate for renders; nothing pins the bytes of the other routes, so a change
+that could move them needs comparing against production by hand.
 
 ## Conventions
 
 - Commit straight to `main`.
 - `.github/workflows/` must never gain a `pull_request` trigger. The repo is
-  public and two workflows hold credentials: a Cloudflare token, and an SSH key
-  into the origin. A `pull_request` trigger runs a fork's code with both.
+  public and `deploy.yml` holds an SSH key into the origin. A `pull_request`
+  trigger runs a fork's code with it.
 - No secrets in the repo, ever. They live in `/etc/ragassets/patch.env` on the
   box, root-owned 0600.

@@ -76,28 +76,6 @@ patch since — and it is both what the renderer reads and what the extractor ru
 against. **`resources/`** holds only what the extractor produces from it: icons,
 card art, effects, maps, BGM, sounds and the data tables.
 
-`tools/diff-origins.sh` replays real production URLs against two origins and
-compares bytes and `Content-Type`. It is the gate a cutover has to pass, in
-whichever direction one runs.
-
-This used to be two front ends: the same engine also compiled to WebAssembly and
-ran as a Cloudflare Worker over an R2 bucket. Two measurements ended that.
-
-- **The extraction could not be complete.** The derived stores need a merged view
-  of the whole client — `--icons` resolves ids through `iteminfo`, `--maps` needs
-  a map's geometry together with its textures — and a GitHub runner is stateless
-  and the mirror is ~15 GB. So a patch that added an item shipped its sprite and
-  never its icon, and no amount of CPU would have fixed it.
-- **Renders were never cached.** On a Worker route the Worker runs *in front of*
-  the cache, so a response it returns is never stored — confirmed in production,
-  where `/image` came back with no `CF-Cache-Status` header at all and re-rendered
-  on every request. The Worker carried its own per-colo render cache to
-  compensate. A plain origin behind a proxied record would have had the zone
-  cache work normally, and that was the argument for the cache rules in [Running
-  it in production](#running-it-in-production). It did not survive contact with
-  the numbers: the record was grey-clouded on 2026-09-09, and those rules have
-  been dormant ever since. Nothing caches this host but the browser.
-
 - **Renders are served directly; caching is delegated to the client.** The
   gateway keeps **no disk cache** — every render is fast and in-process. Each
   response carries `Cache-Control: public, max-age=31536000, immutable` and an
@@ -1041,88 +1019,24 @@ Both have to be opened, and forgetting the local half is the classic "the port i
 open but nothing connects" afternoon, because the console shows you the rule you
 did add. The script handles it; a hand-built box will not.
 
-#### Cloudflare configuration
+#### DNS, TLS and caching
 
-**This is committed, not clicked.** `cloudflare/cache-rules.json` and
-`cloudflare/zone-settings.json` are the source of truth;
-`.github/workflows/cloudflare.yml` applies them on every push to `main` that
-touches them.
-
-```bash
-node tools/apply-cloudflare.mjs --dry-run   # print the plan, no credentials needed
-node tools/apply-cloudflare.mjs --diff      # live vs committed, read-only
-```
-
-Idempotent with no state file: cache rules go through the Rulesets *phase
-entrypoint*, a declarative PUT whose body is the complete ruleset, so deleting a
-rule from the JSON deletes it from Cloudflare. That same wholesale behaviour is
-why the script refuses to run if the phase contains a rule it does not manage —
-applying against the wrong zone would otherwise wipe that zone's rules.
-
-Two things the script enforces that are easy to get wrong by hand. **Every rule
-is scoped to `http.host`**, because this zone also serves `latam-market`,
-`short`, `simulador-latam-ro` and `latam-social`, and an unscoped rule changes
-caching for all of them — `--dry-run` fails if any rule lacks the check. And
-**`browser_cache_ttl` is 0** ("Respect Existing Headers"): any other value
-overrides the origin's browser-facing max-age and collapses the immutable/300s
-split, which would break the sibling projects polling `items.json`.
-
-What the config does, and why:
-
-- **DNS**: `assets` → the box's IP, **DNS only (grey cloud)** since 2026-09-09.
-  No AAAA record. DNS is deliberately *not* automated — a bad apply there takes
-  the site off the internet, and it changes roughly never. Flipping the cloud
-  back to orange is the entire rollback: a publicly-trusted certificate satisfies
-  Full (strict) just as an Origin CA one did.
+- **DNS**: `assets` → the box's IP, **DNS only (grey cloud)** since 2026-09-09,
+  no AAAA record. The Cloudflare zone is managed by hand in the dashboard; its
+  zone-wide settings also govern the sibling projects on `latam-tools.com.br`,
+  which are still proxied.
 - **Certificate**: Let's Encrypt, obtained and renewed by Caddy over ACME
-  HTTP-01, which is why **port 80 must stay open**. This replaced a Cloudflare
-  Origin CA certificate, which every browser rejects and which was only ever
-  valid because no browser saw it. ACME could not have worked while the record
-  was proxied: Cloudflare terminated :80 at the edge and Always Use HTTPS turned
-  the challenge into a redirect.
-- **Cache rules**, in order. **All three are dormant** as of the grey-cloud
-  cutover: every one tests `http.host eq "assets.latam-tools.com.br"`, and that
-  host no longer passes through Cloudflare, so none can match. They are kept
-  rather than deleted so re-proxying restores the policy in one click. What they
-  did, and would do again: Cloudflare Free decides what to cache by *file
-  extension*, and `/image?job=…` has none — so the URLs that cost the most to
-  produce are precisely the ones it would not cache by default:
-  1. `/` and `/healthz` → **Bypass cache**.
-  2. `/image*`, `/gif*` → **Eligible for cache**; Edge TTL *use cache-control
-     header*; Browser TTL *respect origin*; cache key **query string: include
-     all** — the query string *is* the identity of a render.
-  3. `/icons/ /illust/ /effects/ /effect/ /maps/ /bgm/ /raw/` → same settings.
-     Most have extensions and would cache anyway; the rule exists for the
-     query-keyed `/effect/*` endpoints and to keep the whole policy in one place.
-- **Browser Cache TTL: Respect Existing Headers.** A fixed value overrides the
-  origin and would collapse the immutable/300 s split — which would break the
-  sibling projects that poll `/raw/items.json` on every client update.
-- **Smart Tiered Cache: on.** Zone-wide, so it still serves the four sibling
-  projects. It no longer does anything for ragassets, whose traffic stops
-  reaching Cloudflare at all; the icon-repetition argument that originally
-  justified it is now moot for this host.
-- **Always Online: on.** Zone-wide and free. It can no longer help ragassets
-  either: with the record grey-clouded there is no edge in the path to serve a
-  stale copy when this box is down.
-- **Off**: Polish and Mirage (they recompress images, which would break the
-  byte-for-byte contract the golden tests defend), and Bot Fight Mode (it
-  challenges the programmatic `/raw` pollers).
+  HTTP-01, which is why **port 80 must stay open**.
+- **No CDN.** Nothing sets cache headers except the Go server (`internal/api`);
+  Caddy sets none, and with no edge in the path the browser is the only cache.
 
-Nothing sets cache headers except the Go server (`internal/api`). Caddy sets
-none, and the rules above tell Cloudflare to honour what the origin says rather
-than to invent a policy of its own.
-
-**Invalidation has one real gap, and it is now the browser's.** Adding a sprite
+**Invalidation has one real gap, and it is the browser's.** Adding a sprite
 creates new ids and therefore new URLs, so nothing stale exists. *Redrawing* an
 existing sprite does not: the URL and its query-derived ETag are unchanged, so a
 browser holding a year-long `immutable` entry keeps the old pixels until it
-expires. Nothing can be purged on its behalf. One sprite maps to unboundedly many
-`/image` query permutations, so no finite invalidation list exists even in
-principle, and the only lever that ever worked wholesale was a Cloudflare Purge
-Everything, which does nothing for a host that no longer passes through it.
-Accept it, or change the URL. The patch cycle still purges the ~13 stably-named
-index URLs, which is a no-op while grey-clouded and correct again the moment the
-record flips back to orange.
+expires. Nothing can be purged on its behalf, and one sprite maps to unboundedly
+many `/image` query permutations, so no finite invalidation list exists even in
+principle. Accept it, or change the URL.
 
 ### Automated asset updates
 
@@ -1135,8 +1049,8 @@ patch index and, on a new sequence:
    copy-with-overwrite *is* the merge;
 3. prunes the robe duplicates a patch re-introduces;
 4. rebuilds each derived store whose inputs the patch actually touched;
-5. restarts the gateway, purges the stably-named index URLs, and announces what
-   landed in `#novidades` (`tools/post-novidades.mjs`).
+5. restarts the gateway and announces what landed in `#novidades`
+   (`tools/post-novidades.mjs`).
 
 Almost every run stops at the conditional GET: one process start, one request, a
 304, no body, no disk write. That is what makes ten minutes affordable.
@@ -1188,16 +1102,11 @@ deploy/                   # the systemd units, the timer, and the one-line sudoe
 deploy/deploy-from-ci.sh  # what the CI deploy key is allowed to run, and the only thing
 tools/provision-oracle.sh # idempotent setup for the Oracle box — the rebuild plan, in code
 tools/patch-cycle.mjs     # ONE client-update cycle: poll, apply, rebuild, restart, announce
-cloudflare/               # the zone config as data — zone-wide settings for the sibling
-                          #   projects; its cache rules are dormant for this host (grey-clouded)
-tools/apply-cloudflare.mjs # applies cloudflare/ — idempotent, no state file
 tools/apply-patches.mjs   # download and unpack client patches (.gpf and .rgz)
 tools/patchlist.mjs       # the patch index parser, shared by the poller and the applier
-tools/diff-origins.sh     # compare two origins byte-for-byte — the cutover gate
 tools/post-novidades.mjs  # announce an asset update in #novidades
 .github/workflows/ci.yml  # tests only — no credentials, never on pull_request
 .github/workflows/deploy.yml # deploys to the box after a green CI run; holds the SSH key
-.github/workflows/cloudflare.yml # applies cloudflare/ on push to main; holds the zone token
 mirror/                   # YOUR merged client: the whole GRF plus every patch (git-ignored)
 resources/                # what the extractor derives from it (git-ignored, not distributed)
 resources/icons/          # static icons (extract-grf.mjs --icons), served at /icons/*

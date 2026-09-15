@@ -16,6 +16,23 @@ and do not describe the system today. Check the date before trusting an entry;
 
 ## 2026-09-14
 
+### Removed
+- **The Cloudflare zone is no longer managed from this repo.** `cloudflare/`,
+  `tools/apply-cloudflare.mjs` and `.github/workflows/cloudflare.yml` are gone;
+  the zone is managed by hand in the dashboard. Deleting them changed nothing in
+  Cloudflare — the zone-wide settings the sibling projects rely on stay as they
+  were. The cache rules had been unable to match anything since the host was
+  grey-clouded on 2026-09-09, and re-proxying is no longer a one-click rollback.
+  `deploy.yml` is now the only workflow holding a credential.
+- **The edge purge in `tools/patch-cycle.mjs`**, which has only logged "skipping"
+  since the grey cloud. `CF_ZONE_ID` and `CF_PURGE_TOKEN` are no longer read.
+- **`tools/diff-origins.sh`.** It compared two live origins, and there is one.
+  Its default candidate host no longer resolves.
+- Comments across the Caddy site block, the units, the workflows and the
+  gateway that narrated the Worker and the proxied era; dead code
+  (`DrawObject.Zero`, `reader.remaining`, `reader.u8`); and `GATEWAY_PORT` from
+  `.env.example`, which nothing has read since the compose file went.
+
 ### Added
 - **`/raw/skills.json` names the skill ids the client leaves unnamed.**
   `skillid.lub` defines 1,801 skill ids and `SkillInfoList` names 1,559 of them.

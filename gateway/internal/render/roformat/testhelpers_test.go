@@ -14,8 +14,6 @@ type leBuf struct{ b []byte }
 func (w *leBuf) bytes(p ...byte) *leBuf { w.b = append(w.b, p...); return w }
 func (w *leBuf) str(s string) *leBuf    { w.b = append(w.b, s...); return w }
 
-func (w *leBuf) u8(v uint8) *leBuf { w.b = append(w.b, v); return w }
-
 func (w *leBuf) u16(v uint16) *leBuf {
 	w.b = binary.LittleEndian.AppendUint16(w.b, v)
 	return w

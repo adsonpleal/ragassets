@@ -2,10 +2,10 @@
 # Deployed to /etc/caddy/conf.d/ragassets.caddy — the main Caddyfile is a stub
 # that imports conf.d/*.caddy, so each project owns its own site block.
 #
-# One name, served DIRECTLY: the DNS record is grey-clouded (DNS only), so
-# browsers reach this box rather than Cloudflare's edge. Cloudflare still holds
-# the zone, and the other projects on latam-tools.com.br are still proxied — this
-# hostname is the exception, and the reason is measured rather than theoretical.
+# One name, served DIRECTLY: the DNS record is DNS only, not proxied, so
+# browsers reach this box with no CDN in between. Other projects on
+# latam-tools.com.br are still proxied — this hostname is the exception, and the
+# reason is measured rather than theoretical.
 #
 # Cloudflare's anycast sent roughly a quarter of Brazilian requests to Miami or
 # Newark instead of Rio. A cached render from Rio cost ~122 ms; the same cached
@@ -18,26 +18,15 @@
 # character configuration. Only /icons, /maps and /bgm repeat enough to cache,
 # and those are cheap static files.
 #
-# What was given up, so nobody has to rediscover it: Cloudflare's DDoS
-# absorption, its WAF, Always Online, tiered caching, and the hidden origin IP.
-# This box is now directly addressable and has no scrubbing in front of it.
-# The zone's cache rules (cloudflare/cache-rules.json) no longer apply to this
-# hostname, and the patch cycle's edge purge is a no-op for it — harmless, since
-# there is no edge cache left to go stale.
+# What was given up, so nobody has to rediscover it: DDoS absorption, a WAF,
+# and a hidden origin IP. This box is directly addressable and has no scrubbing
+# in front of it.
 assets.latam-tools.com.br {
-	# A publicly-trusted certificate, obtained and renewed by Caddy over ACME.
-	#
-	# This block used to carry a Cloudflare Origin CA certificate, which is only
-	# valid to Cloudflare and which every browser rejects. That was correct while
-	# the record was proxied and no browser ever saw it. It is fatal now, so the
-	# certificate has to be a real one.
-	#
-	# ACME works here for exactly the reason it could not before: nothing
-	# intercepts :80 any more. While proxied, Cloudflare terminated port 80 at the
-	# edge and "Always Use HTTPS" turned the HTTP-01 challenge into a redirect.
-	# Grey-clouded, the challenge arrives at this box. Port 80 must therefore stay
-	# open in the firewall — not for visitors, who are redirected to HTTPS, but
-	# for the renewal every 60 days.
+	# A publicly-trusted certificate, obtained and renewed by Caddy over ACME
+	# HTTP-01. Port 80 must therefore stay open in the firewall — not for
+	# visitors, who are redirected to HTTPS, but for the renewal every 60 days.
+	# (Re-proxying the record would break this: the proxy terminates :80 and
+	# "Always Use HTTPS" turns the challenge into a redirect.)
 	#
 	# Certificates Caddy manages live in /var/lib/caddy/.local/share/caddy —
 	# never delete that directory.
@@ -45,13 +34,8 @@ assets.latam-tools.com.br {
 	# Compress the /raw data tables. They are the only text this host serves —
 	# everything else is PNG/APNG/GIF/MP3/WAV or already-deflated map blobs, which
 	# re-compress to nothing and would just burn CPU. items.json is 8.8 MB of
-	# highly repetitive JSON and gzips to roughly an eighth of that, and three
-	# projects fetch it on every client update.
-	#
-	# This used to be for the origin -> edge leg only, since Cloudflare
-	# recompressed for the browser. There is no edge now, so it is the browser's
-	# compression too, and it is the difference between an 8.8 MB download and a
-	# 1.1 MB one on every client update.
+	# highly repetitive JSON and compresses to about 1.1 MB, and three projects
+	# fetch it on every client update.
 	@raw path /raw/*
 	encode @raw zstd gzip
 
@@ -61,7 +45,5 @@ assets.latam-tools.com.br {
 # Deliberately no cache directives above. Every Cache-Control and ETag comes from
 # the Go server (internal/api: CacheImmutable, CacheRevalidate, CacheNoStore),
 # which is the only thing that knows whether it is answering with an asset, a
-# miss, or a failure. That was true when Cloudflare sat in front honouring those
-# headers, and it is still true now that the browser is the only cache left —
-# which makes the Go server's headers the entire caching policy rather than most
-# of it.
+# miss, or a failure. With no CDN in front, the browser is the only cache, so
+# those headers are the entire caching policy.

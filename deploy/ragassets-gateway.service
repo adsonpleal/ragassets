@@ -1,7 +1,6 @@
 # The asset gateway. Renders sprites and serves every derived store from the
 # local tree; Caddy terminates TLS in front of it and is the only thing in front
-# of it. Cloudflare provides DNS for this host and nothing else — the record is
-# grey-clouded, so browsers arrive here directly.
+# of it: DNS points straight at this box, with no CDN.
 #
 # Install: cp deploy/*.service deploy/*.timer /etc/systemd/system/
 #          systemctl daemon-reload && systemctl enable --now ragassets-gateway

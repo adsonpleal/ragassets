@@ -4,7 +4,7 @@
 # Needs, before the first run:
 #   node tools/patch-cycle.mjs --seed          (records the current head)
 #   /etc/sudoers.d/ragassets                   (the gateway restart, below)
-#   /etc/ragassets/patch.env                   (optional: Discord, CF purge)
+#   /etc/ragassets/patch.env                   (optional: the Discord post)
 [Unit]
 Description=ragassets client-patch cycle (poll, apply, rebuild the derived stores)
 After=network-online.target ragassets-gateway.service

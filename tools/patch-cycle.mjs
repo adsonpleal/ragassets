@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 // One client-update cycle, end to end, on the machine that serves the assets.
 //
-// This replaces a chain that used to span three services: a Cloudflare Worker
-// cron polled the patch index and kept its position in KV, fired a
-// repository_dispatch, and a GitHub runner did the extraction. The runner was
-// the problem. It is stateless, and the derived stores — icons, illust, effects,
-// raw, maps, bgm, sounds — cannot be rebuilt from a patch alone; they need the
-// whole merged client (see the header of extract-grf.mjs). So a patch that added
-// an item shipped its sprite and never its icon. A box with the mirror on local
-// disk simply does not have that problem, and once the extraction lives here the
-// poll may as well too.
+// It runs here, and not on a CI runner, because the derived stores — icons,
+// illust, effects, raw, maps, bgm, sounds — cannot be rebuilt from a patch alone;
+// they need the whole merged client (see the header of extract-grf.mjs). A
+// stateless runner once shipped a patch's new sprite and never its icon. A box
+// with the mirror on local disk does not have that problem, and once the
+// extraction lives here the poll may as well too.
 //
 // Usage:
 //   node tools/patch-cycle.mjs                  a cycle; the timer runs this
@@ -41,8 +38,7 @@ const ROBE_INDEX = process.env.RAGASSETS_ROBE_INDEX || "/var/lib/ragassets/robe-
 const GATEWAY_UNIT = process.env.RAGASSETS_GATEWAY_UNIT || "ragassets-gateway.service";
 
 // A cycle that keeps failing would otherwise re-download the same archives every
-// ten minutes forever. The Worker never had to think about this: it dispatched
-// and forgot. Back off after three, and let an hour of silence clear it — long
+// ten minutes forever. Back off after three, and let an hour of silence clear it — long
 // enough to be quiet, short enough that a transient CDN outage heals itself.
 const MAX_CONSECUTIVE_FAILURES = 3;
 const BACKOFF_MS = 60 * 60 * 1000;
@@ -76,9 +72,8 @@ function readState() {
   return JSON.parse(readFileSync(STATE, "utf8"));
 }
 
-// Written last and only on success, atomically. The invariant this protects came
-// from the Worker and has not changed: a failed cycle must leave the work
-// pending, or the patch is skipped forever — the next poll would see the same
+// Written last and only on success, atomically. The invariant this protects: a
+// failed cycle must leave the work pending, or the patch is skipped forever — the next poll would see the same
 // index, match on seq, and do nothing.
 function writeState(next) {
   mkdirSync(dirname(STATE), { recursive: true });
@@ -100,7 +95,7 @@ async function fetchIndex(prevETag) {
   // cache: "no-store" is not belt-and-braces. patch.txt ships
   // Cache-Control: public, max-age=3600, so anything that honours it would turn
   // a ten-minute poll into an hourly one — silently, with every poll logging
-  // success. The Worker passed cf: {cacheTtl: 0} for exactly this reason.
+  // success.
   const res = await fetch(PATCH_INDEX, {
     cache: "no-store",
     headers: prevETag ? { "If-None-Match": prevETag } : {},
@@ -424,13 +419,6 @@ async function cycle({ fromSeq, head, args, state }) {
   // abort the cycle or block the state write, or a Discord outage would make the
   // box re-apply the same patch every ten minutes.
   try {
-    await purgeCloudflare();
-  } catch (e) {
-    log(`cache purge failed (ignored): ${e?.message ?? e}`);
-  }
-  // Everything past here is announcement, not correctness — already true of the
-  // Discord post, and equally true of the diff that feeds it.
-  try {
     if (willRebuild) {
       node([
         "tools/patch-summary.mjs",
@@ -452,64 +440,6 @@ async function cycle({ fromSeq, head, args, state }) {
   }
 
   return { mapsRebuiltAt };
-}
-
-// DORMANT since 2026-09-09, when assets.latam-tools.com.br was grey-clouded.
-// There is no edge cache in front of this origin any more, so there is nothing
-// for a purge to invalidate. The intended state on the box is therefore to leave
-// CF_ZONE_ID and CF_PURGE_TOKEN out of /etc/ragassets/patch.env, which makes the
-// call below skip and say so. It is kept, rather than deleted, because
-// re-proxying the record is the rollback plan and this would be needed again the
-// same day.
-//
-// Note that the grey cloud fixed the stale-index problem outright rather than
-// working around it: these files are served immutable at a stable URL, so the
-// purge was the only thing making a patched index visible to a new visitor.
-// Direct from the origin, a new visitor simply gets the current bytes.
-//
-// The rest of the original reasoning, for whoever re-proxies. Cloudflare's free
-// plan gives purge-by-URL, capped at 30 URLs per call; prefix and tag purge are
-// Enterprise. That rules out invalidating renders, and it does not matter: a
-// patch that adds a sprite creates new ids and therefore new URLs, so nothing
-// stale exists. A patch that *redraws* an existing sprite is the genuine gap —
-// the URL and its query-derived ETag are unchanged, so the edge keeps the old
-// pixels. Purge Everything is the only lever, at the cost of a fully cold render
-// cache, and it is a human's call.
-//
-// What is purgeable is the handful of stably-named indexes that change on every
-// patch and would otherwise sit behind their own Cache-Control until it expires.
-const PURGE_PATHS = [
-  "/raw/items.json",
-  "/raw/mobs.json",
-  "/raw/skills.json",
-  "/raw/jobs.json",
-  "/raw/classes.json",
-  "/raw/status.json",
-  "/raw/randomopt.json",
-  "/raw/hair.json",
-  "/effects/index.json",
-  "/effects/stones.json",
-  "/effects/footprints.json",
-  "/maps/index.json",
-  "/bgm/index.json",
-  "/effect/sound/index.json",
-];
-
-async function purgeCloudflare() {
-  const zone = process.env.CF_ZONE_ID;
-  const token = process.env.CF_PURGE_TOKEN;
-  const origin = process.env.RAGASSETS_SITE_URL || "https://assets.latam-tools.com.br";
-  if (!zone || !token) {
-    log("no CF_ZONE_ID/CF_PURGE_TOKEN; skipping the edge purge (expected while grey-clouded)");
-    return;
-  }
-  const res = await fetch(`https://api.cloudflare.com/client/v4/zones/${zone}/purge_cache`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ files: PURGE_PATHS.map((p) => origin + p) }),
-  });
-  if (!res.ok) throw new Error(`purge: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
-  log(`purged ${PURGE_PATHS.length} index URL(s) at the edge — note this is a no-op while the host is grey-clouded`);
 }
 
 main().catch((e) => {
