@@ -54,8 +54,10 @@ type rawTables struct {
 }
 
 type rawLayerPriority struct {
-	Default *int           `json:"default"`
-	Dir     map[string]int `json:"dir"`
+	Default      *int           `json:"default"`
+	Dir          map[string]int `json:"dir"`
+	IgnoreRiding bool           `json:"ignoreRiding"`
+	HelmRobe     bool           `json:"helmRobe"`
 }
 
 type rawSkinTable struct {
@@ -97,8 +99,13 @@ func genResolve() error {
 		return err
 	}
 
+	var slots map[string]int
+	if err := readJSON(filepath.Join(resolveDir, "data", "layer_slots.json"), &slots); err != nil {
+		return err
+	}
+
 	var b bytes.Buffer
-	header(&b, "resolve", "cmd/gen-tables from data/tables.json and data/layer_priority.json")
+	header(&b, "resolve", "cmd/gen-tables from data/tables.json, data/layer_priority.json and data/layer_slots.json")
 
 	// Large tables: sorted parallel arrays, binary-searched.
 	writeStringTable(&b, "accName", t.AccName)
@@ -146,6 +153,12 @@ func genResolve() error {
 		b.WriteString("}\n")
 	}
 
+	b.WriteString("\nvar headgearSlotPriority = map[uint32]int{\n")
+	for _, k := range sortedUintKeys(mapKeys(slots)) {
+		fmt.Fprintf(&b, "\t%d: %d,\n", k, slots[strconv.FormatUint(uint64(k), 10)])
+	}
+	b.WriteString("}\n")
+
 	// layerPriority: a map literal. ~500 entries with one or two direction
 	// overrides each — not worth flattening.
 	{
@@ -176,6 +189,18 @@ func genResolve() error {
 					fmt.Fprintf(&b, "%d: %d", d, v.Dir[strconv.Itoa(d)])
 				}
 				b.WriteString("}")
+			}
+			if v.IgnoreRiding {
+				if v.Default != nil || len(v.Dir) > 0 {
+					b.WriteString(", ")
+				}
+				b.WriteString("ignoreRiding: true")
+			}
+			if v.HelmRobe {
+				if v.Default != nil || len(v.Dir) > 0 || v.IgnoreRiding {
+					b.WriteString(", ")
+				}
+				b.WriteString("helmRobe: true")
 			}
 			b.WriteString("},\n")
 		}

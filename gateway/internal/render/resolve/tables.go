@@ -85,6 +85,12 @@ type Tables interface {
 	// (a negative effective priority means "behind"). ok is false when the
 	// accessory has no layer-priority entry, in which case it draws in front.
 	HeadgearBehind(accessoryID uint32, direction int) (behind, ok bool)
+	// HeadgearPriority retains the client's numeric priority, including direction overrides.
+	HeadgearPriority(accessoryID uint32, direction int) (priority int, ok bool)
+	// HeadgearIgnoresRiding disables mount occlusion for client-listed exceptions.
+	HeadgearIgnoresRiding(accessoryID uint32) bool
+	// HeadgearSlotPriority supplies a default from the client item equipment slot.
+	HeadgearSlotPriority(accessoryID uint32) (int, bool)
 	// ShadowFactor returns the shadow scale for a job (ReqshadowFactor); 1 default.
 	ShadowFactor(jobID uint32) float32
 	// DoramOffset returns the per-direction headgear offset for doram characters
@@ -104,5 +110,8 @@ func (NopTables) RealWeaponID(id uint32) uint32                 { return id }
 func (NopTables) JobName(uint32) string                         { return "" }
 func (NopTables) IsTopLayer(uint32) bool                        { return false }
 func (NopTables) HeadgearBehind(uint32, int) (bool, bool)       { return false, false }
+func (NopTables) HeadgearPriority(uint32, int) (int, bool)      { return 0, false }
+func (NopTables) HeadgearSlotPriority(uint32) (int, bool)       { return 0, false }
+func (NopTables) HeadgearIgnoresRiding(uint32) bool             { return false }
 func (NopTables) ShadowFactor(uint32) float32                   { return 1 }
 func (NopTables) DoramOffset(uint32, int, int) (int, int, bool) { return 0, 0, false }

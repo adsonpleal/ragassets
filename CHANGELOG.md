@@ -14,6 +14,29 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-10-02
+
+### Fixed
+- Equipment layering now uses the full client numeric priorities, including
+  direction overrides and equipment-slot defaults. Garments use robe priority
+  400, so the small devil wings (12) cover the bone scarf (2530) when facing away.
+  Fixed equipment positions keep layering independent of other equipped sprites.
+- The client's 83 riding exceptions are retained and respected instead of forcing
+  those accessories behind the mount. Explicit `headgearBehind` still wins.
+- Rebuilt the layer table from the current origin client: 560 numeric overrides
+  and 1,394 unambiguous equipment-slot defaults. The resolver rebake also refreshes
+  slot defaults from `raw/items.json`.
+
+### Validation
+- Audited 2,859 accessory and 330 garment definitions in both genders and eight
+  directions. Compared 39,248 rendered before/after combinations; 736 definitions
+  lacked usable assets for the Swordman sweep. These client-declared names are
+  recorded as unavailable, and numeric overrides are checked even without
+  those assets.
+- Added the reported outfit to the committed golden fixture pack in all eight
+  directions, plus tests for numeric ordering, stable ties, rear layers, riding
+  exceptions, and equipment positions independent of other sprites.
+
 ## 2026-09-14
 
 ### Removed

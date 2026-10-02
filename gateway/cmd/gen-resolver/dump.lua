@@ -167,8 +167,8 @@ end
 -- body. A negative priority (per direction, falling back to Default) means the
 -- accessory is drawn behind the character. Emitted as:
 --   id <tab> default <tab> dir:prio,dir:prio,...   (default empty if absent)
--- Rows that carry no Default and no Direction overrides (e.g. isIgnoreRiding-only
--- entries) are skipped — they hold no layering information.
+-- Riding exceptions and helmet/robe classification are retained even when an
+-- entry has no numeric override. The last two TSV fields are these flags.
 do
   local f = open("layerpriority.tsv")
   local items = type(TB_Layer_Priority) == "table" and TB_Layer_Priority.Items_List
@@ -184,9 +184,9 @@ do
             end
           end
         end
-        if type(def) == "number" or #dirs > 0 then
+        if type(def) == "number" or #dirs > 0 or item.isIgnoreRiding or item.isHelmRobe then
           local defs = (type(def) == "number") and tostring(math.floor(def)) or ""
-          f:write(math.floor(id) .. "\t" .. defs .. "\t" .. table.concat(dirs, ",") .. "\n")
+          f:write(math.floor(id) .. "\t" .. defs .. "\t" .. table.concat(dirs, ",") .. "\t" .. tostring(item.isIgnoreRiding == true) .. "\t" .. tostring(item.isHelmRobe == true) .. "\n")
         end
       end
     end
