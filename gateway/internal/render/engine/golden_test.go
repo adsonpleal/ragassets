@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/png"
 	"os"
@@ -10,15 +11,16 @@ import (
 
 	"github.com/ragassets/gateway/internal/render/resolve"
 	"github.com/ragassets/gateway/internal/render/resource"
+	"github.com/ragassets/gateway/internal/render/rotype"
 )
 
 // TestGolden renders a set of stills and compares them pixel-for-pixel against
-// committed reference PNGs (themselves validated as pixel-identical to the
-// upstream zrenderer). It guards against future regressions in the engine.
+// committed reference PNGs. The original cases match upstream zrenderer; the
+// wing/scarf cases pin the corrected client layer priorities.
 //
 // Unlike the rest of this package's tests, it does NOT need the full resources/
-// tree and never skips: it runs against testdata/fixtures, a committed 1.3 MB
-// pack holding exactly the 19 files these six renders read. That matters because
+// tree and never skips: it runs against testdata/fixtures, a committed
+// pack holding the files these renders read. That matters because
 // resources/ is gitignored, so on a fresh CI runner a resources-gated golden test
 // would pass vacuously — and this comparison is the safety net the whole renderer
 // rests on. It has to actually run.
@@ -28,7 +30,7 @@ import (
 // so a probe that must miss (아이템/고글_이펙트.act) is deliberately absent here too.
 //
 // To regenerate after a client update or a resolver change: re-copy every path the
-// six cases touch out of resources/. If a change makes the engine probe a new path
+// cases touch out of resources/. If a change makes the engine probe a new path
 // that exists in resources/ but not here, this test fails rather than silently
 // diverging — that is the intended behaviour, and the fix is to refresh the pack.
 func TestGolden(t *testing.T) {
@@ -64,7 +66,7 @@ type goldenCase struct {
 // goldenCases is shared by both golden tests so the on-disk and prefetched paths
 // can never drift to covering different renders.
 func goldenCases() []goldenCase {
-	return []goldenCase{
+	cases := []goldenCase{
 		{"swordman_stand", func() Request { r := baseReq(); r.Frame = 0; return r }()},
 		{"swordman_female", func() Request { r := baseReq(); r.Frame = 0; r.Gender = 0; return r }()},
 		{"swordman_goggles", func() Request { r := baseReq(); r.Frame = 0; r.Headgear = []uint32{1}; return r }()},
@@ -72,6 +74,21 @@ func goldenCases() []goldenCase {
 		{"dragonknight", func() Request { r := baseReq(); r.Frame = 0; r.Job = 4252; return r }()},
 		{"monster_poring", func() Request { r := baseReq(); r.Frame = 0; r.Job = 1002; return r }()},
 	}
+	for d := 0; d < 8; d++ {
+		req := baseReq()
+		req.Job = 4306
+		req.Head = 23
+		req.HeadPalette = 6
+		req.Headgear = []uint32{1053, 2399, 2530}
+		req.Garment = 12
+		req.Action = uint(d)
+		req.Frame = 0
+		req.HeadDir = rotype.Straight
+		req.Canvas = "248x232+124+184"
+		req.EnableShadow = true
+		cases = append(cases, goldenCase{fmt.Sprintf("wings_scarf_%d", d), req})
+	}
+	return cases
 }
 
 // forbiddenExistence fails the test if anything probes for a file. RenderPlanned

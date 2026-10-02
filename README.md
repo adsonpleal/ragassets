@@ -114,7 +114,7 @@ parameter:
 | `gender` | `male`/`female` or `1`/`0` | Default male. |
 | `head` | integer | Player head id. |
 | `outfit` | integer | Alternate outfit (`0` = default). |
-| `headgear` | comma-separated ints | Up to 3, e.g. `headgear=4,125`. A **hat-effect** costume (`1500` *Fúria dos Shuras*, the only one the client ships today) has a blank accessory sprite and its visual in a separate looping sprite the client plays at the character's head; the renderer composites that automatically, and its longer timeline sets the animation's length. |
+| `headgear` | comma-separated ints | Up to 3 view ids. Client item metadata determines their equipment slots; for unknown or ambiguous views, supply upper, middle, lower order with `0` for an empty slot, e.g. `headgear=4,125`. A **hat-effect** costume (`1500` *Fúria dos Shuras*, the only one the client ships today) has a blank accessory sprite and its visual in a separate looping sprite the client plays at the character's head; the renderer composites that automatically, and its longer timeline sets the animation's length. |
 | `headgearBehind` | comma-separated ints | **Usually unnecessary** — whether an effect headgear (aura/halo/the Sun God's Ornament `2669`) draws behind the character is decided automatically per direction from the client's layer-priority table. This param is a manual override that forces the listed ids behind in every direction (for accessories the client table doesn't cover). |
 | `garment` | integer | |
 | `weapon` | integer | |
@@ -1163,7 +1163,18 @@ textures that [`/effect/str`](#get-effect--skill--world-effects-data--textures) 
 `/effect/texture` parse on demand; drop `texture\\effect` from the match if you
 don't need those endpoints. The headgear/garment
 ID→sprite-name tables are baked from the client `luafiles514/.lub` into the binary
-by `gateway/cmd/gen-resolver` — re-run it when you update the client.
+by `gateway/cmd/gen-resolver` — re-run it when you update the client. Equipment
+ordering uses the full numeric `TB_Layer_Priority` values: direction override,
+item default, then equipment-slot default (middle 100, upper 200, lower 300).
+Garments use the client's default robe priority 400, behind the body for directions
+0, 1 and 7 and over the back for 2 through 6. The client's `isIgnoreRiding` flags
+exempt listed headgears from mount occlusion; an explicit `headgearBehind` still
+takes precedence.
+
+`node tools/gen-layer-slots.mjs` regenerates slot defaults from the client-derived
+`resources/raw/items.json`. Run `go generate ./internal/render/resolve` from
+`gateway/` afterwards. Eight views have conflicting item slots; they use the
+request's upper/middle/lower positions when no numeric override applies.
 `tools/rebake-resolver.sh` does the whole cycle on the origin box (dump, generate,
 bake, test, rebuild, restart) and exits early if nothing changed.
 

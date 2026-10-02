@@ -27,8 +27,10 @@ type jsonTablesFile struct {
 }
 
 type jsonLayerPriority struct {
-	Default *int           `json:"default"`
-	Dir     map[string]int `json:"dir"`
+	Default      *int           `json:"default"`
+	Dir          map[string]int `json:"dir"`
+	IgnoreRiding bool           `json:"ignoreRiding"`
+	HelmRobe     bool           `json:"helmRobe"`
 }
 
 func readTestJSON(t *testing.T, name string, v any) {
@@ -120,7 +122,17 @@ func TestBakedLayerPriorityMatchesJSON(t *testing.T) {
 			continue
 		}
 		id := uint32(id64)
+		if layerPriorityTable[id].ignoreRiding != v.IgnoreRiding || layerPriorityTable[id].helmRobe != v.HelmRobe {
+			t.Errorf("flags differ for %d", id)
+		}
 		for d := 0; d < 8; d++ {
+			wantPriority, priorityOK := v.Dir[strconv.Itoa(d)]
+			if !priorityOK && v.Default != nil {
+				wantPriority, priorityOK = *v.Default, true
+			}
+			if got, ok := tbl.HeadgearPriority(id, d); got != wantPriority || ok != priorityOK {
+				t.Errorf("priority %d direction %d = %d,%v, want %d,%v", id, d, got, ok, wantPriority, priorityOK)
+			}
 			want, wantOK := expectedBehind(v, d)
 			got, gotOK := tbl.HeadgearBehind(id, d)
 			if got != want || gotOK != wantOK {
@@ -157,5 +169,22 @@ func assertPaired(t *testing.T, name string, nKeys, nVals int) {
 	t.Helper()
 	if nKeys != nVals {
 		t.Errorf("%s: %d keys but %d values", name, nKeys, nVals)
+	}
+}
+
+func TestBakedLayerSlotsMatchJSON(t *testing.T) {
+	var src map[string]int
+	readTestJSON(t, "layer_slots.json", &src)
+	if len(src) != len(headgearSlotPriority) {
+		t.Fatal("slot defaults need rebaking")
+	}
+	for id, p := range src {
+		n, err := strconv.ParseUint(id, 10, 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := DefaultTables().HeadgearSlotPriority(uint32(n)); !ok || got != p {
+			t.Errorf("slot priority %s = %d,%v, want %d", id, got, ok, p)
+		}
 	}
 }

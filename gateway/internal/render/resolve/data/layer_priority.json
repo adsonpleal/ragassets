@@ -291,7 +291,8 @@
     "default": 171
   },
   "1582": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1583": {
     "default": 301
@@ -330,13 +331,15 @@
     "default": 143
   },
   "1634": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1636": {
     "default": 304
   },
   "1656": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1658": {
     "default": 301
@@ -348,10 +351,12 @@
     "default": 304
   },
   "1666": {
-    "default": 301
+    "default": 301,
+    "ignoreRiding": true
   },
   "1669": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "167": {
     "default": 152
@@ -381,7 +386,8 @@
     "default": 152
   },
   "1705": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1708": {
     "default": 302
@@ -390,7 +396,8 @@
     "default": 143
   },
   "1715": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1723": {
     "default": 304
@@ -399,13 +406,15 @@
     "default": 304
   },
   "1741": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1743": {
     "default": 143
   },
   "1750": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1752": {
     "default": 143
@@ -414,13 +423,16 @@
     "default": 143
   },
   "1754": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1756": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1757": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1760": {
     "default": 304
@@ -438,22 +450,26 @@
     "default": 143
   },
   "1804": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1809": {
     "default": 301
   },
   "1812": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1815": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1816": {
     "default": 304
   },
   "1818": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1826": {
     "default": 403
@@ -486,7 +502,8 @@
     "default": 143
   },
   "1875": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1877": {
     "default": 171
@@ -504,7 +521,8 @@
     "default": 143
   },
   "1887": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1888": {
     "default": 301
@@ -516,7 +534,8 @@
     "default": 403
   },
   "1893": {
-    "default": 303
+    "default": 303,
+    "ignoreRiding": true
   },
   "1894": {
     "default": 143
@@ -552,7 +571,8 @@
     "default": 143
   },
   "1922": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1924": {
     "default": 403
@@ -669,13 +689,15 @@
     "default": 143
   },
   "1994": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "1996": {
     "default": 171
   },
   "2000": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2003": {
     "default": 143
@@ -686,8 +708,20 @@
   "2007": {
     "default": 143
   },
+  "2009": {
+    "ignoreRiding": true
+  },
   "2011": {
     "default": 143
+  },
+  "2012": {
+    "ignoreRiding": true
+  },
+  "2013": {
+    "ignoreRiding": true
+  },
+  "2014": {
+    "ignoreRiding": true
   },
   "2020": {
     "default": 403
@@ -753,7 +787,8 @@
     "default": 304
   },
   "2058": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2060": {
     "default": 301
@@ -816,7 +851,8 @@
     "default": 304
   },
   "2086": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2106": {
     "default": 143
@@ -849,7 +885,8 @@
     "default": 143
   },
   "2126": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2127": {
     "default": 171
@@ -864,7 +901,8 @@
     "default": 103
   },
   "2142": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2151": {
     "default": 304
@@ -888,7 +926,8 @@
     "default": 143
   },
   "2178": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2180": {
     "default": 143
@@ -981,13 +1020,16 @@
     "default": 143
   },
   "2244": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2245": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2246": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2247": {
     "default": 143
@@ -996,31 +1038,38 @@
     "default": 304
   },
   "2251": {
-    "default": 404
+    "default": 404,
+    "ignoreRiding": true
   },
   "2253": {
     "default": 143
   },
   "2254": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2255": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2256": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2257": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2258": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2261": {
     "default": 143
   },
   "2262": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2263": {
     "default": 304
@@ -1053,7 +1102,8 @@
     "default": 143
   },
   "2279": {
-    "default": 403
+    "default": 403,
+    "ignoreRiding": true
   },
   "2280": {
     "default": 304
@@ -1065,49 +1115,61 @@
     "default": 304
   },
   "2290": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2291": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2292": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2293": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2295": {
     "default": 143
   },
   "2298": {
-    "default": 401
+    "default": 401,
+    "ignoreRiding": true
   },
   "2300": {
     "default": 143
   },
   "2303": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2304": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2305": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2306": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2307": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2311": {
     "default": 143
   },
   "2321": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2324": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2328": {
     "default": 143
@@ -1125,7 +1187,8 @@
     "default": 143
   },
   "2334": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2336": {
     "default": 301
@@ -1134,7 +1197,8 @@
     "default": 143
   },
   "2349": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2354": {
     "default": 143
@@ -1149,7 +1213,8 @@
     "default": 143
   },
   "2362": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2363": {
     "default": 304
@@ -1173,10 +1238,12 @@
     "default": 143
   },
   "2384": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2386": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2389": {
     "default": 143
@@ -1191,7 +1258,8 @@
     "default": 143
   },
   "2412": {
-    "default": 403
+    "default": 403,
+    "ignoreRiding": true
   },
   "2418": {
     "default": 143
@@ -1200,22 +1268,27 @@
     "default": 171
   },
   "2427": {
-    "default": 404
+    "default": 404,
+    "ignoreRiding": true
   },
   "2429": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2430": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2431": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2435": {
     "default": 143
   },
   "2436": {
-    "default": 404
+    "default": 404,
+    "ignoreRiding": true
   },
   "2437": {
     "default": 301
@@ -1311,13 +1384,15 @@
     "default": 143
   },
   "2489": {
-    "default": 403
+    "default": 403,
+    "ignoreRiding": true
   },
   "2490": {
     "default": 143
   },
   "2491": {
-    "default": 404
+    "default": 404,
+    "ignoreRiding": true
   },
   "2499": {
     "default": 143
@@ -1352,19 +1427,22 @@
     }
   },
   "2520": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2527": {
     "default": 143
   },
   "2534": {
-    "default": 403
+    "default": 403,
+    "ignoreRiding": true
   },
   "2535": {
     "default": 143
   },
   "2536": {
-    "default": 401
+    "default": 401,
+    "ignoreRiding": true
   },
   "2547": {
     "default": 143
@@ -1373,19 +1451,29 @@
     "default": 143
   },
   "2557": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
+  },
+  "2562": {
+    "ignoreRiding": true
+  },
+  "2563": {
+    "ignoreRiding": true
   },
   "2566": {
-    "default": 403
+    "default": 403,
+    "ignoreRiding": true
   },
   "2567": {
     "default": 143
   },
   "2569": {
-    "default": 303
+    "default": 303,
+    "ignoreRiding": true
   },
   "2572": {
-    "default": 404
+    "default": 404,
+    "ignoreRiding": true
   },
   "2573": {
     "default": 143
@@ -1499,10 +1587,12 @@
     "default": 143
   },
   "2648": {
-    "default": 403
+    "default": 403,
+    "ignoreRiding": true
   },
   "2653": {
-    "default": 404
+    "default": 404,
+    "ignoreRiding": true
   },
   "2654": {
     "default": 143
@@ -1511,7 +1601,8 @@
     "default": 143
   },
   "2660": {
-    "default": 403
+    "default": 403,
+    "ignoreRiding": true
   },
   "2661": {
     "default": 143
@@ -1527,7 +1618,8 @@
     }
   },
   "2680": {
-    "default": 401
+    "default": 401,
+    "ignoreRiding": true
   },
   "2685": {
     "default": 301
@@ -1536,7 +1628,8 @@
     "default": 143
   },
   "2694": {
-    "default": 304
+    "default": 304,
+    "ignoreRiding": true
   },
   "2707": {
     "default": 143
@@ -1566,10 +1659,24 @@
     "default": 301
   },
   "2802": {
-    "default": 403
+    "default": 403,
+    "ignoreRiding": true
   },
   "2803": {
     "default": -300
+  },
+  "2820": {
+    "default": 143
+  },
+  "2823": {
+    "default": 404,
+    "ignoreRiding": true
+  },
+  "2827": {
+    "helmRobe": true
+  },
+  "2828": {
+    "helmRobe": true
   },
   "302": {
     "default": 152
@@ -1603,14 +1710,6 @@
   },
   "472": {
     "default": 171
-  },
-  "48": {
-    "default": -200,
-    "dir": {
-      "3": 200,
-      "4": 200,
-      "5": 200
-    }
   },
   "526": {
     "default": 303

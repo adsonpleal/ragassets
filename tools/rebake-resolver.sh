@@ -48,6 +48,9 @@ lua5.1 gateway/cmd/gen-resolver/dump.lua \
 # a nil key, OffsetItemPos expects a global the dump does not build. Neither feeds
 # tables.json. They are reported above rather than hidden, but they are not errors.
 
+echo "==> generating equipment-slot defaults from client item metadata"
+node tools/gen-layer-slots.mjs "$REPO/resources/raw/items.json"
+
 echo "==> generating tables.json"
 cd gateway
 go run ./cmd/gen-resolver "$DUMP" internal/render/resolve/data/tables.json

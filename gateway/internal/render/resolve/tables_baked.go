@@ -28,9 +28,11 @@ func DefaultTables() Tables { return bakedTables{} }
 // per-direction overrides. The effective priority for a direction is the override
 // if present, else the default; negative means "draw behind the body".
 type layerPriority struct {
-	def        int
-	hasDefault bool
-	dir        map[int]int
+	def          int
+	hasDefault   bool
+	dir          map[int]int
+	ignoreRiding bool
+	helmRobe     bool
 }
 
 // lookupString binary-searches the sorted key array and returns the parallel
@@ -75,18 +77,32 @@ func (bakedTables) IsTopLayer(id uint32) bool { return containsUint(topLayerIDs,
 // HeadgearBehind applies the TB_Layer_Priority rule: the effective priority for
 // the direction (override if present, else the default) being negative means the
 // accessory draws behind the body. ok is false when id has no entry.
-func (bakedTables) HeadgearBehind(id uint32, direction int) (bool, bool) {
+func (t bakedTables) HeadgearBehind(id uint32, direction int) (bool, bool) {
+	p, ok := t.HeadgearPriority(id, direction)
+	return p < 0, ok
+}
+
+func (bakedTables) HeadgearIgnoresRiding(id uint32) bool {
+	return layerPriorityTable[id].ignoreRiding
+}
+
+func (bakedTables) HeadgearPriority(id uint32, direction int) (int, bool) {
 	lp, ok := layerPriorityTable[id]
 	if !ok {
-		return false, false
+		return 0, false
 	}
 	if v, has := lp.dir[direction]; has {
-		return v < 0, true
+		return v, true
 	}
 	if lp.hasDefault {
-		return lp.def < 0, true
+		return lp.def, true
 	}
-	return false, false
+	return 0, false
+}
+
+func (bakedTables) HeadgearSlotPriority(id uint32) (int, bool) {
+	p, ok := headgearSlotPriority[id]
+	return p, ok
 }
 
 // ShadowFactor / DoramOffset were not provided by the client .lub (the same

@@ -608,8 +608,8 @@ func (e *Engine) imfForJob(jobID uint32, g rotype.Gender, mado rotype.MadogearTy
 }
 
 // sortDelegate returns the per-frame z-order function. It recomputes each
-// sprite's z-index for the requested frame (garments depend on action/frame via
-// the client DrawOnTop table) and sorts indices ascending by z-index.
+// sprite's z-index for the requested frame. Equipment uses client priorities;
+// the body IMF controls head/body order. Indices are sorted by ascending z-index.
 func (e *Engine) sortDelegate(sprites []*sprite.Sprite, req Request, bodyImf *roformat.Imf) sortFunc {
 	direction := int(req.Action % 8)
 	return func(index []int, frame, maxframes int) {
@@ -621,17 +621,17 @@ func (e *Engine) sortDelegate(sprites []*sprite.Sprite, req Request, bodyImf *ro
 		for i, s := range sprites {
 			switch {
 			case s.Type == sprite.TypeGarment:
-				s.ZIndex = e.garmentZIndex(req, f, direction)
+				s.ZIndex = equipmentZIndex(400, direction, direction < 2 || direction > 6)
 			case s.Type == sprite.TypeAccessory:
 				// Per-direction behind/front from the client's layer-priority table
 				// (so e.g. the Sun God's Ornament hangs behind you facing the camera
 				// and in front when you face away).
 				s.Behind = e.accessoryBehind(req, s, direction)
-				s.ZIndex = sprite.ZIndexForSprite(s, direction, -1, -1, nil)
+				s.ZIndex = equipmentZIndex(e.accessoryPriority(s, direction), direction, s.Behind)
 			case s.Type == sprite.TypePlayerHead && bodyImf != nil:
-				s.ZIndex = sprite.ZIndexForSprite(s, direction, int(req.Action), f, bodyImf)
+				s.ZIndex = sprite.ZIndexForSprite(s, direction, int(req.Action), f, bodyImf) * equipmentZScale
 			default:
-				s.ZIndex = sprite.ZIndexForSprite(s, direction, -1, -1, nil)
+				s.ZIndex = sprite.ZIndexForSprite(s, direction, -1, -1, nil) * equipmentZScale
 			}
 			index[i] = i
 		}
@@ -645,35 +645,48 @@ func (e *Engine) sortDelegate(sprites []*sprite.Sprite, req Request, bodyImf *ro
 	}
 }
 
-// garmentZIndex mirrors sprite.d zIndexForGarmentSprite. _New_DrawOnTop reduces
-// to a per-direction rule (verified against the client lua): a garment draws in
-// front of the body for back-facing directions (2..6) and behind for the
-// front-facing ones (0,1,7) — so a cape hangs behind you when you face the
-// camera and over your back when you face away.
 // accessoryBehind decides whether a headgear draws behind the body for the given
 // facing direction. The client's TB_Layer_Priority table is authoritative (a
 // negative per-direction priority means behind); the headgearBehind request param
 // is a manual override that forces behind in all directions for ids the table
 // doesn't cover. A mount in front of the rider's chest forces it too, in every
-// direction (see markMountOccluded).
+// direction unless the client marks it isIgnoreRiding (see markMountOccluded).
 func (e *Engine) accessoryBehind(req Request, s *sprite.Sprite, direction int) bool {
-	if s.MountOccluded || containsU32(req.HeadgearBehind, s.AccessoryID) {
+	if containsU32(req.HeadgearBehind, s.AccessoryID) ||
+		(s.MountOccluded && !e.tables.HeadgearIgnoresRiding(s.AccessoryID)) {
 		return true
 	}
 	behind, _ := e.tables.HeadgearBehind(s.AccessoryID, direction)
 	return behind
 }
 
-func (e *Engine) garmentZIndex(req Request, frame, direction int) int {
-	onTop := direction >= 2 && direction <= 6
-	if onTop {
-		if e.tables.IsTopLayer(req.Garment) {
-			return 25
+// Leave room between the body/head/weapon layers for the client's priorities
+// (currently -300..404). Equipment has fixed positions: an absent or blank
+// accessory must never change a garment's relationship to the body or head.
+const equipmentZScale = 1000
+
+func equipmentZIndex(priority, direction int, behind bool) int {
+	if behind {
+		if priority > 0 {
+			priority = -priority
 		}
-		if sprite.IsTopLeftDir(direction) {
-			return 16
-		}
-		return 11
+		// Behind the body, above the shadow, ordered by the full negative priority.
+		return equipmentZScale + priority
 	}
-	return 5
+	base := 16
+	if sprite.IsTopLeftDir(direction) {
+		base = 21
+	}
+	return base*equipmentZScale + priority
+}
+
+func (e *Engine) accessoryPriority(s *sprite.Sprite, direction int) int {
+	if p, ok := e.tables.HeadgearPriority(s.AccessoryID, direction); ok {
+		return p
+	}
+	if p, ok := e.tables.HeadgearSlotPriority(s.AccessoryID); ok {
+		return p
+	}
+	// Unknown views retain the request's upper, middle, lower equipment slots.
+	return [...]int{200, 100, 300}[s.TypeOrder]
 }

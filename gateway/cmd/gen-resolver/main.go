@@ -42,8 +42,10 @@ type tablesJSON struct {
 // facing direction ("0".."7"). A negative effective priority means "draw behind
 // the body".
 type layerPrioJSON struct {
-	Default *int           `json:"default,omitempty"`
-	Dir     map[string]int `json:"dir,omitempty"`
+	Default      *int           `json:"default,omitempty"`
+	Dir          map[string]int `json:"dir,omitempty"`
+	IgnoreRiding bool           `json:"ignoreRiding,omitempty"`
+	HelmRobe     bool           `json:"helmRobe,omitempty"`
 }
 
 func main() {
@@ -151,7 +153,13 @@ func writeLayerPriority(dumpDir, outPath string) {
 				}
 			}
 		}
-		if e.Default != nil || len(e.Dir) > 0 {
+		if len(f) >= 4 {
+			e.IgnoreRiding = f[3] == "true"
+		}
+		if len(f) >= 5 {
+			e.HelmRobe = f[4] == "true"
+		}
+		if e.Default != nil || len(e.Dir) > 0 || e.IgnoreRiding || e.HelmRobe {
 			lp[f[0]] = e
 		}
 	})
