@@ -124,9 +124,17 @@ const REBUILDS = [
     // Only items.json reads System/; every other table — skill names among them,
     // which is how a patch that names a skill replaces the name we filled in —
     // comes from luafiles514 and two text tables inside the GRF.
+    //
+    // The optional english/spanish segment is what keeps the translations fresh:
+    // /raw publishes each table in three locales out of data/english/ and
+    // data/spanish/, and a patch that retranslates a skill touches only those,
+    // leaving data/luafiles514/ alone. Without it the pt-BR table would rebuild
+    // and the other two would quietly stay at the previous patch's wording. The
+    // System/ pattern already covers System/english/iteminfo_new.lub, since its
+    // `.*` crosses the separator.
     touched: (f) =>
       /^System\/.*\.lub$/i.test(f) ||
-      /^data\/luafiles514\//i.test(f) ||
+      /^data\/(english\/|spanish\/)?luafiles514\//i.test(f) ||
       /^data\/(msgstringtable_ml\.csv|itemmoveinfov5\.txt)$/i.test(f),
   },
   {
@@ -151,7 +159,10 @@ const REBUILDS = [
     name: "effects",
     out: () => join(DERIVED, "effects"),
     flag: "--effects",
-    touched: (f) => /^System\/iteminfo/i.test(f) || /^data\/texture\/effect\//i.test(f),
+    // The locale subdirectory is for the catalogue's two translations
+    // (index_en.json / index_es.json), which take each costume's name from
+    // System/english and System/spanish. The bundles themselves are unaffected.
+    touched: (f) => /^System\/(english\/|spanish\/)?iteminfo/i.test(f) || /^data\/texture\/effect\//i.test(f),
   },
   {
     name: "sounds",
