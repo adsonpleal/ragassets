@@ -164,6 +164,8 @@ func effectsServer(t *testing.T) *server {
 		}
 	}
 	write("index.json", `{"items":[{"id":410127,"name":"Holofote","slots":["mid"],"effect":"c_spot_light"}]}`)
+	write("index_en.json", `{"items":[{"id":410127,"name":"Spotlight","slots":["mid"],"effect":"c_spot_light"}]}`)
+	write("index_es.json", `{"items":[{"id":410127,"name":"Foco","slots":["mid"],"effect":"c_spot_light"}]}`)
 	write("stones.json", `{"items":[{"id":410127,"effect":"c_spot_light"}]}`)
 	write("footprints.json", `{"items":[{"id":1002642,"bottomLeft":"c_spot_light","stride":50}]}`)
 	write(filepath.Join("c_spot_light", "effect.json"), `{"key":"c_spot_light","fps":60,"maxKey":150,"layers":[]}`)
@@ -184,9 +186,14 @@ func TestEffectEndpoint(t *testing.T) {
 		ct   string
 	}{
 		{"/effects/index.json", http.StatusOK, "application/json"},
+		{"/effects/index_en.json", http.StatusOK, "application/json"},
+		{"/effects/index_es.json", http.StatusOK, "application/json"},
+		{"/effects/index_de.json", http.StatusNotFound, ""},  // valid pattern, locale not extracted
+		{"/effects/index_eng.json", http.StatusNotFound, ""}, // not a two-letter locale
+		{"/effects/stones_en.json", http.StatusNotFound, ""}, // only index.json is per locale
 		{"/effects/stones.json", http.StatusOK, "application/json"},
 		{"/effects/footprints.json", http.StatusOK, "application/json"},
-		{"/effects/other.json", http.StatusNotFound, ""}, // only the three catalogues are served bare
+		{"/effects/other.json", http.StatusNotFound, ""}, // only the catalogues are served bare
 		{"/effects/c_spot_light/effect.json", http.StatusOK, "application/json"},
 		{"/effects/c_spot_light/tex_0.png", http.StatusOK, "image/png"},
 		{"/effects/c_spot_light/tex_9.png", http.StatusNotFound, ""},       // valid pattern, no such file
@@ -423,6 +430,7 @@ func rawServer(t *testing.T) *server {
 	}
 	write("mobs.json", `{"1002":{"name":"Poring"}}`)
 	write("items.json", `{"501":{"name":"Red Potion"}}`)
+	write("items_en.json", `{"501":{"name":"Red Potion"}}`)
 	write("secret.txt", "not json, not served")
 	return &server{cfg: config{rawDir: dir, port: "0"}, flight: newFlightGroup()}
 }
@@ -436,12 +444,14 @@ func TestRawEndpoint(t *testing.T) {
 	}{
 		{"/raw/mobs.json", http.StatusOK, "application/json"},
 		{"/raw/items.json", http.StatusOK, "application/json"},
-		{"/raw/skills.json", http.StatusNotFound, ""},   // valid pattern, no such table
-		{"/raw/secret.txt", http.StatusNotFound, ""},    // disallowed extension
-		{"/raw/sub/mobs.json", http.StatusNotFound, ""}, // nested path
-		{"/raw/", http.StatusNotFound, ""},              // empty
-		{"/raw/Mobs.json", http.StatusNotFound, ""},     // uppercase
-		{"/raw/_mobs.json", http.StatusNotFound, ""},    // leading underscore
+		{"/raw/items_en.json", http.StatusOK, "application/json"}, // a locale's copy of a table
+		{"/raw/items_es.json", http.StatusNotFound, ""},           // valid pattern, locale not extracted
+		{"/raw/skills.json", http.StatusNotFound, ""},             // valid pattern, no such table
+		{"/raw/secret.txt", http.StatusNotFound, ""},              // disallowed extension
+		{"/raw/sub/mobs.json", http.StatusNotFound, ""},           // nested path
+		{"/raw/", http.StatusNotFound, ""},                        // empty
+		{"/raw/Mobs.json", http.StatusNotFound, ""},               // uppercase
+		{"/raw/_mobs.json", http.StatusNotFound, ""},              // leading underscore
 	}
 	for _, c := range cases {
 		rec := get(t, s, s.handleRaw, c.path)

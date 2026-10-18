@@ -324,7 +324,7 @@ const RootHelp = "ragassets-gateway — renders and serves Ragnarok Online sprit
 	"     /gif?job=1002&action=0     (same, as an animated GIF)\n" +
 	"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n" +
 	"     /illust/card/4001.png      (a card's full-size artwork)\n" +
-	"     /effects/index.json        (effect-only costume catalogue)\n" +
+	"     /effects/index.json        (effect-only costume catalogue; _en/_es for the other locales)\n" +
 	"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n" +
 	"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's per-frame img/delay/offset)\n" +
 	"     /effect/str?file=stormgust  (a skill effect's parsed .str keyframe animation, as JSON)\n" +
@@ -337,7 +337,8 @@ const RootHelp = "ragassets-gateway — renders and serves Ragnarok Online sprit
 	"     /maps/prontera/manifest.json  (one map's geometry + shared asset manifest)\n" +
 	"     /bgm/index.json            (per-map background-music catalogue)\n" +
 	"     /bgm/210.mp3               (one background-music track)\n" +
-	"     /raw/mobs.json             (a prebuilt JSON data table)\n\n" +
+	"     /raw/mobs.json             (a prebuilt JSON data table)\n" +
+	"     /raw/items_en.json         (the same table in English; _es for Spanish)\n\n" +
 	"See the README for every supported parameter.\n"
 
 // IfNoneMatch reports whether the request's If-None-Match header already lists

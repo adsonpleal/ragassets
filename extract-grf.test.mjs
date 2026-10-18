@@ -21,6 +21,14 @@ import {
   projectStatus,
   runChunk,
   projectRandomOpt,
+  RAW_LANGS,
+  langLubPath,
+  langLubGlobal,
+  parseJobMsgNames,
+  UNNAMED_SKILL_NAMES,
+  UNNAMED_SKILL_NAMES_I18N,
+  SAME_NAME_SUFFIXES,
+  FOLLOW_UP_OVERRIDES,
   paletteSwatches,
   parseFogTable,
   parseRsw,
@@ -1077,6 +1085,195 @@ test("projectStatus reads the title whether it is a string or a text/colour pair
     { id: 0, name: "Provocar" },
     { id: 1, name: "Impacto" },
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// Localization (--raw <table>_en.json / _es.json)
+// ---------------------------------------------------------------------------
+
+// A locale that ships the row but leaves its title empty keeps the pt-BR
+// wording, so status_en and status.json stay indexable by the same ids. The
+// fallback never *adds* a name the locale already has, and never invents one.
+test("projectStatus keeps the pt-BR title for a status the locale leaves untitled", () => {
+  const list = luaTable([
+    [0, luaRecord({ descript: luaTable([[1, "Provoke"]]) })],
+    [1, luaRecord({ descript: luaTable([[1, ""]]) })], // shipped, untitled
+    [2, luaRecord({})], // no descript at all
+  ]);
+  const ptbr = new Map([
+    [0, "Provocar"],
+    [1, "Impacto"],
+    [2, "Aguentar"],
+  ]);
+  assert.deepEqual(projectStatus(list, ptbr), [
+    { id: 0, name: "Provoke" },
+    { id: 1, name: "Impacto" },
+    { id: 2, name: "Aguentar" },
+  ]);
+  // Without the fallback the untitled rows are dropped, exactly as before.
+  assert.deepEqual(projectStatus(list), [{ id: 0, name: "Provoke" }]);
+  assert.deepEqual(projectRandomOpt(luaTable([[1, "Max HP + %d"]]), new Map([[2, "ATQM +%d"]])), [
+    { id: 1, name: "Max HP + %d" },
+    { id: 2, name: "ATQM +%d" },
+  ]);
+});
+
+// The localized trees ship only the stale un-suffixed SkillInfoList, which is
+// four ids short of the pt-BR table. Those keep the pt-BR name rather than
+// disappearing; everything the locale does name wins.
+test("projectSkills fills the ids a locale's name table leaves out from pt-BR", () => {
+  const skills = projectSkills(names([[5, "Bash"]]), null, null, null, null, {
+    lang: "en",
+    fallbackNames: new Map([
+      [5, "Impacto"],
+      [318, "Piada Infame"],
+    ]),
+  });
+  assert.deepEqual(
+    skills.map((s) => [s.id, s.name]),
+    [
+      [5, "Bash"],
+      [318, "Piada Infame"],
+    ],
+  );
+});
+
+// The curated half of skills.json — the ids the client leaves unnamed — has to
+// be written in each locale too, or an English consumer gets Portuguese names
+// for every monster skill. `lang` picks the wording for the plain names, the
+// follow-up suffixes and the same-name suffixes alike; a `sameAs` keeps copying
+// the client's name, which is already in the right language.
+test("the curated skill names follow the locale", () => {
+  const skid = new Map([
+    ["NPC_RANDOMBREAK", 777],
+    ["NPC_BO_HELL_HOWLING", 5349],
+    ["WL_TETRAVORTEX", 2217],
+    ["WL_TETRAVORTEX_FIRE", 2218],
+    ["AB_CHEAL", 2043],
+    ["NPC_CHEAL", 729],
+  ]);
+  const of = (lang, client) =>
+    new Map(projectSkills(client, null, null, null, skid, { lang }).map((s) => [s.id, s.name]));
+
+  const pt = of("ptbr", names([[2217, "Tetra Vortex"], [2043, "Sopro Divino"]]));
+  assert.equal(pt.get(777), "Quebra Aleatória");
+  assert.equal(pt.get(5349), "Uivo Infernal (Árvore Infernal)");
+  assert.equal(pt.get(2218), "Tetra Vortex (fogo)");
+  assert.equal(pt.get(729), "Sopro Divino");
+
+  const en = of("en", names([[2217, "Tetra Vortex"], [2043, "Coluceo Heal"]]));
+  assert.equal(en.get(777), "Random Break");
+  assert.equal(en.get(5349), "Hell Howling (Hell Tree)");
+  assert.equal(en.get(2218), "Tetra Vortex (fire)");
+  assert.equal(en.get(729), "Coluceo Heal"); // sameAs copies the client's own name
+
+  const es = of("es", names([[2217, "Tetra Vórtice"], [2043, "Curación Coluceo"]]));
+  assert.equal(es.get(777), "Rotura Aleatoria");
+  assert.equal(es.get(5349), "Aullido Infernal (Árbol del Infierno)");
+  assert.equal(es.get(2218), "Tetra Vórtice (fuego)");
+  assert.equal(es.get(729), "Curación Coluceo");
+});
+
+// A name added to the pt-BR table without a translation would silently ship
+// Portuguese to the other two locales, so the overlays must cover it. They must
+// also not name a constant the base table doesn't — that names nothing.
+test("the skill-name overlays cover exactly the pt-BR table's plain-string keys", () => {
+  const wanted = Object.entries(UNNAMED_SKILL_NAMES)
+    .filter(([, v]) => typeof v === "string")
+    .map(([k]) => k)
+    .sort();
+  for (const lang of ["en", "es"]) {
+    assert.deepEqual(
+      Object.keys(UNNAMED_SKILL_NAMES_I18N[lang]).sort(),
+      wanted,
+      `UNNAMED_SKILL_NAMES_I18N.${lang} has drifted from UNNAMED_SKILL_NAMES`,
+    );
+    for (const [konst, name] of Object.entries(UNNAMED_SKILL_NAMES_I18N[lang])) {
+      assert.ok(name && name.trim() === name, `${lang} ${konst}: empty or untrimmed`);
+    }
+  }
+  // Every per-locale suffix table carries all three locales too.
+  const langs = Object.keys(RAW_LANGS);
+  const covers = (what, v) => {
+    for (const l of langs) assert.ok(v[l], `${what}: no ${l} wording`);
+  };
+  for (const [konst, { suffix }] of Object.entries(SAME_NAME_SUFFIXES)) covers(konst, suffix);
+  for (const [konst, { suffix }] of Object.entries(FOLLOW_UP_OVERRIDES)) covers(konst, suffix);
+});
+
+// Each locale reads a different file for the tables that carry text, and the
+// same file for the ones that don't. The skill names are the trap: the localized
+// trees have no _<lang> copy, only the un-suffixed one, under another global.
+test("langLubPath and langLubGlobal route each locale to its own tables", () => {
+  assert.equal(langLubPath("ptbr", "skillinfolist"), "data/luafiles514/lua files/skillinfoz/skillinfolist_ptbr.lub");
+  assert.equal(
+    langLubPath("en", "skillinfolist"),
+    "data/english/luafiles514/lua files/skillinfoz/skillinfolist.lub",
+  );
+  assert.equal(
+    langLubPath("es", "skilldescript"),
+    "data/spanish/luafiles514/lua files/skillinfoz/skilldescript.lub",
+  );
+  // Language-independent tables: one path for every locale.
+  for (const key of ["skillid", "skilldelay", "skillinfodata", "pcidentity", "enumvar", "efstids"]) {
+    assert.equal(langLubPath("en", key), langLubPath("ptbr", key), key);
+    assert.equal(langLubPath("es", key), langLubPath("ptbr", key), key);
+  }
+  assert.equal(langLubGlobal("ptbr", "skillinfolist", "SkillInfoList_string"), "SkillInfoList_string");
+  assert.equal(langLubGlobal("en", "skillinfolist", "SkillInfoList_string"), "SKILL_INFO_LIST");
+  assert.equal(langLubGlobal("es", "stateiconinfo", "StateIconList"), "StateIconList");
+});
+
+// msgstringtable_ml.csv holds every locale at once, so the column is the only
+// thing that changes — and an untranslated cell falls back to English, never to
+// an empty name.
+test("parseJobMsgNames takes the locale's column and falls back to English", () => {
+  const b64 = (s) => Buffer.from(s, "utf-8").toString("base64");
+  const row = (key, ko, en, pt, es) =>
+    [b64(key), b64(ko), b64(en), "", "", "", "", pt ? b64(pt) : "", "", es ? b64(es) : ""].join(",");
+  const csv = [
+    row("MSI_JOB_NOVICE", "초보자", "Novice", "Aprendiz", "Principiante"),
+    row("MSI_JOB_RUNE_KNIGHT", "룬나이트", "Rune Knight", null, null), // untranslated
+    row("MSI_NOT_A_JOB", "x", "x", "x", "x"),
+  ].join("\n");
+
+  for (const [lang, novice] of [
+    ["ptbr", "Aprendiz"],
+    ["en", "Novice"],
+    ["es", "Principiante"],
+  ]) {
+    const got = parseJobMsgNames(csv, RAW_LANGS[lang].msgCol);
+    assert.equal(got.get("NOVICE"), novice, lang);
+    assert.equal(got.get("RUNE_KNIGHT"), "Rune Knight", `${lang} falls back to English`);
+    assert.equal(got.has("NOT_A_JOB"), false);
+  }
+  assert.equal(parseJobMsgNames(csv).get("NOVICE"), "Aprendiz", "pt-BR is the default column");
+});
+
+// The equip-slot line is worded differently in each locale, and each locale's
+// item table carries a scatter of the other two's wording — so one union of
+// labels and slot words reads all three. The pt-BR reading is unchanged.
+test("parseSlots reads the equip-slot line in all three locales", () => {
+  const slotsOf = (line) => {
+    const [item] = projectItems(
+      luaTable([[1, luaRecord({ identifiedDisplayName: "x", identifiedDescriptionName: luaTable([[1, line]]) })]]),
+    );
+    return item.equipSlots;
+  };
+  assert.deepEqual(slotsOf("Equipa em: ^777777Topo, Meio e Baixo^000000"), ["top", "mid", "low"]);
+  assert.deepEqual(slotsOf("Posição : ^777777Capa^000000"), ["garment"]);
+  assert.deepEqual(slotsOf("Equip on: ^777777Upper and Mid^000000"), ["top", "mid"]);
+  assert.deepEqual(slotsOf("Equips on: ^777777Middle and Lower^000000"), ["mid", "low"]);
+  assert.deepEqual(slotsOf("Location: ^777777Garment^000000"), ["garment"]);
+  assert.deepEqual(slotsOf("Equipar en: ^777777Superior, Centro y Inferior^000000"), ["top", "mid", "low"]);
+  assert.deepEqual(slotsOf("Se Equipar en: ^777777Manto^000000"), ["garment"]);
+  assert.deepEqual(slotsOf("Posición : ^777777Superioro ^000000"), ["top"], "a typo the Spanish table carries");
+  // A label that only prefixes the bare "Equip" alternative is not a slot line,
+  // and neither is a weapon/armour slot in any locale.
+  assert.deepEqual(slotsOf("Nível do Equip.: ^7777774^000000"), []);
+  assert.deepEqual(slotsOf("Equip Level: ^7777774^000000"), []);
+  assert.deepEqual(slotsOf("Equipa em: ^777777Armadura^000000"), []);
+  assert.deepEqual(slotsOf("Peso: ^7777771^000000"), []);
 });
 
 // A .pal is 256 RGBA entries covering the whole sprite, so the dye region has to

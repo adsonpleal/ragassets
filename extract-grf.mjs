@@ -215,6 +215,13 @@ function usage() {
       "  `parent`.",
       "  A box's item row carries `contains`: its drop list (id + the client's raw",
       "  prob weight + group). Rows that are not boxes leave the key out entirely.",
+      "",
+      "  Every table that carries text is written three times, once per locale the",
+      "  server runs in: the unsuffixed file is pt-BR, plus <name>_en.json and",
+      "  <name>_es.json from the client's data/english and data/spanish trees and",
+      "  System/english and System/spanish item tables. hair.json carries no text",
+      "  and is written once. --effects likewise writes index_en.json/index_es.json",
+      "  beside its catalogue.",
     ].join("\n"),
   );
 }
@@ -1757,7 +1764,12 @@ function decodeClientCharset(latin1) {
 // Allow an explicit override via --iteminfo; otherwise look next to the GRF.
 function resolveItemInfoPath(args) {
   if (args.iteminfo) return existsSync(args.iteminfo) ? args.iteminfo : null;
-  const root = join(dirname(resolve(args.grf)), "System");
+  return itemInfoIn(join(dirname(resolve(args.grf)), "System"));
+}
+
+// The real item table in a System/ directory, or null. Factored out so a
+// locale's System/<tree>/ is searched by exactly the same rules as the base one.
+function itemInfoIn(root) {
   for (const name of ["iteminfo_new.lub", "itemInfo.lub", "iteminfo.lub"]) {
     const p = join(root, name);
     // Skip the tiny stub itemInfo.lub (a few hundred bytes that just chains
@@ -1765,6 +1777,31 @@ function resolveItemInfoPath(args) {
     if (existsSync(p) && statSync(p).size > 4096) return p;
   }
   return null;
+}
+
+// A locale's item table: System/<tree>/iteminfo_new.lub, looked for next to the
+// base one so an --iteminfo override carries over to the translations too.
+export function langItemInfoPath(lang, basePath) {
+  const tree = RAW_LANGS[lang].tree;
+  return tree ? itemInfoIn(join(dirname(basePath), tree)) : basePath;
+}
+
+// id -> display name out of a locale's item table, or null when that locale
+// ships none. For the callers that want nothing but the translated names —
+// --effects' catalogue; --raw reads the whole table instead.
+function localizedItemNames(lang, args) {
+  const base = resolveItemInfoPath(args);
+  const path = base && langItemInfoPath(lang, base);
+  if (!path) return null;
+  const tbl = runChunk(readFileSync(path)).get("tbl");
+  if (!(tbl instanceof LuaTable)) return null;
+  const out = new Map();
+  for (const [id, entry] of tbl.map) {
+    if (typeof id !== "number" || !(entry instanceof LuaTable)) continue;
+    const name = (decodeClientString(entry.get("identifiedDisplayName")) || "").trim();
+    if (name) out.set(id, name);
+  }
+  return out;
 }
 
 // id -> icon resource name (lowercased). The live System/iteminfo_new.lub is
@@ -2549,21 +2586,41 @@ function grfLub(grf, base) {
 }
 
 // "Equipa em: ^777777Topo e Meio^000000" → ["top","mid"]. Newer LATAM items write
-// "Posição: Topo" instead; both labels are accepted. Color codes (^RRGGBB) are
-// stripped first. Ported verbatim from build-db.mjs so the slot set matches.
+// "Posição: Topo" instead, and the English and Spanish item tables use their own
+// labels and slot words, so all three locales are matched at once. Taking the
+// union rather than switching on the locale is deliberate: each localized table
+// carries a scatter of the other two's wording ("Top" shows up 6 times in the
+// Spanish one, "Slots disponíveis" in all three), and no word here names a
+// different slot in another locale, so the union only ever resolves more rows.
+// Color codes (^RRGGBB) are stripped first.
+//
+// Ported from build-db.mjs; the slot set it returns for a pt-BR description is
+// unchanged, so --effects still enumerates exactly the same costumes.
+// The bare "Equip" is last so the longer labels it prefixes are tried first.
+const SLOT_LABEL = /(?:Equipa em|Posi[çc][ãa]o|Equips? on|Location|(?:Se )?Equipar en|Posici[óo]n|Equip)\s*:\s*(.+)/i;
+// Each slot's words across the three locales, matched as substrings — which is
+// what lets "Superioro" (a typo the Spanish table carries 21 times) still read
+// as `top`, and "Lower"/"Inferior" as `low`.
+const SLOT_WORDS = [
+  ["top", ["topo", "upper", "superior", "top"]],
+  ["mid", ["meio", "middle", "centro", "medio", "mid"]],
+  ["low", ["baixo", "lower", "inferior", "low"]],
+  ["garment", ["capa", "garment", "manto"]],
+];
 function parseSlots(desc) {
   if (!(desc instanceof LuaTable)) return [];
   for (const line of desc.map.values()) {
     if (typeof line !== "string") continue;
     const s = decodeClientString(line).replace(/\^[0-9a-fA-F]{6}/g, "");
-    const m = s.match(/(?:Equipa em|Posi[çc][ãa]o)\s*:\s*(.+)/i);
+    const m = s.match(SLOT_LABEL);
     if (!m) continue;
     const t = m[1].split(/\s+\S+\s*:/)[0].toLowerCase();
     const slots = [];
-    if (t.includes("topo")) slots.push("top");
-    if (t.includes("meio")) slots.push("mid");
-    if (t.includes("baixo") || /(^|\s)ixo\b/.test(t)) slots.push("low");
-    if (t.includes("capa")) slots.push("garment");
+    for (const [slot, words] of SLOT_WORDS) {
+      // The bare "ixo" is a pt-BR quirk the port came with: a few descriptions
+      // lose the "ba" of "baixo" to a colour code that starts mid-word.
+      if (words.some((w) => t.includes(w)) || (slot === "low" && /(^|\s)ixo\b/.test(t))) slots.push(slot);
+    }
     return slots;
   }
   return [];
@@ -3330,6 +3387,25 @@ function extractEffects(grfPath, outBase, args) {
       .map((e) => ({ id: e.id, name: e.name, slots: e.slots, effect: e.key }))
       .sort((a, b) => a.id - b.id);
     writeFileSync(join(root, "index.json"), JSON.stringify({ items }));
+
+    // The same catalogue in the other two locales (index_en.json, index_es.json):
+    // the same rows and the same `effect` keys, with each costume's name as that
+    // locale's item table spells it. Only the names are re-read — the enumeration
+    // itself stays pt-BR-driven, because what makes a costume effect-only is a
+    // client fact (a blank sprite, no resolvable view) and not a translation.
+    for (const lang of Object.keys(RAW_LANGS)) {
+      const { suffix, tree } = RAW_LANGS[lang];
+      if (!tree) continue;
+      const names = localizedItemNames(lang, args);
+      if (!names) {
+        console.error(`  ! System/${tree}/iteminfo_new.lub missing — no index${suffix}.json`);
+        continue;
+      }
+      const translated = items.map((i) => ({ ...i, name: names.get(i.id) ?? i.name }));
+      const missing = translated.filter((i, n) => !names.has(items[n].id)).length;
+      writeFileSync(join(root, `index${suffix}.json`), JSON.stringify({ items: translated }));
+      console.error(`  catalogue: index${suffix}.json${missing ? ` (${missing} names fall back to pt-BR)` : ""}`);
+    }
 
     // Every key produced so far. The costume pass owns a key outright: the map
     // and stone passes below reuse a bundle it already built rather than
@@ -5663,6 +5739,63 @@ const RAW_LUB_PATHS = {
   packageitem: "data/luafiles514/lua files/probabilityinfo/packageitem.lub",
 };
 
+// ---------------------------------------------------------------------------
+// Languages
+// ---------------------------------------------------------------------------
+//
+// The server runs in three locales and the client ships a whole second and third
+// copy of every string table for them. pt-BR is the base: it is the tree every
+// structural field is read from (see localizedItems on why), and its tables keep
+// their unsuffixed names, so nothing that already fetches /raw/items.json
+// changes. English and Spanish are published beside it as <name>_en.json and
+// <name>_es.json.
+//
+// `tree` is the subdirectory the locale's copies live under — data/english/… in
+// the GRF, System/english/ for iteminfo next to it. pt-BR has no subdirectory:
+// it *is* data/ and System/, which is why its `tree` is null. `msgCol` is the
+// locale's column in msgstringtable_ml.csv (0 key, 1 ko, 2 en, 7 ptBR, 9 es).
+export const RAW_LANGS = {
+  ptbr: { suffix: "", tree: null, msgCol: 7 },
+  en: { suffix: "_en", tree: "english", msgCol: 2 },
+  es: { suffix: "_es", tree: "spanish", msgCol: 9 },
+};
+
+// Where a localized tree keeps the tables RAW_LUB_PATHS names, and the global
+// each defines. Only the tables that carry text are listed: everything else
+// RAW_LUB_PATHS names is language-independent — skillid/enumvar/efstids are
+// constants, skillinfolist_data/skilldelaylist/pcidentity are numbers, and
+// packageitem's inline names are dropped (see projectPackages) — so those are
+// read once from data/ and shared by all three locales.
+//
+// Two of the paths differ from their pt-BR counterpart by more than a prefix,
+// both of them traps:
+//
+//   - The pt-BR skill names are in skillinfolist_ptbr.lub under
+//     `SkillInfoList_string`. A localized tree ships no _<lang> copy at all,
+//     only the un-suffixed SkillInfoList.lub — the stale merge the pt-BR comment
+//     above warns against, defining `SKILL_INFO_LIST`. There it is the only copy
+//     there is, so it is where en/es names come from, and it is four skills short
+//     of the pt-BR table. Those fall back — see localizedSkillNames.
+//   - addrandomoptionnametable is likewise _ptbr.lub here and un-suffixed there.
+const RAW_LUB_LOCALIZED = {
+  skillinfolist: { path: "luafiles514/lua files/skillinfoz/skillinfolist.lub", global: "SKILL_INFO_LIST" },
+  skilldescript: { path: "luafiles514/lua files/skillinfoz/skilldescript.lub", global: "SKILL_DESCRIPT" },
+  randomopt: { path: "luafiles514/lua files/datainfo/addrandomoptionnametable.lub", global: "NameTable_VAR" },
+  stateiconinfo: { path: "luafiles514/lua files/stateicon/stateiconinfo.lub", global: "StateIconList" },
+  pcjobnamegender: { path: "luafiles514/lua files/datainfo/pcjobnamegender.lub", global: null },
+};
+
+// The GRF path a locale reads `key` from, and the global its copy defines the
+// table under (only the skill names disagree between the trees).
+export function langLubPath(lang, key) {
+  const loc = RAW_LANGS[lang].tree && RAW_LUB_LOCALIZED[key];
+  return loc ? `data/${RAW_LANGS[lang].tree}/${loc.path}` : RAW_LUB_PATHS[key];
+}
+
+export function langLubGlobal(lang, key, ptbrGlobal) {
+  return RAW_LANGS[lang].tree ? (RAW_LUB_LOCALIZED[key]?.global ?? ptbrGlobal) : ptbrGlobal;
+}
+
 // data/itemmoveinfov5.txt lists every item as `<id>\t<move flags...>\t// <AegisName>`;
 // the trailing comment is the real item_db aegis name. A few early lines carry a
 // generic comment instead (cashitem, Korean text, names with spaces), so keep
@@ -5867,15 +6000,24 @@ function joinDescriptionLines(desc) {
 // buried. Rows without a name are dropped rather than emitted as null: unlike
 // items, an unnamed status/option has nothing else worth publishing. (Skills
 // have the same rule but a second column, so they walk this shape themselves.)
-function projectNamed(tbl, nameOf) {
-  const out = [];
-  if (!(tbl instanceof LuaTable)) return out;
-  for (const [id, value] of tbl.map) {
-    if (typeof id !== "number") continue;
-    const name = nameOf(value);
-    if (name) out.push({ id: Math.round(id), name });
+//
+// `fallbackNames` (id -> name) is how the localized tables keep the pt-BR row
+// set: a locale that ships the row but leaves its title empty — 31 statuses in
+// English, 43 in Spanish — takes the pt-BR wording rather than vanishing from a
+// table consumers index by id. It names nothing the base table does not.
+function projectNamed(tbl, nameOf, fallbackNames = null) {
+  const out = new Map();
+  if (tbl instanceof LuaTable) {
+    for (const [id, value] of tbl.map) {
+      if (typeof id !== "number") continue;
+      const name = nameOf(value);
+      if (name) out.set(Math.round(id), name);
+    }
   }
-  return out.sort((a, b) => a.id - b.id);
+  if (fallbackNames) for (const [id, name] of fallbackNames) if (!out.has(id)) out.set(id, name);
+  return [...out]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.id - b.id);
 }
 
 // Skills carry their tooltip in a second table (SKILL_DESCRIPT), keyed by the
@@ -5892,7 +6034,18 @@ function projectNamed(tbl, nameOf) {
 // client leaves unnamed get a name from UNNAMED_SKILL_NAMES or from their parent
 // skill, and follow-up hits carry `parent` — see resolveUnnamedSkills. Without
 // it the projection is the client's names alone.
-export function projectSkills(list, descriptions = null, delays = null, info = null, skid = null) {
+//
+// `lang` picks which wording the curated half is written in; `fallbackNames`
+// (id -> name) covers ids the locale's own table leaves out, which is how
+// skills_en/skills_es keep the pt-BR table's row set — see localizedSkillNames.
+export function projectSkills(
+  list,
+  descriptions = null,
+  delays = null,
+  info = null,
+  skid = null,
+  { lang = "ptbr", fallbackNames = null } = {},
+) {
   const out = [];
   if (!(list instanceof LuaTable)) return out;
   const names = new Map();
@@ -5902,7 +6055,10 @@ export function projectSkills(list, descriptions = null, delays = null, info = n
     const name = entry instanceof LuaTable ? (decodeClientString(entry.get("SkillName")) || "").trim() : "";
     if (name) names.set(Math.round(key), name);
   }
-  const { filled, parents } = skid ? resolveUnnamedSkills(skid, names) : { filled: new Map(), parents: new Map() };
+  if (fallbackNames) for (const [id, name] of fallbackNames) if (!names.has(id)) names.set(id, name);
+  const { filled, parents } = skid
+    ? resolveUnnamedSkills(skid, names, lang)
+    : { filled: new Map(), parents: new Map() };
   for (const [id, name] of filled) names.set(id, name);
 
   for (const [id, name] of names) {
@@ -5947,21 +6103,31 @@ export function projectSkills(list, descriptions = null, delays = null, info = n
 //   it mirrors. Ids whose constant says nothing a name can be built from stay
 //   out of skills.json rather than get an invented one.
 
+// Every curated string below carries one value per locale, because the names the
+// client leaves out have to be filled in each of the three languages /raw
+// publishes. `pickLang` takes the locale's wording, falling back to pt-BR — the
+// base table — so a translation that is simply missing degrades to a readable
+// name instead of to nothing.
+function pickLang(value, lang) {
+  if (typeof value === "string") return value;
+  return value?.[lang] ?? value?.ptbr ?? null;
+}
+
 // Suffixes that mark a follow-up hit when the constant left over is itself a
 // skill. Longest first, so _DOUBLE_ATK is not read as _ATK on SU_PICKYPECK_DOUBLE.
 const FOLLOW_UP_SUFFIXES = [
-  ["_DOUBLE_ATK", "ataque duplo"],
-  ["_DOTDAMAGE", "dano contínuo"],
-  ["_PLUSATK", "ataque adicional"],
-  ["_GROUND", "terra"],
-  ["_POISON", "veneno"],
-  ["_WATER", "água"],
-  ["_MAGIC", "mágico"],
-  ["_MELEE", "corpo a corpo"],
-  ["_ATK2", "ataque 2"],
-  ["_FIRE", "fogo"],
-  ["_WIND", "vento"],
-  ["_ATK", "ataque"],
+  ["_DOUBLE_ATK", { ptbr: "ataque duplo", en: "double attack", es: "ataque doble" }],
+  ["_DOTDAMAGE", { ptbr: "dano contínuo", en: "damage over time", es: "daño continuo" }],
+  ["_PLUSATK", { ptbr: "ataque adicional", en: "additional attack", es: "ataque adicional" }],
+  ["_GROUND", { ptbr: "terra", en: "earth", es: "tierra" }],
+  ["_POISON", { ptbr: "veneno", en: "poison", es: "veneno" }],
+  ["_WATER", { ptbr: "água", en: "water", es: "agua" }],
+  ["_MAGIC", { ptbr: "mágico", en: "magic", es: "mágico" }],
+  ["_MELEE", { ptbr: "corpo a corpo", en: "melee", es: "cuerpo a cuerpo" }],
+  ["_ATK2", { ptbr: "ataque 2", en: "attack 2", es: "ataque 2" }],
+  ["_FIRE", { ptbr: "fogo", en: "fire", es: "fuego" }],
+  ["_WIND", { ptbr: "vento", en: "wind", es: "viento" }],
+  ["_ATK", { ptbr: "ataque", en: "attack", es: "ataque" }],
 ];
 
 // Follow-ups the suffix rule gets wrong or cannot see. `parent` is a SKID const
@@ -5969,23 +6135,44 @@ const FOLLOW_UP_SUFFIXES = [
 export const FOLLOW_UP_OVERRIDES = {
   // The spheres are summoned by WL_SUMMONFB/BL/WB/STONE, which share no stem
   // with the attacks that release them — and ground pairs with STONE (2229).
-  WL_SUMMON_ATK_FIRE: { parent: "WL_SUMMONFB", suffix: "ataque" },
-  WL_SUMMON_ATK_WIND: { parent: "WL_SUMMONBL", suffix: "ataque" },
-  WL_SUMMON_ATK_WATER: { parent: "WL_SUMMONWB", suffix: "ataque" },
-  WL_SUMMON_ATK_GROUND: { parent: "WL_SUMMONSTONE", suffix: "ataque" },
-  AG_CRIMSON_ARROW_ATK: { suffix: "explosão" },
-  OB_OBOROGENSOU_TRANSITION_ATK: { parent: "OB_OBOROGENSOU", suffix: "ataque de transição" },
-  GN_SLINGITEM_RANGEMELEEATK: { parent: "GN_SLINGITEM", suffix: "ataque à distância" },
-  GN_FIRE_EXPANSION_SMOKE_POWDER: { parent: "GN_FIRE_EXPANSION", suffix: "pó de fumaça" },
-  GN_FIRE_EXPANSION_TEAR_GAS: { parent: "GN_FIRE_EXPANSION", suffix: "gás lacrimogêneo" },
-  GN_FIRE_EXPANSION_ACID: { parent: "GN_FIRE_EXPANSION", suffix: "ácido" },
-  SR_CRESCENTELBOW_AUTOSPELL: { parent: "SR_CRESCENTELBOW", suffix: "contra-ataque" },
-  LG_OVERBRAND_BRANDISH: { parent: "LG_OVERBRAND", suffix: "brandir" },
+  WL_SUMMON_ATK_FIRE: { parent: "WL_SUMMONFB", suffix: { ptbr: "ataque", en: "attack", es: "ataque" } },
+  WL_SUMMON_ATK_WIND: { parent: "WL_SUMMONBL", suffix: { ptbr: "ataque", en: "attack", es: "ataque" } },
+  WL_SUMMON_ATK_WATER: { parent: "WL_SUMMONWB", suffix: { ptbr: "ataque", en: "attack", es: "ataque" } },
+  WL_SUMMON_ATK_GROUND: { parent: "WL_SUMMONSTONE", suffix: { ptbr: "ataque", en: "attack", es: "ataque" } },
+  AG_CRIMSON_ARROW_ATK: { suffix: { ptbr: "explosão", en: "explosion", es: "explosión" } },
+  OB_OBOROGENSOU_TRANSITION_ATK: {
+    parent: "OB_OBOROGENSOU",
+    suffix: { ptbr: "ataque de transição", en: "transition attack", es: "ataque de transición" },
+  },
+  GN_SLINGITEM_RANGEMELEEATK: {
+    parent: "GN_SLINGITEM",
+    suffix: { ptbr: "ataque à distância", en: "ranged attack", es: "ataque a distancia" },
+  },
+  GN_FIRE_EXPANSION_SMOKE_POWDER: {
+    parent: "GN_FIRE_EXPANSION",
+    suffix: { ptbr: "pó de fumaça", en: "smoke powder", es: "polvo de humo" },
+  },
+  GN_FIRE_EXPANSION_TEAR_GAS: {
+    parent: "GN_FIRE_EXPANSION",
+    suffix: { ptbr: "gás lacrimogêneo", en: "tear gas", es: "gas lacrimógeno" },
+  },
+  GN_FIRE_EXPANSION_ACID: { parent: "GN_FIRE_EXPANSION", suffix: { ptbr: "ácido", en: "acid", es: "ácido" } },
+  SR_CRESCENTELBOW_AUTOSPELL: {
+    parent: "SR_CRESCENTELBOW",
+    suffix: { ptbr: "contra-ataque", en: "counterattack", es: "contraataque" },
+  },
+  LG_OVERBRAND_BRANDISH: { parent: "LG_OVERBRAND", suffix: { ptbr: "brandir", en: "brandish", es: "blandir" } },
   // Ignição detonating the Armadilha Aderente traps; replays send it right
-  // after an RL_FLICKER use.
-  RL_B_FLICKER_ATK: { parent: "RL_FLICKER", suffix: "Armadilha Aderente" },
+  // after an RL_FLICKER use. The suffix is the trap item's name in each locale.
+  RL_B_FLICKER_ATK: {
+    parent: "RL_FLICKER",
+    suffix: { ptbr: "Armadilha Aderente", en: "Sticky Trap", es: "Trampa Adhesiva" },
+  },
   // Not in LATAM's skillid.lub at all — see SKID_ADDITIONS.
-  AG_DESTRUCTIVE_HURRICANE_BUFF: { parent: "AG_DESTRUCTIVE_HURRICANE", suffix: "bônus" },
+  AG_DESTRUCTIVE_HURRICANE_BUFF: {
+    parent: "AG_DESTRUCTIVE_HURRICANE",
+    suffix: { ptbr: "bônus", en: "buff", es: "bonificación" },
+  },
 };
 
 // Skill ids the server sends that LATAM's skillid.lub does not define, so there
@@ -6013,8 +6200,14 @@ export function withSkidAdditions(skid) {
 // suffix only while their client name is still the base skill's — a patch that
 // gives one a name of its own wins. The suffixes are the tooltip's own words.
 export const SAME_NAME_SUFFIXES = {
-  NW_THE_VIGILANTE_AT_NIGHT_GUN_GATLING: { of: "NW_THE_VIGILANTE_AT_NIGHT", suffix: "metralhadora" },
-  NW_THE_VIGILANTE_AT_NIGHT_GUN_SHOTGUN: { of: "NW_THE_VIGILANTE_AT_NIGHT", suffix: "espingarda" },
+  NW_THE_VIGILANTE_AT_NIGHT_GUN_GATLING: {
+    of: "NW_THE_VIGILANTE_AT_NIGHT",
+    suffix: { ptbr: "metralhadora", en: "gatling gun", es: "ametralladora" },
+  },
+  NW_THE_VIGILANTE_AT_NIGHT_GUN_SHOTGUN: {
+    of: "NW_THE_VIGILANTE_AT_NIGHT",
+    suffix: { ptbr: "espingarda", en: "shotgun", es: "escopeta" },
+  },
 };
 
 // Constants the suffix rule matches that are skills in their own right, cast on
@@ -6169,6 +6362,250 @@ export const UNNAMED_SKILL_NAMES = {
   ALL_ASSISTANT_BUYING: "Assistente de Compras",
 };
 
+// The English and Spanish wording of every plain-string entry above, so skills_en
+// and skills_es name the same ids rather than falling back to Portuguese.
+//
+// Overlays rather than a third column inside UNNAMED_SKILL_NAMES, for two
+// reasons: the pt-BR table stays the one place a *new* id is added (adding one
+// here names nothing), and the `sameAs` entries are deliberately absent, because
+// they copy a client name that is already in the right language. A test asserts
+// these two tables cover exactly the string keys of the base table, so a name
+// added there without a translation fails the suite instead of shipping.
+//
+// Where a pt-BR name borrows another skill's client name as a qualifier
+// ("(Bárbaro)" from Cultivar Bárbaro), the translation borrows the same skill's
+// name in that locale — Create Wooden Warrior, Crear Guerrero de Madera.
+export const UNNAMED_SKILL_NAMES_I18N = {
+  en: {
+    NPC_PIERCINGATT: "Piercing Attack",
+    NPC_MENTALBREAKER: "Mental Breaker",
+    NPC_RANGEATTACK: "Ranged Attack",
+    NPC_ATTRICHANGE: "Change Property",
+    NPC_CHANGEWATER: "Change Property (Water)",
+    NPC_CHANGEGROUND: "Change Property (Earth)",
+    NPC_CHANGEFIRE: "Change Property (Fire)",
+    NPC_CHANGEWIND: "Change Property (Wind)",
+    NPC_CHANGEPOISON: "Change Property (Poison)",
+    NPC_CHANGEHOLY: "Change Property (Holy)",
+    NPC_CHANGEDARKNESS: "Change Property (Shadow)",
+    NPC_CHANGETELEKINESIS: "Change Property (Ghost)",
+    NPC_CHANGEUNDEAD: "Change Property (Undead)",
+    NPC_CRITICALSLASH: "Critical Slash",
+    NPC_COMBOATTACK: "Combo Attack",
+    NPC_GUIDEDATTACK: "Guided Attack",
+    NPC_SELFDESTRUCTION: "Self Destruction",
+    NPC_SPLASHATTACK: "Splash Attack",
+    NPC_SUICIDE: "Suicide",
+    NPC_BLINDATTACK: "Blinding Attack",
+    NPC_SILENCEATTACK: "Silencing Attack",
+    NPC_STUNATTACK: "Stunning Attack",
+    NPC_PETRIFYATTACK: "Petrifying Attack",
+    NPC_CURSEATTACK: "Cursing Attack",
+    NPC_SLEEPATTACK: "Sleeping Attack",
+    NPC_RANDOMATTACK: "Random Attack",
+    NPC_WATERATTACK: "Water Attack",
+    NPC_GROUNDATTACK: "Earth Attack",
+    NPC_FIREATTACK: "Fire Attack",
+    NPC_WINDATTACK: "Wind Attack",
+    NPC_POISONATTACK: "Poison Attack",
+    NPC_HOLYATTACK: "Holy Attack",
+    NPC_DARKNESSATTACK: "Shadow Attack",
+    NPC_TELEKINESISATTACK: "Ghost Attack",
+    NPC_UNDEADATTACK: "Undead Attack",
+    NPC_MAGICALATTACK: "Magical Attack",
+    NPC_METAMORPHOSIS: "Metamorphosis",
+    NPC_PROVOCATION: "Provocation",
+    NPC_SMOKING: "Smoking",
+    NPC_SUMMONSLAVE: "Summon Slaves",
+    NPC_CALLSLAVE: "Call Slaves",
+    NPC_SUMMONMONSTER: "Summon Monster",
+    NPC_EMOTION: "Emotion",
+    NPC_EMOTION_ON: "Emotion (on)",
+    NPC_TRANSFORMATION: "Transformation",
+    NPC_BLOODDRAIN: "Blood Drain",
+    NPC_ENERGYDRAIN: "Energy Drain",
+    NPC_DARKBREATH: "Dark Breath",
+    NPC_DARKBLESSING: "Dark Blessing",
+    NPC_BARRIER: "Barrier",
+    NPC_LICK: "Lick",
+    NPC_HALLUCINATION: "Hallucination",
+    NPC_REBIRTH: "Rebirth",
+    NPC_RANDOMMOVE: "Random Move",
+    NPC_SPEEDUP: "Speed Up",
+    NPC_REVENGE: "Revenge",
+    NPC_DARKCROSS: "Dark Cross",
+    NPC_GRANDDARKNESS: "Grand Darkness",
+    NPC_DARKSTRIKE: "Dark Strike",
+    NPC_DARKTHUNDER: "Dark Thunder",
+    NPC_STOP: "Stop",
+    NPC_WEAPONBRAKER: "Break Weapon",
+    NPC_ARMORBRAKE: "Break Armor",
+    NPC_HELMBRAKE: "Break Helm",
+    NPC_SHIELDBRAKE: "Break Shield",
+    NPC_POWERUP: "Power Up",
+    NPC_AGIUP: "Agility Up",
+    NPC_SIEGEMODE: "Siege Mode",
+    NPC_INVISIBLE: "Invisibility",
+    NPC_RUN: "Run",
+    NPC_FIREBREATH: "Fire Breath",
+    NPC_ICEBREATH: "Ice Breath",
+    NPC_THUNDERBREATH: "Thunder Breath",
+    NPC_ACIDBREATH: "Acid Breath",
+    NPC_DARKNESSBREATH: "Darkness Breath",
+    NPC_BLEEDING: "Bleeding",
+    NPC_EXPULSION: "Expulsion",
+    NPC_TALK: "Talk",
+    NPC_INVINCIBLE: "Invincibility",
+    NPC_INVINCIBLEOFF: "Invincibility (off)",
+    NPC_ICEEXPLO: "Ice Explosion",
+    NPC_DANCINGBLADE: "Dancing Blades",
+    NPC_DARKPIERCING: "Dark Piercing",
+    NPC_DEATHSUMMON: "Death Summon",
+    NPC_HELLBURNING: "Hell Burning",
+    NPC_WIDEDISPEL: "Wide Dispel",
+    NPC_ALL_STAT_DOWN: "All Stats Down",
+    NPC_GRADUAL_GRAVITY: "Gradual Gravity",
+    NPC_MOVE_COORDINATE: "Move to Coordinate",
+    NPC_RELIEVE_ON: "Relieve (on)",
+    NPC_RELIEVE_OFF: "Relieve (off)",
+    NPC_LOCKON_LASER: "Lock-on Laser",
+    NPC_SEEDTRAP: "Seed Trap",
+    NPC_RANDOMBREAK: "Random Break",
+    NPC_STRIP_SHADOW: "Strip Shadow Gear",
+    NPC_CANE_OF_EVIL_EYE: "Cane of Evil Eye",
+    NPC_CURSE_OF_RED_CUBE: "Curse of the Red Cube",
+    NPC_CURSE_OF_BLUE_CUBE: "Curse of the Blue Cube",
+    NPC_KILLING_AURA: "Killing Aura",
+    NPC_BO_THROWROCK: "Throw Rock (Wooden Warrior)",
+    NPC_BO_WOODEN_ATTACK: "Wooden Attack (Wooden Warrior)",
+    NPC_BO_HELL_HOWLING: "Hell Howling (Hell Tree)",
+    NPC_BO_HELL_DUSTY: "Hell Dust (Hell Tree)",
+    NPC_BO_FAIRY_DUSTY: "Fairy Dust (Wooden Fairy)",
+    SM_SELFPROVOKE: "Provoke (self)",
+    ITEM_ENCHANTARMS: "Enchant Weapon",
+    ALL_ASSISTANT_VENDING: "Vending Assistant",
+    ALL_ASSISTANT_BUYING: "Buying Assistant",
+  },
+  es: {
+    NPC_PIERCINGATT: "Ataque Perforante",
+    NPC_MENTALBREAKER: "Quiebre Mental",
+    NPC_RANGEATTACK: "Ataque a Distancia",
+    NPC_ATTRICHANGE: "Cambiar Propiedad",
+    NPC_CHANGEWATER: "Cambiar Propiedad (Agua)",
+    NPC_CHANGEGROUND: "Cambiar Propiedad (Tierra)",
+    NPC_CHANGEFIRE: "Cambiar Propiedad (Fuego)",
+    NPC_CHANGEWIND: "Cambiar Propiedad (Viento)",
+    NPC_CHANGEPOISON: "Cambiar Propiedad (Veneno)",
+    NPC_CHANGEHOLY: "Cambiar Propiedad (Sagrado)",
+    NPC_CHANGEDARKNESS: "Cambiar Propiedad (Sombrío)",
+    NPC_CHANGETELEKINESIS: "Cambiar Propiedad (Fantasma)",
+    NPC_CHANGEUNDEAD: "Cambiar Propiedad (Maldito)",
+    NPC_CRITICALSLASH: "Golpe Crítico",
+    NPC_COMBOATTACK: "Ataque Combinado",
+    NPC_GUIDEDATTACK: "Ataque Guiado",
+    NPC_SELFDESTRUCTION: "Autodestrucción",
+    NPC_SPLASHATTACK: "Ataque en Área",
+    NPC_SUICIDE: "Suicidio",
+    NPC_BLINDATTACK: "Ataque Cegador",
+    NPC_SILENCEATTACK: "Ataque Silenciador",
+    NPC_STUNATTACK: "Ataque Aturdidor",
+    NPC_PETRIFYATTACK: "Ataque Petrificante",
+    NPC_CURSEATTACK: "Ataque Maldecidor",
+    NPC_SLEEPATTACK: "Ataque Somnífero",
+    NPC_RANDOMATTACK: "Ataque Aleatorio",
+    NPC_WATERATTACK: "Ataque de Agua",
+    NPC_GROUNDATTACK: "Ataque de Tierra",
+    NPC_FIREATTACK: "Ataque de Fuego",
+    NPC_WINDATTACK: "Ataque de Viento",
+    NPC_POISONATTACK: "Ataque de Veneno",
+    NPC_HOLYATTACK: "Ataque Sagrado",
+    NPC_DARKNESSATTACK: "Ataque Sombrío",
+    NPC_TELEKINESISATTACK: "Ataque Fantasma",
+    NPC_UNDEADATTACK: "Ataque Maldito",
+    NPC_MAGICALATTACK: "Ataque Mágico",
+    NPC_METAMORPHOSIS: "Metamorfosis",
+    NPC_PROVOCATION: "Provocación",
+    NPC_SMOKING: "Fumar",
+    NPC_SUMMONSLAVE: "Invocar Siervos",
+    NPC_CALLSLAVE: "Llamar Siervos",
+    NPC_SUMMONMONSTER: "Invocar Monstruo",
+    NPC_EMOTION: "Emoción",
+    NPC_EMOTION_ON: "Emoción (activar)",
+    NPC_TRANSFORMATION: "Transformación",
+    NPC_BLOODDRAIN: "Drenar Sangre",
+    NPC_ENERGYDRAIN: "Drenar Energía",
+    NPC_DARKBREATH: "Aliento Sombrío",
+    NPC_DARKBLESSING: "Bendición Sombría",
+    NPC_BARRIER: "Barrera",
+    NPC_LICK: "Lamer",
+    NPC_HALLUCINATION: "Alucinación",
+    NPC_REBIRTH: "Renacimiento",
+    NPC_RANDOMMOVE: "Movimiento Aleatorio",
+    NPC_SPEEDUP: "Aumentar Velocidad",
+    NPC_REVENGE: "Venganza",
+    NPC_DARKCROSS: "Cruz Sombría",
+    NPC_GRANDDARKNESS: "Gran Oscuridad",
+    NPC_DARKSTRIKE: "Golpe Sombrío",
+    NPC_DARKTHUNDER: "Trueno Sombrío",
+    NPC_STOP: "Detener",
+    NPC_WEAPONBRAKER: "Romper Arma",
+    NPC_ARMORBRAKE: "Romper Armadura",
+    NPC_HELMBRAKE: "Romper Casco",
+    NPC_SHIELDBRAKE: "Romper Escudo",
+    NPC_POWERUP: "Aumentar Poder",
+    NPC_AGIUP: "Aumentar Agilidad",
+    NPC_SIEGEMODE: "Modo de Asedio",
+    NPC_INVISIBLE: "Invisibilidad",
+    NPC_RUN: "Huir",
+    NPC_FIREBREATH: "Aliento de Fuego",
+    NPC_ICEBREATH: "Aliento de Hielo",
+    NPC_THUNDERBREATH: "Aliento del Trueno",
+    NPC_ACIDBREATH: "Aliento Ácido",
+    NPC_DARKNESSBREATH: "Aliento de las Tinieblas",
+    NPC_BLEEDING: "Sangrado",
+    NPC_EXPULSION: "Expulsión",
+    NPC_TALK: "Hablar",
+    NPC_INVINCIBLE: "Invencibilidad",
+    NPC_INVINCIBLEOFF: "Invencibilidad (desactivar)",
+    NPC_ICEEXPLO: "Explosión de Hielo",
+    NPC_DANCINGBLADE: "Hojas Danzantes",
+    NPC_DARKPIERCING: "Perforación Sombría",
+    NPC_DEATHSUMMON: "Invocación de la Muerte",
+    NPC_HELLBURNING: "Llamas Infernales",
+    NPC_WIDEDISPEL: "Disipar en Área",
+    NPC_ALL_STAT_DOWN: "Reducción de Atributos",
+    NPC_GRADUAL_GRAVITY: "Gravedad Gradual",
+    NPC_MOVE_COORDINATE: "Mover a Coordenada",
+    NPC_RELIEVE_ON: "Alivio (activar)",
+    NPC_RELIEVE_OFF: "Alivio (desactivar)",
+    NPC_LOCKON_LASER: "Láser de Mira",
+    NPC_SEEDTRAP: "Trampa de Semillas",
+    NPC_RANDOMBREAK: "Rotura Aleatoria",
+    NPC_STRIP_SHADOW: "Quitar Equipo Sombrío",
+    NPC_CANE_OF_EVIL_EYE: "Bastón del Ojo Maligno",
+    NPC_CURSE_OF_RED_CUBE: "Maldición del Cubo Rojo",
+    NPC_CURSE_OF_BLUE_CUBE: "Maldición del Cubo Azul",
+    NPC_KILLING_AURA: "Aura Asesina",
+    NPC_BO_THROWROCK: "Lanzar Piedra (Guerrero de Madera)",
+    NPC_BO_WOODEN_ATTACK: "Ataque de Madera (Guerrero de Madera)",
+    NPC_BO_HELL_HOWLING: "Aullido Infernal (Árbol del Infierno)",
+    NPC_BO_HELL_DUSTY: "Polvo Infernal (Árbol del Infierno)",
+    NPC_BO_FAIRY_DUSTY: "Polvo de Hada (Hada de Madera)",
+    SM_SELFPROVOKE: "Provocar (a sí mismo)",
+    ITEM_ENCHANTARMS: "Encantar Arma",
+    ALL_ASSISTANT_VENDING: "Asistente de Venta",
+    ALL_ASSISTANT_BUYING: "Asistente de Compra",
+  },
+};
+
+// The curated name for `konst` in `lang`: the locale's overlay, else the pt-BR
+// base. A `{ sameAs }` entry is returned untouched — it names no text of its own.
+function curatedSkillName(konst, lang) {
+  const base = UNNAMED_SKILL_NAMES[konst];
+  if (base === undefined || typeof base !== "string") return base;
+  return UNNAMED_SKILL_NAMES_I18N[lang]?.[konst] ?? base;
+}
+
 // The icon (an item/ BMP basename) every monster skill without its own is drawn
 // with — HFLI_SBR44's, see extractIcons.
 const MONSTER_SKILL_ICON = "hfli_sbr44";
@@ -6178,19 +6615,20 @@ const MONSTER_SKILL_ICON = "hfli_sbr44";
 const SKID_MARKER = /(^|_)(STARTMARK|ENDMARK|START_MARK|BEGIN|START|END|LAST|999)$|^SYS_/;
 
 // SKID const -> id -> parent id, for every follow-up hit the constants describe.
-// Also used by --icons, which gives a follow-up with no icon its parent's.
-export function skillFollowUps(skid) {
+// Also used by --icons, which gives a follow-up with no icon its parent's and
+// cares only about the relation, hence the pt-BR default for `lang`.
+export function skillFollowUps(skid, lang = "ptbr") {
   const parents = new Map();
   for (const [konst, id] of skid) {
     if (NOT_FOLLOW_UPS.has(konst)) continue;
     const override = FOLLOW_UP_OVERRIDES[konst];
     let parent = override?.parent;
-    let suffix = override?.suffix;
+    let suffix = pickLang(override?.suffix, lang);
     if (!parent) {
       for (const [end, label] of FOLLOW_UP_SUFFIXES) {
         if (konst.endsWith(end) && skid.has(konst.slice(0, -end.length))) {
           parent = konst.slice(0, -end.length);
-          suffix ??= label;
+          suffix ??= pickLang(label, lang);
           break;
         }
       }
@@ -6207,7 +6645,7 @@ export function skillFollowUps(skid) {
 // that resolve to nothing (a constant SKID no longer defines, or a sameAs with
 // no name to copy); and `unnamed`, ids that neither the client nor this file
 // names.
-export function resolveUnnamedSkills(skid, names) {
+export function resolveUnnamedSkills(skid, names, lang = "ptbr") {
   const filled = new Map();
   const report = { shadowed: [], unknown: [], unnamed: [] };
   const nameOf = (konst) => {
@@ -6229,13 +6667,13 @@ export function resolveUnnamedSkills(skid, names) {
         report.shadowed.push(konst);
         continue;
       }
-      const name = typeof value === "string" ? value : nameOf(value.sameAs);
+      const name = typeof value === "string" ? curatedSkillName(konst, lang) : nameOf(value.sameAs);
       if (name) filled.set(id, name);
       else report.unknown.push(`${konst} (its sameAs ${value.sameAs} has no name)`);
     }
   }
 
-  const followUps = skillFollowUps(skid);
+  const followUps = skillFollowUps(skid, lang);
   const parents = new Map();
   for (const [id, { parentId, suffix, parent }] of followUps) {
     parents.set(id, parentId);
@@ -6253,7 +6691,7 @@ export function resolveUnnamedSkills(skid, names) {
     const id = skid.get(konst);
     const base = names.get(skid.get(of));
     if (id === undefined || base === undefined) report.unknown.push(konst);
-    else if (names.get(id) === base) filled.set(id, `${base} (${suffix})`);
+    else if (names.get(id) === base) filled.set(id, `${base} (${pickLang(suffix, lang)})`);
     else if (names.has(id)) report.shadowed.push(konst);
   }
 
@@ -6312,20 +6750,24 @@ function skillDelay(row) {
 
 // StateIconList entries hold the tooltip under `descript`; descript[1] is the
 // title line — either a bare string or a { text, colour } pair.
-export function projectStatus(list) {
-  return projectNamed(list, (entry) => {
-    if (!(entry instanceof LuaTable)) return null;
-    const descript = entry.get("descript");
-    if (!(descript instanceof LuaTable)) return null;
-    const first = descript.get(1);
-    return decodeClientString(first instanceof LuaTable ? first.get(1) : first);
-  });
+export function projectStatus(list, fallbackNames = null) {
+  return projectNamed(
+    list,
+    (entry) => {
+      if (!(entry instanceof LuaTable)) return null;
+      const descript = entry.get("descript");
+      if (!(descript instanceof LuaTable)) return null;
+      const first = descript.get(1);
+      return decodeClientString(first instanceof LuaTable ? first.get(1) : first);
+    },
+    fallbackNames,
+  );
 }
 
 // NameTable_VAR maps a random-option id to a printf-style display template
 // ("ATQM +%d"); the value is filled in from the item's rolled option at runtime.
-export function projectRandomOpt(tbl) {
-  return projectNamed(tbl, decodeClientString);
+export function projectRandomOpt(tbl, fallbackNames = null) {
+  return projectNamed(tbl, decodeClientString, fallbackNames);
 }
 
 // A class is "present on this server" when its party icon ships in the GRF —
@@ -6533,13 +6975,16 @@ const CLASS_NAME_ALIAS = {
 };
 
 // data/msgstringtable_ml.csv is the multi-language string table the client
-// renders from. Each row is comma-separated base64 fields:
-// [key, ko, en, …, ptBR(7), …]. Index MSI_JOB_<SUFFIX> by <SUFFIX>, taking the
-// pt-BR column and falling back to English when a row is untranslated. It is the
-// most current of the client's job-name sources (pcjobnamegender.lub predates
-// several renames) but it omits most of the 4th classes, hence the pairing in
-// classDisplayName.
-export function parseJobMsgNames(text) {
+// renders from. Each row is ten comma-separated base64 fields:
+// [key, ko(1), en(2), …, ptBR(7), …, es(9)]. Index MSI_JOB_<SUFFIX> by <SUFFIX>,
+// taking `col` — the locale's column, see RAW_LANGS.msgCol — and falling back to
+// English when that row is untranslated. It is the most current of the client's
+// job-name sources (pcjobnamegender.lub predates several renames) but it omits
+// most of the 4th classes, hence the pairing in classDisplayName.
+//
+// One table serves all three locales, so this is the only job-name source that
+// needs no second file read.
+export function parseJobMsgNames(text, col = RAW_LANGS.ptbr.msgCol) {
   const out = new Map();
   const b64 = (s) => {
     try {
@@ -6553,9 +6998,9 @@ export function parseJobMsgNames(text) {
     const cols = line.split(","); // base64 has no commas, so this is safe
     const m = b64(cols[0]).match(/^MSI_JOB_(.+)$/);
     if (!m) continue;
-    const pt = b64(cols[7]).trim();
-    const en = b64(cols[2]).trim();
-    if (pt || en) out.set(m[1], pt || en);
+    const own = b64(cols[col]).trim();
+    const en = b64(cols[RAW_LANGS.en.msgCol]).trim();
+    if (own || en) out.set(m[1], own || en);
   }
   return out;
 }
@@ -6910,82 +7355,74 @@ function extractRawTables(grfPath, outDir, args) {
   };
 
   try {
-    const lubs = collectGrfFiles(grf, Object.values(RAW_LUB_PATHS).map(normalize));
-    const lub = (key) => lubs.get(normalize(RAW_LUB_PATHS[key]));
+    // Every locale's copy of every table, in one pass over the file table: the
+    // GRF is ~278k entries and findBestEntry scans all of them per want, so the
+    // three locales are collected together rather than one pass each.
+    const wants = [];
+    for (const lang of Object.keys(RAW_LANGS)) {
+      for (const key of Object.keys(RAW_LUB_PATHS)) wants.push(normalize(langLubPath(lang, key)));
+    }
+    const lubs = collectGrfFiles(grf, [...new Set(wants)]);
+    const lub = (key, lang = "ptbr") => lubs.get(normalize(langLubPath(lang, key)));
 
-    // Items — iteminfo_new.lub lives next to the GRF, not inside it; the aegis
-    // names come from a plain-text table that does.
+    // --- shared inputs: everything no locale changes -----------------------
+    //
+    // The aegis names, the box contents, the view resolver, the party icons, the
+    // job ids, the cast/delay numbers, the max levels and the palette scan are
+    // all language-independent, so they are built once and handed to each
+    // locale's projection. The palette scan in particular is another full pass
+    // over the file table — doing it three times would triple the run for three
+    // identical results.
     const moveInfo = findBestEntry(grf, normalize(RAW_ITEMMOVE_PATH));
     const aegisMap = moveInfo
       ? parseAegisMap(Buffer.from(extractFile(grf, moveInfo)).toString("latin1"))
       : new Map();
-    console.error(`items from ${lubPath} (${aegisMap.size} aegis names)`);
-    // Box contents ride along on the item row that opens the box, so they are
-    // read before the projection rather than written as a table of their own.
     if (!lub("packageitem")) {
       throw new Error(`${RAW_LUB_PATHS.packageitem} not found in the GRF`);
     }
+    // Box contents ride along on the item row that opens the box, so they are
+    // read before the projection rather than written as a table of their own.
+    // Only ids and weights survive projectPackages, so the pt-BR copy serves
+    // every locale.
     const packages = projectPackages(runChunk(lub("packageitem")).get("tbl"));
-    const items = projectItems(runChunk(readFileSync(lubPath)).get("tbl"), aegisMap, buildViewResolver(grf), packages);
-    write("items.json", items);
-    const recovered = items.filter((i) => !i.view && i.spriteView).length;
-    console.error(`  ${recovered} views recovered from resource names (ClassNum 0)`);
-    // A box whose id has no iteminfo row has nowhere to hang its drop list, so
-    // it is dropped — say how many, because the alternative reads as "the client
-    // stopped shipping contents for them".
-    const boxed = items.filter((i) => i.contains).length;
-    console.error(
-      `  ${boxed}/${packages.size} boxes carry contents (${packages.size - boxed} reference ids iteminfo has no row for)`,
-    );
-    // Losing the whole table (a re-keyed chunk, a locale swap) has to fail loudly:
-    // items.json would still look perfectly valid, just with every box empty.
-    if (boxed < packages.size * 0.5) {
-      throw new Error(`items.json: only ${boxed}/${packages.size} boxes matched an item — check ${RAW_LUB_PATHS.packageitem}`);
-    }
-
-    // Jobs — read positionally out of the constant pools, see parseLuaConstants.
-    // classes.json below pairs the same two pools against the palette scan.
-    const idConsts = lub("pcidentity") ? parseLuaConstants(lub("pcidentity")) : [];
-    const labelConsts = lub("pcjobnamegender") ? parseLuaConstants(lub("pcjobnamegender")) : [];
+    const views = buildViewResolver(grf);
     const iconIds = jobIconIds(grf);
-    write("jobs.json", projectJobs(idConsts, labelConsts, iconIds));
+    const idConsts = lub("pcidentity") ? parseLuaConstants(lub("pcidentity")) : [];
+    const scan = scanPlayerAssets(grf);
+    const read = (entry) => extractFile(grf, entry);
+    const msgEntry = findBestEntry(grf, normalize(RAW_MSGSTRING_PATH));
+    if (!msgEntry) console.error("! msgstringtable_ml.csv missing — class names fall back to lua");
+    const msgText = msgEntry ? Buffer.from(read(msgEntry)).toString("latin1") : null;
 
-    // Each of the three name tables is keyed by consts a companion chunk defines,
-    // so the pair runs over one shared globals table, seed chunk first.
-    const globalsOf = (...keys) => {
+    // Each name table is keyed by consts a companion chunk defines, so the pair
+    // runs over one shared globals table, seed chunk first.
+    const globalsOf = (lang, ...keys) => {
       const g = new LuaTable();
       for (const key of keys) {
-        if (!lub(key)) {
-          console.error(`! ${RAW_LUB_PATHS[key]} not found in the GRF`);
+        if (!lub(key, lang)) {
+          console.error(`! ${langLubPath(lang, key)} not found in the GRF`);
           process.exit(1);
         }
-        runChunkInto(lub(key), g);
+        runChunkInto(lub(key, lang), g);
       }
       return g;
     };
 
     // skillid.lub defines SKID, which skillinfolist and skilldescript both key
-    // themselves by; the names come from the former, the tooltips the latter.
-    // They run into separate globals so that namedTable's "biggest table"
-    // fallback can never mistake SKILL_DESCRIPT for the skill name table.
-    const skillGlobals = globalsOf("skillid", "skillinfolist");
-    const skillNames = namedTable(skillGlobals, "SkillInfoList_string", "SKID");
-    const clientSkid = skidMap(skillGlobals.get("SKID"));
+    // themselves by. It is constants only, so one copy serves every locale.
+    const clientSkid = skidMap(globalsOf("ptbr", "skillid").get("SKID"));
     if (!clientSkid.size) throw new Error(`${RAW_LUB_PATHS.skillid}: no SKID table`);
     const skid = withSkidAdditions(clientSkid);
     const clientSkidIds = new Set(clientSkid.values());
     for (const [konst, id] of Object.entries(SKID_ADDITIONS)) {
       if (clientSkid.has(konst) || clientSkidIds.has(id)) {
-        console.error(`  skillid.lub now defines ${konst} or id ${id} — delete it from SKID_ADDITIONS`);
+        console.error(`! skillid.lub now defines ${konst} or id ${id} — delete it from SKID_ADDITIONS`);
       }
     }
-    const skillDescript = globalsOf("skillid", "skilldescript").get("SKILL_DESCRIPT");
-    if (!(skillDescript instanceof LuaTable)) {
-      throw new Error(`${RAW_LUB_PATHS.skilldescript}: no SKILL_DESCRIPT table`);
-    }
-    // The cast/delay table is keyed by the same SKID consts again, and again
-    // runs into its own globals so no fallback can confuse the three.
-    const skillDelayList = globalsOf("skillid", "skilldelay").get("SKILL_DELAY_LIST");
+    // The cast/delay table and the max levels are numbers, so likewise one copy.
+    // Both run into their own globals so that namedTable's "biggest table"
+    // fallback can never mistake one of these tables for another.
+    const skillDelayList = globalsOf("ptbr", "skillid", "skilldelay").get("SKILL_DELAY_LIST");
     if (!(skillDelayList instanceof LuaTable)) {
       throw new Error(`${RAW_LUB_PATHS.skilldelay}: no SKILL_DELAY_LIST table`);
     }
@@ -6993,82 +7430,169 @@ function extractRawTables(grfPath, outDir, args) {
     // the SKILL_INFO_LIST it then merges the names into: that merge is a
     // `pairs()` loop this VM deliberately doesn't run, so the global it targets
     // is left empty (see OP.TFORLOOP) and only looks like the table to read.
-    const skillInfo = globalsOf("skillid", "skillinfodata").get("SkillInfoList_data");
+    const skillInfo = globalsOf("ptbr", "skillid", "skillinfodata").get("SkillInfoList_data");
     if (!(skillInfo instanceof LuaTable)) {
       throw new Error(`${RAW_LUB_PATHS.skillinfodata}: no SkillInfoList_data table`);
     }
-    const skills = projectSkills(skillNames, skillDescript, skillDelayList, skillInfo, skid);
-    // The checks below hold the client's own rows to account, not the ones this
-    // file adds: an id the client leaves unnamed rarely has a tooltip or an info
-    // row either, and counting those would lower every bar they set.
-    const clientNamed = new Map(projectSkills(skillNames).map((s) => [s.id, s.name]));
-    const own = skills.filter((s) => clientNamed.has(s.id));
-    const described = own.filter((s) => s.description).length;
-    const timed = own.filter((s) => s.delay).length;
-    const levelled = own.filter((s) => s.maxLevel !== null).length;
-    console.error(
-      `skills: ${described}/${own.length} carry a description, ${timed} carry cast/delay times, ${levelled} a max level`,
-    );
-    // Say what the curated names did, so a patch that starts naming one of them
-    // (or drops a constant) shows up in the cycle's log instead of going unseen.
-    const { report } = resolveUnnamedSkills(skid, clientNamed);
-    console.error(
-      `  ${skills.length - own.length} more named by UNNAMED_SKILL_NAMES or their parent; ${skills.filter((s) => "parent" in s).length} follow-up hits carry a parent`,
-    );
-    if (report.shadowed.length) {
-      console.error(`  the client now names ${report.shadowed.join(", ")} — delete them from UNNAMED_SKILL_NAMES`);
-    }
-    if (report.unknown.length) console.error(`  ! unresolved skill-name entries: ${report.unknown.join(", ")}`);
-    if (report.unnamed.length) {
-      console.error(`  ${report.unnamed.length} skill ids still have no name: ${report.unnamed.join(", ")}`);
-    }
-    // Every named skill has a max level in the current client, so anything short
-    // of all of them means the two tables have drifted apart, not that the
-    // client stopped shipping one.
-    if (levelled < own.length) {
-      console.error(`  ! ${own.length - levelled} skills have no MaxLv in ${RAW_LUB_PATHS.skillinfodata}`);
-    }
-    // A wholesale miss means the tooltips came from the wrong chunk (or a
-    // re-keyed one), which reads downstream as "the client dropped them".
-    if (described < own.length * 0.5) {
-      throw new Error(`skills.json: only ${described}/${own.length} descriptions — check ${RAW_LUB_PATHS.skilldescript}`);
-    }
-    // Same trap for the timings, at a lower bar: only ~60% of the named skills
-    // have a delay row at all (passives never do), so the failure to catch is
-    // the table going empty, not it being partial.
-    if (timed < own.length * 0.25) {
-      throw new Error(`skills.json: only ${timed}/${own.length} with cast/delay times — check ${RAW_LUB_PATHS.skilldelay}`);
-    }
-    write("skills.json", skills);
 
-    // enumvar defines the consts the random-option name table may key by.
-    write("randomopt.json", projectRandomOpt(globalsOf("enumvar", "randomopt").get("NameTable_VAR")));
+    // --- per locale --------------------------------------------------------
+    //
+    // pt-BR goes first and is the base: its skill names are what the other two
+    // fall back to for the handful of ids their tables leave unnamed, which is
+    // what keeps every locale's skills table on the same row set.
+    let ptbrSkillNames = null;
+    let ptbrStatusNames = null;
+    let ptbrRandomOptNames = null;
+    for (const lang of ["ptbr", ...Object.keys(RAW_LANGS).filter((l) => l !== "ptbr")]) {
+      const { suffix } = RAW_LANGS[lang];
+      const label = `[${lang}]`;
+      const langItemInfo = langItemInfoPath(lang, lubPath);
+      if (!langItemInfo) {
+        throw new Error(
+          `${lang}: iteminfo_new.lub not found in System/${RAW_LANGS[lang].tree}/ next to ${lubPath}`,
+        );
+      }
 
-    // efstids defines the EFST_* consts StateIconList keys by.
-    const statusGlobals = globalsOf("efstids", "stateiconinfo");
-    write("status.json", projectStatus(namedTable(statusGlobals, "StateIconList")));
+      // Items. The structural fields (view, spriteView, equipSlots, …) are
+      // re-derived per locale rather than copied from pt-BR, because each
+      // locale's table is its own client fact: they disagree on ClassNum for a
+      // handful of ids and each ships a few hundred rows the others do not.
+      console.error(`${label} items from ${langItemInfo} (${aegisMap.size} aegis names)`);
+      const items = projectItems(runChunk(readFileSync(langItemInfo)).get("tbl"), aegisMap, views, packages);
+      write(`items${suffix}.json`, items);
+      const recovered = items.filter((i) => !i.view && i.spriteView).length;
+      console.error(`  ${recovered} views recovered from resource names (ClassNum 0)`);
+      // A box whose id has no iteminfo row has nowhere to hang its drop list, so
+      // it is dropped — say how many, because the alternative reads as "the
+      // client stopped shipping contents for them".
+      const boxed = items.filter((i) => i.contains).length;
+      console.error(
+        `  ${boxed}/${packages.size} boxes carry contents (${packages.size - boxed} reference ids iteminfo has no row for)`,
+      );
+      // Losing the whole table (a re-keyed chunk, a locale swap) has to fail
+      // loudly: the table would still look perfectly valid, just every box empty.
+      if (boxed < packages.size * 0.5) {
+        throw new Error(
+          `items${suffix}.json: only ${boxed}/${packages.size} boxes matched an item — check ${RAW_LUB_PATHS.packageitem}`,
+        );
+      }
 
-    // Classes and hair — one pass over the file table indexes every player
-    // palette and body/hair sprite, then the projections sample the swatches.
-    const scan = scanPlayerAssets(grf);
-    const read = (entry) => extractFile(grf, entry);
-    const msgEntry = findBestEntry(grf, normalize(RAW_MSGSTRING_PATH));
-    if (!msgEntry) console.error("  ! msgstringtable_ml.csv missing — class names fall back to lua");
-    write(
-      "classes.json",
-      projectClasses(
-        scan,
-        {
-          jtIds: jtIdsFromConstants(idConsts),
-          jtLabels: jobLabelsFromConstants(labelConsts),
-          msgNames: msgEntry ? parseJobMsgNames(Buffer.from(read(msgEntry)).toString("latin1")) : new Map(),
-          iconIds,
-        },
-        read,
-      ),
-    );
+      // Jobs — read positionally out of the constant pools, see
+      // parseLuaConstants. The classes table below pairs the same two pools
+      // against the palette scan.
+      const labelConsts = lub("pcjobnamegender", lang) ? parseLuaConstants(lub("pcjobnamegender", lang)) : [];
+      write(`jobs${suffix}.json`, projectJobs(idConsts, labelConsts, iconIds));
+
+      // Skills. The names come from the locale's name table, the tooltips from
+      // its skilldescript; both run into their own globals, seeded by skillid.
+      const skillGlobals = globalsOf(lang, "skillid", "skillinfolist");
+      const skillNames = namedTable(skillGlobals, langLubGlobal(lang, "skillinfolist", "SkillInfoList_string"), "SKID");
+      const skillDescript = globalsOf(lang, "skillid", "skilldescript").get("SKILL_DESCRIPT");
+      if (!(skillDescript instanceof LuaTable)) {
+        throw new Error(`${langLubPath(lang, "skilldescript")}: no SKILL_DESCRIPT table`);
+      }
+      // The localized trees ship only the stale un-suffixed merge, which is four
+      // skills short of the pt-BR table; those ids keep the pt-BR name so a
+      // consumer can index any locale's table by the same ids.
+      const clientNamed = new Map(projectSkills(skillNames).map((s) => [s.id, s.name]));
+      const borrowed = ptbrSkillNames ? [...ptbrSkillNames.keys()].filter((id) => !clientNamed.has(id)) : [];
+      const skills = projectSkills(skillNames, skillDescript, skillDelayList, skillInfo, skid, {
+        lang,
+        fallbackNames: ptbrSkillNames,
+      });
+      ptbrSkillNames ??= clientNamed;
+      // The checks below hold the client's own rows to account, not the ones
+      // this file adds: an id the client leaves unnamed rarely has a tooltip or
+      // an info row either, and counting those would lower every bar they set.
+      const own = skills.filter((s) => clientNamed.has(s.id));
+      const described = own.filter((s) => s.description).length;
+      const timed = own.filter((s) => s.delay).length;
+      const levelled = own.filter((s) => s.maxLevel !== null).length;
+      console.error(
+        `${label} skills: ${described}/${own.length} carry a description, ${timed} carry cast/delay times, ${levelled} a max level`,
+      );
+      if (borrowed.length) {
+        console.error(`  ${borrowed.length} ids unnamed here keep the pt-BR name: ${borrowed.join(", ")}`);
+      }
+      // Say what the curated names did, so a patch that starts naming one of
+      // them (or drops a constant) shows up in the cycle's log instead of going
+      // unseen. The tables are shared, so this only needs saying once.
+      const { report } = resolveUnnamedSkills(skid, clientNamed, lang);
+      console.error(
+        `  ${skills.length - own.length} more named by UNNAMED_SKILL_NAMES or their parent; ${skills.filter((s) => "parent" in s).length} follow-up hits carry a parent`,
+      );
+      if (lang === "ptbr") {
+        if (report.shadowed.length) {
+          console.error(`  the client now names ${report.shadowed.join(", ")} — delete them from UNNAMED_SKILL_NAMES`);
+        }
+        if (report.unknown.length) console.error(`  ! unresolved skill-name entries: ${report.unknown.join(", ")}`);
+        if (report.unnamed.length) {
+          console.error(`  ${report.unnamed.length} skill ids still have no name: ${report.unnamed.join(", ")}`);
+        }
+      }
+      // Every named skill has a max level in the current client, so anything
+      // short of all of them means the two tables have drifted apart, not that
+      // the client stopped shipping one.
+      if (levelled < own.length) {
+        console.error(`  ! ${own.length - levelled} skills have no MaxLv in ${RAW_LUB_PATHS.skillinfodata}`);
+      }
+      // A wholesale miss means the tooltips came from the wrong chunk (or a
+      // re-keyed one), which reads downstream as "the client dropped them".
+      if (described < own.length * 0.5) {
+        throw new Error(
+          `skills${suffix}.json: only ${described}/${own.length} descriptions — check ${langLubPath(lang, "skilldescript")}`,
+        );
+      }
+      // Same trap for the timings, at a lower bar: only ~60% of the named skills
+      // have a delay row at all (passives never do), so the failure to catch is
+      // the table going empty, not it being partial.
+      if (timed < own.length * 0.25) {
+        throw new Error(
+          `skills${suffix}.json: only ${timed}/${own.length} with cast/delay times — check ${RAW_LUB_PATHS.skilldelay}`,
+        );
+      }
+      write(`skills${suffix}.json`, skills);
+
+      // enumvar defines the consts the random-option name table may key by.
+      const randomopt = projectRandomOpt(
+        globalsOf(lang, "enumvar", "randomopt").get("NameTable_VAR"),
+        ptbrRandomOptNames,
+      );
+      ptbrRandomOptNames ??= new Map(randomopt.map((r) => [r.id, r.name]));
+      write(`randomopt${suffix}.json`, randomopt);
+
+      // efstids defines the EFST_* consts StateIconList keys by.
+      const statusGlobals = globalsOf(lang, "efstids", "stateiconinfo");
+      const statusList = namedTable(statusGlobals, "StateIconList");
+      const status = projectStatus(statusList, ptbrStatusNames);
+      // 700-odd rows, so counting the gaps by projecting twice is cheaper than
+      // threading a report out of projectNamed.
+      const ownStatus = ptbrStatusNames ? projectStatus(statusList).length : status.length;
+      ptbrStatusNames ??= new Map(status.map((r) => [r.id, r.name]));
+      if (status.length > ownStatus) {
+        console.error(`  ${status.length - ownStatus} status ids have no title here and keep the pt-BR one`);
+      }
+      write(`status${suffix}.json`, status);
+
+      // Classes — the palette scan is shared; only the labels are per locale.
+      write(
+        `classes${suffix}.json`,
+        projectClasses(
+          scan,
+          {
+            jtIds: jtIdsFromConstants(idConsts),
+            jtLabels: jobLabelsFromConstants(labelConsts),
+            msgNames: msgText ? parseJobMsgNames(msgText, RAW_LANGS[lang].msgCol) : new Map(),
+            iconIds,
+          },
+          read,
+        ),
+      );
+    }
+
+    // Hair carries no text at all — styles, colour counts and dye swatches — so
+    // it is published once, unsuffixed, for every locale to share.
     write("hair.json", projectHair(scan, read));
-
   } finally {
     closeGrf(grf);
   }

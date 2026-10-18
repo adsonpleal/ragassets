@@ -14,6 +14,60 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-10-18
+
+### Added
+- **Every `/raw` table that carries text now ships in English and Spanish as
+  well.** The server runs in three locales and the client keeps a whole second
+  and third copy of every string table for them, but `/raw` published only
+  pt-BR, so a consumer serving an English or Spanish player had nowhere to get
+  the names. `items`, `jobs`, `skills`, `status`, `randomopt` and `classes` are
+  now written three times from one `--raw` run: the unsuffixed file stays pt-BR,
+  plus `<name>_en.json` and `<name>_es.json` out of the client's `data/english`
+  and `data/spanish` trees and its `System/english` and `System/spanish` item
+  tables. `hair.json` carries no text and is still written once; `mobs.json`
+  isn't extracted from the client at all. `/effects/index_en.json` and
+  `index_es.json` are the costume catalogue's two translations — same rows, same
+  bundle keys. Nothing that already fetches `/raw/items.json` changes.
+  `resources/raw/` goes from ~11 MB to ~32 MB on disk; a consumer still fetches
+  only the locale it wants.
+- **Every locale's table is indexable by the pt-BR table's ids.** Where a locale
+  ships a row but leaves the text empty, the pt-BR wording is kept instead of the
+  row vanishing: 4 skill names (318, 3043, 5383, 8028) and 31 English / 43
+  Spanish status titles. The exception is `items`, where the client itself
+  disagrees — the English and Spanish tables each carry ~427 rows pt-BR has no
+  entry for and lack 3–4 that it has. `--raw` prints each count per locale, and
+  runs every existing integrity threshold (empty table, half the descriptions,
+  a quarter the cast times, half the boxes) once per locale.
+- **The curated half of `skills.json` is translated too.** The ~110 ids the
+  client leaves unnamed were named in Portuguese, which would have shipped
+  Portuguese monster-skill names to an English consumer.
+  `UNNAMED_SKILL_NAMES_I18N` holds the English and Spanish wording, and the
+  follow-up and same-name suffixes carry all three (`"Crimson Arrow
+  (explosion)"`). The `{ sameAs }` entries need no translation — they copy a
+  client name that is already in the right language. A test asserts the overlays
+  cover exactly the base table's own entries, so a name added without a
+  translation fails the suite rather than shipping.
+
+### Fixed
+- **`equipSlots` now reads the equip-slot line in all three locales.** It matched
+  only the pt-BR labels and slot words, which was invisible while only pt-BR was
+  published and would have left `equipSlots` empty on 2,082 English and 2,078
+  Spanish rows. Matching the union of all three locales' wording rather than
+  switching on the locale is deliberate: each localized table carries a scatter
+  of the other two's wording, and no word here names a different slot elsewhere.
+  Three pt-BR rows gained a slot they should always have had — 14301, 20371 and
+  20494 are half-translated and spell theirs in English or Spanish. The
+  `--effects` enumeration is unchanged (32 effect-only costumes, byte-identical
+  catalogue): all three have a view that draws.
+
+### Known
+- `items_es.json` carries one unrepaired Cyrillic letter — `и` in 4637 *Carta
+  Legión Inmortal*, where the Spanish text means "y". It is the same row-0xAC
+  corruption `LATAM_ACCENTS` repairs, but that table maps to accented Latin and
+  nothing supports a mapping for this cell, so `--raw` reports it rather than
+  guessing. Pre-existing in the client.
+
 ## 2026-10-02
 
 ### Fixed

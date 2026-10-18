@@ -454,6 +454,7 @@ already produced reuses that bundle rather than writing a second copy.
 | Path | What you get |
 |---|---|
 | `GET /effects/index.json` | Catalogue: `{"items":[{"id","name","slots","effect"}]}` — one entry per effect-only costume (`effect` is the bundle key; there is no character `view`). |
+| `GET /effects/index_en.json` | The same catalogue with each costume's English name (`index_es.json` for Spanish) — same rows, same `effect` keys. See [Languages](#languages-rawname_enjson--rawname_esjson). |
 | `GET /effects/stones.json` | Graphic-stone catalogue: `{"items":[{"id","effect"}]}` — `id` is the **stone's** item id, `effect` its bundle key. Only the stones that play a `.str` appear; a missing stone means "no preview", not an error (see [Graphic stones](#graphic-stones)). |
 | `GET /effects/footprints.json` | Footprint catalogue: one row per footprint stone, four bundle keys and the placement numbers (see [Footprints](#footprints)). Being listed here is what marks a stone a footprint. |
 | `GET /effects/{key}/effect.json` | The parsed `.str` animation: `{"key","fps","maxKey","layers":[{"textures":[…],"anims":[…]}]}`. |
@@ -758,6 +759,11 @@ themselves.
 | `GET /raw/hair.json` | Hair styles and colour swatches per race/gender. |
 | `GET /raw/mobs.json` | Monster stats — see [Monster stats](#monster-stats-rawmobsjson). |
 
+Every table that carries text has an English and a Spanish copy beside it —
+`/raw/items_en.json`, `/raw/skills_es.json` and so on for `items`, `jobs`,
+`skills`, `status`, `randomopt` and `classes`. See
+[Languages](#languages-rawname_enjson--rawname_esjson).
+
 Every table is a **flat JSON array sorted by `id`**, written compact. They are a
 deliberately *faithful* projection of the client, not a curated one: naming
 overrides, slot-suffix formatting and per-project reshaping stay in each
@@ -830,11 +836,12 @@ nearly all of them because the package table bakes in the `[2]` slot suffix that
 literally named `"Unknown Item"`. Join on `id` like everywhere else. The table is
 `ProbabilityInfo/PackageItem.lub`, read at its **full** `data/luafiles514/…`
 path for the same reason the skill tooltips are: `data/spanish/` ships the
-largest copy. 106 of its 1,604 boxes are keyed by an id `iteminfo_new.lub` has no
-row for and are dropped — `--raw` prints the count.
+largest copy. Because the inline names are dropped, the one pt-BR copy serves
+every locale's items table. 106 of its 1,604 boxes are keyed by an id
+`iteminfo_new.lub` has no row for and are dropped — `--raw` prints the count.
 
 `description` — on both `items.json` and `skills.json` — is the client's own
-pt-BR tooltip, **raw**: the `^RRGGBB` colour codes and the line breaks are kept
+tooltip in that table's locale ([Languages](#languages-rawname_enjson--rawname_esjson)), **raw**: the `^RRGGBB` colour codes and the line breaks are kept
 and nothing is reflowed, because consumers treat that text as the source of truth
 for what an item or skill actually does and each formats it its own way. Skills
 whose tooltip the client ships empty (or doesn't ship at all) keep
@@ -842,7 +849,8 @@ whose tooltip the client ships empty (or doesn't ship at all) keep
 client. The tooltips come from `SkillInfoz/SkillDescript.lub` at its **full**
 `data/luafiles514/…` path: the GRF also carries a `data/spanish/` copy of that
 same file, and it is the *largest* of the three, so a suffix-only lookup quietly
-publishes Spanish.
+publishes Spanish into the pt-BR table. (`skills_es.json` reads that same
+`data/spanish/` copy — on purpose, and by its full path.)
 
 `delay` on `skills.json` is the client's *Conjuração e Espera* window — the four
 columns it prints, **in milliseconds**, one entry per skill level:
@@ -885,7 +893,8 @@ that names one replaces ours, and `--raw` logs which table entries that has made
 redundant.
 
 - **Follow-up hits** — the second id a skill's later hits arrive under — are
-  named after the parent plus a pt-BR suffix, `"Flecha Escarlate (explosão)"`,
+  named after the parent plus a suffix in the table's locale,
+  `"Flecha Escarlate (explosão)"` / `"Crimson Arrow (explosion)"`,
   and carry `parent`, the parent's id, so a consumer can count one use rather
   than one per packet. The pairs are read off the SKID constants
   (`<PARENT>_ATK`, `_FIRE`/`_WATER`/`_WIND`/`_GROUND`/`_POISON`, `_MELEE`,
@@ -896,18 +905,20 @@ redundant.
   patch names one of ours. Rows that aren't follow-ups have no `parent` key.
 - **Everything else** gets a name from `UNNAMED_SKILL_NAMES` in
   `extract-grf.mjs`: a pt-BR reading of what the constant says
-  (`NPC_KILLING_AURA` → `"Aura Assassina"`), or the client's own name for the
-  skill it copies (`NPC_CHEAL` → AB_CHEAL's `"Sopro Divino"`, the way the
-  client already names `NPC_DRAGONBREATH`). Those carry no `parent`: each is a
-  cast of its own.
+  (`NPC_KILLING_AURA` → `"Aura Assassina"`), with the English and Spanish
+  wording in `UNNAMED_SKILL_NAMES_I18N` beside it; or the client's own name for
+  the skill it copies (`NPC_CHEAL` → AB_CHEAL's `"Sopro Divino"`, the way the
+  client already names `NPC_DRAGONBREATH`), which needs no translation because
+  the copied name is already in the right language. Those carry no `parent`:
+  each is a cast of its own.
 
 Two narrower cases. `SKID_ADDITIONS` covers ids the server sends that LATAM's
 `skillid.lub` doesn't define at all (5306, kRO's `AG_DESTRUCTIVE_HURRICANE_BUFF`),
 and steps aside once the client defines the id. `SAME_NAME_SUFFIXES` suffixes
 the client's own name for a skill's modes when it is word for word the base
 skill's — Vigília Noturna's gun modes become `"Vigília Noturna (metralhadora)"`
-and `"(espingarda)"` — without `parent`, since the server sends the *use* under
-those ids. Client names are also trimmed; four ship with a trailing space.
+and `"(espingarda)"`, `"The Vigilante at Night (gatling gun)"` / `"(shotgun)"` in
+English — without `parent`, since the server sends the *use* under those ids. Client names are also trimmed; four ship with a trailing space.
 
 Ids whose constant says nothing a name could be built from — `NPC_KEEPING`,
 event and GM skills, unreleased 4th-class skills — stay out of the table, and
@@ -922,6 +933,65 @@ not — is served one generic icon instead: the one divine-pride uses for them,
 which is the client's own `item/hfli_sbr44.bmp` (S.B.R.44, 8012). A monster
 copy of a player skill gets that too, never the player skill's icon.
 
+#### Languages (`/raw/{name}_en.json` / `/raw/{name}_es.json`)
+
+The server runs in three locales and the client ships a whole second and third
+copy of every string table, so every `/raw` table that carries text is published
+three times:
+
+| | |
+|---|---|
+| `/raw/items.json` | pt-BR — the base. Unsuffixed, so nothing that already fetches it changes. |
+| `/raw/items_en.json` | English, from `data/english/` and `System/english/iteminfo_new.lub`. |
+| `/raw/items_es.json` | Spanish, from `data/spanish/` and `System/spanish/iteminfo_new.lub`. |
+
+`items`, `jobs`, `skills`, `status`, `randomopt` and `classes` all have the three
+copies. `hair.json` carries no text at all — styles, colour counts and dye
+swatches — so it is published once for every locale to share, and `mobs.json`
+isn't extracted from the client (its names come from
+[RagnaPlace](#monster-stats-rawmobsjson), pt-BR only). `/effects/index_en.json`
+and `/effects/index_es.json` are the costume catalogue's two translations: the
+same rows and the same `effect` keys, each costume's name as that locale's item
+table spells it.
+
+**Every locale's table is indexable by the same ids as the pt-BR one**, except
+`items`, where the client itself disagrees: the English and Spanish tables each
+carry ~427 rows pt-BR has no entry for, and lack 3–4 that it has. Where a locale
+ships a row but leaves the text empty, the pt-BR wording is kept rather than the
+row dropping out — 4 skill names (318, 3043, 5383, 8028, which the localized
+trees' name table is short of) and 31 English / 43 Spanish status titles. `--raw`
+prints each count.
+
+Everything **structural** is re-derived from each locale's own table rather than
+copied across, because each is its own client fact: they disagree on `ClassNum`
+for a handful of ids, and the slot line is worded differently in each (`Equipa
+em: Topo` / `Equip on: Upper` / `Equipar en: Superior`), so `equipSlots` is read
+with a union of all three locales' labels and slot words. That union is also why
+`items.json` itself gained three slot readings it was missing: a few pt-BR rows
+are only half-translated and spell their slot in English or Spanish.
+
+The two sources that need naming, because they are not simply the pt-BR path with
+a prefix:
+
+- **Skill names.** pt-BR's are in `SkillInfoz/skillinfolist_ptbr.lub` under
+  `SkillInfoList_string`. A localized tree ships no `_<lang>` copy at all, only
+  the un-suffixed `SkillInfoList.lub` — the stale merge that `maxLevel` above
+  warns against — under `SKILL_INFO_LIST`. There it is the only copy there is,
+  and it is the four ids short named above.
+- **Job and class names.** `msgstringtable_ml.csv` is multi-language in one
+  file: column 2 is English, 7 pt-BR, 9 Spanish. Only the column changes, and an
+  untranslated cell falls back to English.
+
+The curated half of `skills.json` — the ids [the client leaves
+unnamed](#unnamed-skills) — is written in each locale too, or an English consumer
+would get Portuguese names for every monster skill. `UNNAMED_SKILL_NAMES_I18N` in
+`extract-grf.mjs` holds the English and Spanish wording of each plain name, and
+the follow-up and same-name suffixes carry all three (`"Crimson Arrow
+(explosion)"`, `"Flecha Carmesí (explosión)"`). A `{ sameAs }` entry needs no
+translation — it copies a client name that is already in the right language. A
+test asserts the overlays cover exactly the pt-BR table's own entries, so a name
+added without a translation fails the suite instead of shipping.
+
 Unlike every other endpoint here these files are **mutable at a stable URL** —
 they change whenever the client does — so they are served with a short
 `Cache-Control: public, max-age=300, must-revalidate` instead of the immutable
@@ -933,7 +1003,9 @@ returns `404` until you run `extract-grf.mjs --raw` (and, for `mobs.json`,
 These are also the only text this host serves, and the reverse proxy compresses
 them (`encode zstd gzip` on `/raw/*` in `caddy/ragassets.caddy`) — `items.json`
 is 9.3 MB raw and ~1.2 MB over the wire (1.16 MB via zstd). Everything else ragassets serves is already
-compressed bytes, so the directive is deliberately scoped to `/raw`.
+compressed bytes, so the directive is deliberately scoped to `/raw`. The three
+locales make `resources/raw/` ~32 MB on disk rather than ~11 MB, but a consumer
+still fetches only the tables and the locale it wants.
 
 ### `GET /healthz`
 
@@ -1498,6 +1570,18 @@ a `skills.json` where fewer than half the skills kept their description (or fewe
 than a quarter their cast/delay times), or an `items.json` where fewer than half
 the boxes matched an item, which is what reading the tooltips, the timings or the
 contents from the wrong chunk looks like.
+
+Each of those checks runs **per locale**: one run writes all three copies of
+every table that carries text (`items_en.json`, `items_es.json`, …) from the
+client's `data/english` and `data/spanish` trees and its `System/english` and
+`System/spanish` item tables, logging a `[ptbr]`/`[en]`/`[es]` block each. See
+[Languages](#languages-rawname_enjson--rawname_esjson). The whole set is built in
+memory and written only once every table has succeeded, locales included — a
+half-regenerated `resources/raw` is worse than a stale one, since the deploy
+skill tars the directory onto a live `/raw` with no PR in between. The shared
+inputs (aegis names, box contents, the view resolver, the cast/delay numbers, the
+palette scan) are read once and handed to all three, so three locales cost one
+pass over the GRF's 278k-entry file table, not three.
 
 `mobs.json` is the one file in `resources/raw/` this doesn't produce — it isn't
 in the client at all, see [Monster stats](#monster-stats-rawmobsjson).
