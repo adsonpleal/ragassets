@@ -30,6 +30,13 @@ node_modules/
 .claude/settings.local.json
 .claude/skills/deploy/
 
+# The deploy skill again, under the vendor-neutral layout some agents use. It is
+# the same runbook — the origin's SSH key path, the authorized_keys forced
+# command, the DEPLOY_SSH_KEY rotation, /etc/ragassets/patch.env — and this repo
+# is public, so it stays out however the directory is spelled. The ignore above
+# only matched the .claude path, and a copy showed up here on its own.
+.agents/skills/deploy/
+
 # OS junk
 Thumbs.db
 .DS_Store
