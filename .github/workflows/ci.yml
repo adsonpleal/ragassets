@@ -36,6 +36,12 @@ jobs:
       - name: Test the extractor
         run: node --test extract-grf.test.mjs
 
+      # The tools' tests are hermetic too: the divine-pride fixtures are written
+      # rather than scraped (its live checks are opt-in behind DP_LIVE), and the
+      # scrape-mobs locale tests work off an id -> name map, not the API.
+      - name: Test the tools
+        run: node --test tools/*.test.mjs
+
       # Most Go tests skip without resources/ (gitignored) — but not the golden
       # renders. Those run against a committed fixture pack precisely so CI
       # cannot pass vacuously on the one thing that guards the renderer.

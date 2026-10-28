@@ -429,6 +429,7 @@ func rawServer(t *testing.T) *server {
 		}
 	}
 	write("mobs.json", `{"1002":{"name":"Poring"}}`)
+	write("mobs_es.json", `{"1002":{"name":"Poring"}}`)
 	write("items.json", `{"501":{"name":"Red Potion"}}`)
 	write("items_en.json", `{"501":{"name":"Red Potion"}}`)
 	write("secret.txt", "not json, not served")
@@ -445,6 +446,7 @@ func TestRawEndpoint(t *testing.T) {
 		{"/raw/mobs.json", http.StatusOK, "application/json"},
 		{"/raw/items.json", http.StatusOK, "application/json"},
 		{"/raw/items_en.json", http.StatusOK, "application/json"}, // a locale's copy of a table
+		{"/raw/mobs_es.json", http.StatusOK, "application/json"},  // monster names in Spanish
 		{"/raw/items_es.json", http.StatusNotFound, ""},           // valid pattern, locale not extracted
 		{"/raw/skills.json", http.StatusNotFound, ""},             // valid pattern, no such table
 		{"/raw/secret.txt", http.StatusNotFound, ""},              // disallowed extension

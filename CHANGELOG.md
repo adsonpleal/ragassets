@@ -14,6 +14,67 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-10-27
+
+### Added
+- **`/raw/mobs_en.json` and `/raw/mobs_es.json`.** The 2026-10-18 entry below
+  gave every `/raw` table that carries text an English and a Spanish copy —
+  except the monster table, which is the one file here not extracted from the
+  client, so it stayed pt-BR only and `/raw/mobs_es.json` returned 404. It no
+  longer does. Both hold the same 2,732 monsters in the same order with the same
+  numbers; **only `name` differs.** Each is literally the pt-BR records with that
+  one field replaced, so every locale is indexable by the pt-BR table's ids and
+  no locale can drift from another on a stat. `mobs.json` is byte-identical to
+  what it was, so nothing that already fetches it changes.
+- **The names come from RagnaPlace's other two LATAM gateways** — `laro-en` and
+  `laro-es` — because the **client has no monster-name table in any locale**. The
+  only monster file under `data/english/` and `data/spanish/` is
+  `adventureguide/guide_monster.lub`, and all three copies are byte-identical
+  apart from the compile-time path in the bytecode header: ids, no strings.
+  `npcidentity.lub` is id → `JT_` constant, `jobname.lub` is sprite folders,
+  `navi_mob_br.lub` has no locale sibling, and `i18n/mobchat` and `i18n/sc` are
+  dialogue keyed by opaque hashes. In RO the server sends monster names, which is
+  the same reason the stats are scraped rather than extracted. The same id on
+  another gateway is the same monster in another language, so the association is
+  by key — and `sprite` is compared per row to prove it, which stops the run
+  rather than filing one monster's name under another's.
+- **Matching the pt-BR name as *text* was measured first, and it does not work.**
+  Against the client's `msgstringtable_ml.csv`, 20 of 2,732 names match and all
+  20 are false positives — interface labels colliding with a monster name, so
+  "Mercenário" resolves to *Assassin* / *Asesino* and "Bruxa" to *Wizard* /
+  *Hechicero*. That table is the UI message table (`MSI_*` keys), not a monster
+  table. Text matching would have covered nothing and corrupted what it covered.
+- **`--langs-only`** rebuilds just the two locale files from the `mobs.json`
+  already on disk; a normal `--ids` run writes all three, and `--no-langs` writes
+  pt-BR alone. `--merge-only` now rewrites the locale files too, from the names
+  already in them, so refreshing the resistances can't leave the locales a patch
+  behind. The locale pass walks only `mobs.json`'s own ids, never the ~4,600
+  client candidates, so it costs one request per monster per locale and no 404s.
+- **The locale gateway is confirmed against `/v1/gateways` before any id is
+  fetched.** The slug is derived by the third party's own naming convention
+  (`laro-pt` → `laro-es`), so it is a proposal, not a fact; one request settles
+  it instead of a wrong slug surfacing 2,732 requests later. Two thresholds
+  remain as a check on the published file — over 5% of rows falling back, or
+  under 25% of names differing from pt-BR (what a slug landing back on `laro-pt`
+  looks like). A monster the locale doesn't carry, or whose name comes back
+  blank, keeps the pt-BR wording rather than dropping out.
+- Measured over the full catalogue: **en** 2,159 translated, 571 the same word as
+  pt-BR, 2 fell back; **es** 2,051 translated, 677 the same word, 4 fell back.
+  Both files carry all 2,732 ids with numbers identical to pt-BR.
+
+### Changed
+- **One rate budget and one fetch protocol for the whole run.** The resume
+  `.jsonl` replay, the worker pool and the progress accounting were a single
+  `fetchAll()`; the pt-BR pass and both locale passes now share it and one
+  `RateGate`, instead of each pass starting with a fresh gate and firing blind
+  into a window the previous pass just drained. `--concurrency` now applies to
+  every pass. The resume file's `{id, mob}` shape is unchanged, so the
+  update-mob-stats skill's post-client-update recovery recipe still reads it.
+- **CI runs `tools/*.test.mjs`.** The tools' tests are hermetic — the
+  divine-pride fixtures are written rather than scraped and its live checks are
+  opt-in behind `DP_LIVE` — but nothing ran them, so neither they nor the new
+  locale tests would have gated a push.
+
 ## 2026-10-18
 
 ### Added

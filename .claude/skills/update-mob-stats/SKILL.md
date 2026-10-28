@@ -1,6 +1,6 @@
 ---
 name: update-mob-stats
-description: Rebuild resources/raw/mobs.json (monster stats — level, HP, EXP, race, size, element, boss/MVP, res/mres) from the RagnaPlace Public API plus a divine-pride crawl. Use after a client update, when mobs.json is stale, when a monster is missing from it, or when res/mres are missing or wrong.
+description: Rebuild resources/raw/mobs.json (monster stats — level, HP, EXP, race, size, element, boss/MVP, res/mres) and its mobs_en.json / mobs_es.json locale copies from the RagnaPlace Public API plus a divine-pride crawl. Use after a client update, when mobs.json is stale, when a monster is missing from it, when res/mres are missing or wrong, or when a monster name is missing in English or Spanish.
 ---
 
 # Rebuild mobs.json from the RagnaPlace API
@@ -20,6 +20,9 @@ extracted from the client GRF. It carries per-monster stats for the LATAM server
 `property` and `propertyLevel` stay separate — a consumer that wants the combined
 `"Dark 3"` form can join them, but the split can't be recovered from the joined
 string.
+
+`mobs_en.json` and `mobs_es.json` sit beside it: the same records in the same
+order, with **only `name` replaced**. See "The other two locales" below.
 
 `res`/`mres` are the 4th-job resistances and are **nullable**. `0` is a real,
 common value (Baphomet above really is 0); `null` means divine-pride has no page
@@ -94,8 +97,9 @@ level ~200, so they come from divine-pride, which publishes them per server.
    node tools/scrape-mobs.mjs --ids _scratch/mobids.json
    ```
 
-   Defaults to gateway `laro-pt` and `resources/raw/mobs.json`; override with
-   `--gateway` / `--out` (e.g. `laro-es`, `laro-en` — `/v1/gateways` lists all 36).
+   Defaults to gateway `laro-pt` and `resources/raw/mobs.json`, and writes the
+   two locale files as well (`--no-langs` to skip them). Override the server with
+   `--gateway` / `--out` (`/v1/gateways` lists all 36).
    Ids that aren't monsters 404 and are skipped (~1900 of them are NPC/job
    sprites). Ids already in the existing `mobs.json` are folded into the
    candidate set, so a monster the client stops shipping doesn't silently vanish.
@@ -152,12 +156,59 @@ level ~200, so they come from divine-pride, which publishes them per server.
    node -e "const a=require('./_scratch/mobs.prev.json'),b=require('./resources/raw/mobs.json');const f=m=>[m.length,m.filter(x=>x.mvp).length,m.filter(x=>x.boss).length,m.filter(x=>x.res!=null).length,m.filter(x=>x.res>0).length].join('/');console.log('was',f(a),'now',f(b),'(mobs/MVP/boss/res-known/res-nonzero)')"
    ```
 
+   Then check the locales line up with it:
+
+   ```bash
+   node -e "const p=require('./resources/raw/mobs.json');for(const l of ['en','es']){const q=require('./resources/raw/mobs_'+l+'.json');const ids=a=>a.map(r=>r.id).join(',');const num=a=>JSON.stringify(a.map(({name,...r})=>r));console.log(l,'rows',q.length,'ids match',ids(p)===ids(q),'numbers match',num(p)===num(q),'fell back to pt-BR',q.filter((r,i)=>r.name===p[i].name).length)}"
+   ```
+
+   `ids match` and `numbers match` must both be true — a locale is the pt-BR
+   records with one field swapped, so anything else is a bug, not a translation.
+
    Expect the count to grow slightly after a client update and never to collapse.
    The tool refuses to write an empty result, but a big *drop* is still worth
    investigating before shipping. `res-known` collapsing means the crawl went
    stale or broke — that is the failure mode this whole second source exists to
    prevent, so treat it as a blocker. Deploy with the `deploy` skill, which ships
    `resources/raw` to the server that serves `/raw/mobs.json`.
+
+## The other two locales
+
+`mobs_en.json` / `mobs_es.json` are built from the **same ids on RagnaPlace's
+other LATAM gateways** — `laro-en` and `laro-es`. The same id on another gateway
+is the same monster with its name in that language, so the association is by key.
+
+```bash
+node tools/scrape-mobs.mjs --langs-only    # rebuild just the locales from mobs.json
+```
+
+- **A full `--ids` run already writes all three.** `--langs-only` is for adding or
+  repairing a locale without re-scraping pt-BR, and for finishing up after
+  `--no-langs`. `--merge-only` rewrites the locale files too, reusing the names
+  already in them, so refreshing the resistances can't leave the locales behind.
+- **Cost:** one request per monster per locale (~2,732 each), walked off
+  `mobs.json`'s own ids rather than the ~4,600 candidates, so there are no 404s
+  to pay for. At the 400/window limit that is ~7 min per locale.
+- **Only `name` differs.** The records are copied from pt-BR and one field is
+  replaced, so res/mres and every stat are identical by construction, and every
+  locale stays indexable by the pt-BR table's ids. A monster the locale gateway
+  doesn't carry, or one whose name comes back blank, keeps the pt-BR wording.
+- **The gateway is confirmed against `/v1/gateways` before any id is fetched**,
+  since the slug is derived from the third party's naming convention rather than
+  known. Two thresholds then check the published file: over 5% of rows falling
+  back, or under 25% of names differing from pt-BR. A row whose `sprite`
+  disagrees between the locale gateway and pt-BR stops the run — that would file
+  one monster's name under another's.
+- **Baseline 2026-10-27** (full catalogue, 2,732 monsters): en 2,159 translated /
+  571 same word / 2 fell back; es 2,051 / 677 / 4. Both carry every pt-BR id with
+  identical numbers. A big move in those counts is worth investigating before
+  shipping, the same as the MVP/boss counts above.
+- **Don't try to get these from the client, and don't match by text.** Both were
+  measured and both fail — the client ships no monster-name table in any locale,
+  and matching the pt-BR name against `msgstringtable_ml.csv` yields 20 hits of
+  which all 20 are false positives. README's [Monster names in the other two
+  locales](../../../README.md#monster-names-in-the-other-two-locales) has the
+  evidence; don't re-derive it.
 
 ## Cross-validation, and what to do when it fails
 
