@@ -757,7 +757,7 @@ themselves.
 | `GET /raw/randomopt.json` | Random-option `id` → display template (`"ATQM +%d"`). |
 | `GET /raw/classes.json` | Classes with palettes, swatches and alternative outfits. |
 | `GET /raw/hair.json` | Hair styles and colour swatches per race/gender. |
-| `GET /raw/mobs.json` | Monster stats — see [Monster stats](#monster-stats-rawmobsjson). |
+| `GET /raw/mobs.json` | Monster stats — see [Monster stats](#monster-stats-rawmobsjson). `mobs_en.json` / `mobs_es.json` carry the same rows with the monster's name in that locale. |
 
 Every table that carries text has an English and a Spanish copy beside it —
 `/raw/items_en.json`, `/raw/skills_es.json` and so on for `items`, `jobs`,
@@ -947,12 +947,15 @@ three times:
 
 `items`, `jobs`, `skills`, `status`, `randomopt` and `classes` all have the three
 copies. `hair.json` carries no text at all — styles, colour counts and dye
-swatches — so it is published once for every locale to share, and `mobs.json`
-isn't extracted from the client (its names come from
-[RagnaPlace](#monster-stats-rawmobsjson), pt-BR only). `/effects/index_en.json`
-and `/effects/index_es.json` are the costume catalogue's two translations: the
-same rows and the same `effect` keys, each costume's name as that locale's item
-table spells it.
+swatches — so it is published once for every locale to share.
+`/effects/index_en.json` and `/effects/index_es.json` are the costume
+catalogue's two translations: the same rows and the same `effect` keys, each
+costume's name as that locale's item table spells it.
+
+`mobs.json` has the three copies as well, but it is the one table whose locales
+do **not** come from the client, because no locale of the client has a monster
+name to give — see [Monster names in the other two
+locales](#monster-names-in-the-other-two-locales).
 
 **Every locale's table is indexable by the same ids as the pt-BR one**, except
 `items`, where the client itself disagrees: the English and Spanish tables each
@@ -1633,11 +1636,16 @@ It is rebuilt from two sources, split by which one is authoritative for what:
 RagnaPlace needs a `RAGNAPLACE_API_KEY` in `.env` (request one at
 <https://ragnaplace.com/api>); divine-pride is crawled anonymously.
 
+`mobs_en.json` and `mobs_es.json` are published beside it, with the same rows
+and the same numbers — see [Monster names in the other two
+locales](#monster-names-in-the-other-two-locales).
+
 ```bash
 node extract-grf.mjs --mobids _scratch/mobids.json --grf path/to/data.grf
 node tools/scrape-mobs.mjs --ids _scratch/mobids.json --no-dp   # first run only
 node tools/crawl-divine-pride.mjs                               # ~1 h, resumable
 node tools/scrape-mobs.mjs --merge-only                         # no API quota
+node tools/scrape-mobs.mjs --langs-only                         # mobs_en/mobs_es
 ```
 
 The first two steps are split because neither source is sufficient alone. The API
@@ -1655,6 +1663,72 @@ anything younger than 30 days, so re-runs are nearly free and an interrupted cra
 resumes. `--merge-only` then folds the result into the existing `mobs.json` without
 touching the RagnaPlace API at all, so refreshing the resistances doesn't cost the
 key's whole quota.
+
+### Monster names in the other two locales
+
+`/raw/mobs_en.json` and `/raw/mobs_es.json` hold the same monsters as
+`mobs.json`, in the same order, with the same numbers — **only `name` differs**.
+Each is literally the pt-BR records with that one field replaced, so a consumer
+can index any locale by the pt-BR table's ids and no locale can drift from the
+others on a stat.
+
+**The client is not the source, in any locale.** It ships no monster-name table:
+the only monster file under `data/english/` and `data/spanish/` is
+`adventureguide/guide_monster.lub`, and all three copies are byte-identical apart
+from the compile-time path in the bytecode header — ids, no strings.
+`npcidentity.lub` is id → `JT_` constant, `jobname.lub` is sprite folders,
+`navi_mob_br.lub` has no locale sibling at all, and `i18n/mobchat` and `i18n/sc`
+are dialogue keyed by opaque hashes. In RO the server sends monster names, which
+is the same reason the stats are scraped rather than extracted.
+
+So the locales come from where the pt-BR name does. RagnaPlace serves the LATAM
+server under one gateway per locale — `laro-pt`, `laro-es`, `laro-en` — and the
+**same id** on another gateway is the same monster with its name in that
+language. That is an association by key, and the only one available:
+
+> Matching the pt-BR *text* against the client's `msgstringtable_ml.csv` was
+> measured and does not work. 20 of 2,732 names match, and all 20 are false
+> positives — interface labels colliding with a monster name, so "Mercenário"
+> resolves to *Assassin* / *Asesino* and "Bruxa" to *Wizard* / *Hechicero*. That
+> table is the UI message table (`MSI_*` keys), not a monster table. Matching by
+> text would cover nothing and corrupt what it did cover.
+
+`--langs-only` (re)builds just the two locale files from the `mobs.json` already
+on disk; a normal `--ids` run writes all three, and `--no-langs` writes pt-BR
+alone. `--merge-only` rewrites the locale files too, from the names already in
+them, so a resistance refresh can't leave the locales a patch behind. The locale
+pass walks only the ids `mobs.json` already holds, never the ~4,600 candidates,
+so it costs one request per monster per locale and no 404s.
+
+The locale's slug is derived from that naming convention — `laro-pt` → `laro-es`
+— which makes it a proposal, not a fact, so it is **confirmed against
+`/v1/gateways` before a single id is fetched**. One request settles it, rather
+than a wrong slug surfacing 2,732 requests and seven minutes later.
+
+Two thresholds then check the file itself, because both remaining failures
+produce one that looks perfectly valid:
+
+| | refuses when |
+| --- | --- |
+| mostly fallback | over 5% of monsters have no name in that locale, so the file would be largely Portuguese under an `_es` name |
+| not actually translated | under 25% of names differ from pt-BR, which is what a gateway answering with the pt-BR wording looks like |
+
+A monster the locale's gateway doesn't carry keeps the pt-BR wording rather than
+dropping out, and so does one whose name comes back blank. Each run prints the
+counts. A row whose `sprite` differs between the locale gateway and pt-BR stops
+the run without writing: the files are keyed by the pt-BR ids, so that would file
+one monster's name under another's.
+
+Measured over the full catalogue on 2026-10-27:
+
+| | translated | same word as pt-BR | fell back |
+| --- | --- | --- | --- |
+| `mobs_en.json` | 2,159 | 571 | 2 |
+| `mobs_es.json` | 2,051 | 677 | 4 |
+
+Names that are simply the same in two languages are normal and not a fault —
+Poring, Argiope, Marse, Metaling — which is why the floor sits at 25% and not
+higher.
 
 ### Cross-validation
 
