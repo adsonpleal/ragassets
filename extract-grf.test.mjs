@@ -50,6 +50,11 @@ import {
   actDrawsNothing,
   hatEffectSprite,
   hatEffectIndex,
+  hatEffectsByResource,
+  hatEffectCandidates,
+  pickHatEffectAsset,
+  effectSpriteBase,
+  effectHatItemSet,
   footprintRow,
   FOOTPRINT_DEFAULTS,
   STONE_HAT_EFFECT,
@@ -2283,4 +2288,135 @@ test("effectKey falls back to the .str folder when there is no resource name", (
   assert.equal(effectKey("", "data/texture/effect/c_swirling_flame/vortexf2.str"), "c_swirling_flame");
   // a resource name still wins when it is servable
   assert.equal(effectKey("C_Popping_Poring_Aura", "data/texture/effect/efst_x/y.str"), "c_popping_poring_aura");
+});
+
+// ---------------------------------------------------------------------------
+// Hat-effect costumes
+// ---------------------------------------------------------------------------
+
+const luaTbl = (obj) => {
+  const t = new LuaTable();
+  for (const [k, v] of Object.entries(obj)) t.set(Number.isNaN(Number(k)) ? k : Number(k), v);
+  return t;
+};
+
+// hatEffectIndex collapses the table onto one row per lowercased name, which is
+// right for a stone (it names one exact constant) but loses one of a pair for a
+// costume: this client declares both HAT_EF_BLACK_THUNDER and
+// HAT_EF_black_thunder, two different effects whose names differ only in case.
+// The by-resource projection has to keep both, or the costume side can only ever
+// see whichever the table happens to list last.
+test("hatEffectsByResource keeps every row a resource name can reach", () => {
+  const ids = luaTbl({
+    HAT_EF_BLACK_THUNDER: 159,
+    HAT_EF_black_thunder: 219,
+    HAT_EF_Atque_Poenitentia: 247,
+    HAT_EF_Atque_Poenitentia2: 249,
+    HAT_EF_c_sakura_fubuki: 90,
+  });
+  const table = luaTbl({
+    159: luaTbl({ hatEffectID: 2346 }),
+    219: luaTbl({ resourceFileName: "efst_black_thunder\\ros2023_f.str" }),
+    247: luaTbl({ hatEffectID: 2428 }),
+    249: luaTbl({ resourceFileName: "efst_Atque_Poenitentia2\\caeffect.str" }),
+    90: luaTbl({ resourceFileName: "efst_c_sakura_fubuki\\sakura_fubuki.str" }),
+  });
+  const byRes = hatEffectsByResource(ids, table);
+
+  assert.deepEqual(byRes.get("black_thunder"), [
+    { name: "HAT_EF_BLACK_THUNDER", id: 159, str: null, builtin: 2346 },
+    { name: "HAT_EF_black_thunder", id: 219, str: "data/texture/effect/efst_black_thunder/ros2023_f.str", builtin: null },
+  ]);
+  // The costume prefix is dropped on both sides, so "C_Sakura_Fubuki" and
+  // "HAT_EF_c_sakura_fubuki" meet on the same key.
+  assert.equal(byRes.get("sakura_fubuki").length, 1);
+
+  // The revision the client writes as a trailing digit is reachable from the
+  // bare resource name, and the bare match is offered first.
+  const cands = hatEffectCandidates(byRes, "Atque_Poenitentia");
+  assert.deepEqual(cands.map((c) => c.name), ["HAT_EF_Atque_Poenitentia", "HAT_EF_Atque_Poenitentia2"]);
+  assert.deepEqual(hatEffectCandidates(byRes, "C_Black_Thunder").map((c) => c.id), [159, 219]);
+  assert.deepEqual(hatEffectCandidates(byRes, "Nothing_Like_This"), []);
+  assert.deepEqual(hatEffectCandidates(null, "Atque_Poenitentia"), []);
+
+  assert.equal(hatEffectsByResource(null, table), null);
+  assert.equal(hatEffectsByResource(ids, undefined), null);
+});
+
+// What a costume's hat effect plays is decided by what this client ships, not by
+// which constant looks newer — the two real cases pull in opposite directions.
+// 420382 [Visual] Escudo Poenitentia has both a built-in row and a .str row, and
+// the .str is here, so the .str wins. 400149 [Visual] Aura de Betelgeuse has the
+// same shape, but its .str (a kRO 2023 file) was never shipped to LATAM, so what
+// is left is the played sprite the built-in row draws.
+test("pickHatEffectAsset prefers a shipped .str, then the played sprite", () => {
+  const poen = [
+    { name: "HAT_EF_Atque_Poenitentia", id: 247, str: null, builtin: 2428 },
+    { name: "HAT_EF_Atque_Poenitentia2", id: 249, str: "data/texture/effect/efst_atque_poenitentia2/caeffect.str", builtin: null },
+  ];
+  const thunder = [
+    { name: "HAT_EF_BLACK_THUNDER", id: 159, str: null, builtin: 2346 },
+    { name: "HAT_EF_black_thunder", id: 219, str: "data/texture/effect/efst_black_thunder/ros2023_f.str", builtin: null },
+  ];
+  // This client: Poenitentia's .str and its effect sprite both ship; black
+  // thunder's .str does not, but its effect sprite does.
+  const shipped = new Set([
+    "data/texture/effect/efst_atque_poenitentia2/caeffect.str",
+    effectSpriteBase("Atque_Poenitentia") + ".spr",
+    effectSpriteBase("Atque_Poenitentia") + ".act",
+    effectSpriteBase("C_Black_Thunder") + ".spr",
+    effectSpriteBase("C_Black_Thunder") + ".act",
+  ]);
+  const has = (p) => shipped.has(p);
+
+  assert.deepEqual(pickHatEffectAsset("Atque_Poenitentia", poen, has), {
+    str: "data/texture/effect/efst_atque_poenitentia2/caeffect.str",
+    hatEf: "HAT_EF_Atque_Poenitentia2",
+  });
+  // The bundle key comes back with the path rather than being sliced off it
+  // again: it is the folder the client keeps the sprite in.
+  assert.deepEqual(pickHatEffectAsset("C_Black_Thunder", thunder, has), {
+    sprite: effectSpriteBase("C_Black_Thunder"),
+    key: "black_thunder",
+    hatEf: "HAT_EF_BLACK_THUNDER",
+    builtin: 2346,
+  });
+
+  // Nothing shipped: a built-in row is the client drawing it from code (there is
+  // no asset to publish and never will be), which is a different answer from a
+  // name that resolves to no row at all.
+  assert.deepEqual(pickHatEffectAsset("C_Black_Thunder", thunder, () => false), {
+    builtin: 2346,
+    hatEf: "HAT_EF_BLACK_THUNDER",
+  });
+  assert.equal(pickHatEffectAsset("X", [{ name: "HAT_EF_X", id: 1, str: null, builtin: null }], () => false), null);
+  assert.equal(pickHatEffectAsset("X", [], () => true), null);
+
+  // Two shipped .str for one costume is reported, not guessed at. No client has
+  // shipped that yet; one that does needs a human to pick.
+  const both = pickHatEffectAsset("X", [
+    { name: "HAT_EF_X", id: 1, str: "a.str", builtin: null },
+    { name: "HAT_EF_X2", id: 2, str: "b.str", builtin: null },
+  ], () => true);
+  assert.deepEqual(both, { ambiguous: ["a.str", "b.str"] });
+});
+
+// The sprite path is the one link the client leaves for an effect it compiles
+// into its executable: a folder of the resource's own name, holding a .spr/.act
+// of that name again. The costume prefix is dropped, the same way the HatEFID
+// constants drop it.
+test("effectSpriteBase names the played sprite from the resource name", () => {
+  assert.equal(effectSpriteBase("C_Black_Thunder"), "data/sprite/이팩트/black_thunder/black_thunder");
+  assert.equal(effectSpriteBase("Atque_Poenitentia"), "data/sprite/이팩트/atque_poenitentia/atque_poenitentia");
+  assert.equal(effectSpriteBase(""), "");
+  assert.equal(effectSpriteBase(undefined), "");
+});
+
+// effectHatItemTable is the client's own answer to "does this item have an
+// effect" (IsEffectHatItem reads it, and it is what /effect hides). It carries
+// no asset, so it corroborates the resource-name join rather than driving it.
+test("effectHatItemSet reads the client's effect-hat item list as a set", () => {
+  const set = effectHatItemSet(luaTbl({ 1: 20522, 2: 400149, 3: 0, 4: "nope" }));
+  assert.deepEqual([...set].sort((a, b) => a - b), [20522, 400149]);
+  assert.equal(effectHatItemSet(undefined), null);
 });

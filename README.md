@@ -403,6 +403,44 @@ not a `HAT_EF` id → item map. Joining the two by number produces plausible
 nonsense — `HAT_EF_Blossom_Fluttering` lands on `20522` *Miaura* while the item
 that really is `흩날리는벚꽃` sits one row later. Match by resource name instead.
 
+#### Costumes that play an effect *and* draw a sprite
+
+A costume whose visual is an effect does not have to be visual-less. Some render
+an ordinary sprite and play an effect **on top of it** — `420382` *[Visual]
+Escudo Poenitentia* draws the shield and surrounds it with
+`efst_Atque_Poenitentia2/caeffect.str` — and `index.json` cannot hold those,
+because being in it means "this costume has no sprite, draw the effect instead":
+a consumer that reads it that way would drop the shield. They get their own
+catalogue, `hat_effects.json`, which says only "this costume plays this effect"
+and leaves the sprite alone. The two files are disjoint — a costume is in
+exactly one of them — so a consumer reads both.
+
+The link is the resource-name match the section above arrives at, run the other
+way round: the client names each `HatEFID` constant after the costume's own
+resource name (`Atque_Poenitentia` → `HAT_EF_Atque_Poenitentia2`), so a costume
+finds its own row by lookup instead of by hand. Two wrinkles, both real in this
+client and both in `pickHatEffectAsset`:
+
+- **A costume can name more than one constant.** The client ships pairs that
+  differ only in case (`HAT_EF_BLACK_THUNDER` / `HAT_EF_black_thunder`) or by a
+  revision digit (`…_Poenitentia` / `…_Poenitentia2`), and typically one of the
+  pair is a `resourceFileName` and the other a built-in `hatEffectID`. Which one
+  is live is settled by what this client actually *ships*, not by which looks
+  newer: the `.str` wins when it is in the GRF.
+- **The effect is not always a `.str`.** When the live row is a built-in,
+  the client plays a sprite from a folder of the resource's own name under
+  `data/sprite/이팩트/` — `400149` *[Visual] Aura de Betelgeuse* is
+  `black_thunder/black_thunder`, and its `.str` sibling
+  (`efst_black_thunder/ros2023_f.str`, a kRO 2023 file) was never shipped to
+  LATAM. Those ids run past the end of every public effect table, so the folder
+  name is the only link the client leaves — the same kind of evidence the
+  `efst_<res>` rule works from. Such a row carries `sprite` instead of `effect`
+  and points at a `/effects/sprites/{key}/` bundle.
+
+A costume whose effect is a built-in with no sprite either is reported and left
+out: the client draws it from its executable and there is no asset to publish,
+the same dead end the built-in stones reach.
+
 #### Graphic stones
 
 The **Pedras Gráficas** (*Encantamento de Visual*, the Malangdo Loja Fashion)
@@ -455,6 +493,8 @@ already produced reuses that bundle rather than writing a second copy.
 |---|---|
 | `GET /effects/index.json` | Catalogue: `{"items":[{"id","name","slots","effect"}]}` — one entry per effect-only costume (`effect` is the bundle key; there is no character `view`). |
 | `GET /effects/index_en.json` | The same catalogue with each costume's English name (`index_es.json` for Spanish) — same rows, same `effect` keys. See [Languages](#languages-rawname_enjson--rawname_esjson). |
+| `GET /effects/hat_effects.json` | The costumes that play a hat effect: `{"items":[{"id","name","slots","effect"}]}`, or `sprite` in place of `effect` when what it plays is a `.spr/.act` and the bundle is a `/effects/sprites/{key}/` one. **Being here says nothing about the costume's sprite** — most of these render one and must keep rendering it, with the effect over the top (see [Costumes that play an effect *and* draw a sprite](#costumes-that-play-an-effect-and-draw-a-sprite)). Disjoint from `index.json`, which is the one that means "no sprite"; read both. |
+| `GET /effects/hat_effects_en.json` | The same rows with English names (`hat_effects_es.json` for Spanish). |
 | `GET /effects/stones.json` | Graphic-stone catalogue: `{"items":[{"id","effect"}]}` — `id` is the **stone's** item id, `effect` its bundle key. Only the stones that play a `.str` appear; a missing stone means "no preview", not an error (see [Graphic stones](#graphic-stones)). |
 | `GET /effects/footprints.json` | Footprint catalogue: one row per footprint stone, four bundle keys and the placement numbers (see [Footprints](#footprints)). Being listed here is what marks a stone a footprint. |
 | `GET /effects/{key}/effect.json` | The parsed `.str` animation: `{"key","fps","maxKey","layers":[{"textures":[…],"anims":[…]}]}`. |
@@ -464,6 +504,7 @@ already produced reuses that bundle rather than writing a second copy.
 
 ```
 /effects/index.json
+/effects/hat_effects.json
 /effects/stones.json
 /effects/footprints.json
 /effects/c_spot_light/effect.json

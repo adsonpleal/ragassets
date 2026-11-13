@@ -166,6 +166,9 @@ func effectsServer(t *testing.T) *server {
 	write("index.json", `{"items":[{"id":410127,"name":"Holofote","slots":["mid"],"effect":"c_spot_light"}]}`)
 	write("index_en.json", `{"items":[{"id":410127,"name":"Spotlight","slots":["mid"],"effect":"c_spot_light"}]}`)
 	write("index_es.json", `{"items":[{"id":410127,"name":"Foco","slots":["mid"],"effect":"c_spot_light"}]}`)
+	write("hat_effects.json", `{"items":[{"id":420382,"name":"Escudo Poenitentia","slots":["low"],"effect":"c_spot_light"},{"id":400149,"name":"Aura de Betelgeuse","slots":["mid"],"sprite":"torch_01"}]}`)
+	write("hat_effects_en.json", `{"items":[{"id":420382,"name":"Poenitentia Shield","slots":["low"],"effect":"c_spot_light"}]}`)
+	write("hat_effects_es.json", `{"items":[{"id":420382,"name":"Escudo Poenitentia","slots":["low"],"effect":"c_spot_light"}]}`)
 	write("stones.json", `{"items":[{"id":410127,"effect":"c_spot_light"}]}`)
 	write("footprints.json", `{"items":[{"id":1002642,"bottomLeft":"c_spot_light","stride":50}]}`)
 	write(filepath.Join("c_spot_light", "effect.json"), `{"key":"c_spot_light","fps":60,"maxKey":150,"layers":[]}`)
@@ -191,6 +194,11 @@ func TestEffectEndpoint(t *testing.T) {
 		{"/effects/index_de.json", http.StatusNotFound, ""},  // valid pattern, locale not extracted
 		{"/effects/index_eng.json", http.StatusNotFound, ""}, // not a two-letter locale
 		{"/effects/stones_en.json", http.StatusNotFound, ""}, // only index.json is per locale
+		{"/effects/hat_effects.json", http.StatusOK, "application/json"},
+		{"/effects/hat_effects_en.json", http.StatusOK, "application/json"},
+		{"/effects/hat_effects_es.json", http.StatusOK, "application/json"},
+		{"/effects/hat_effects_de.json", http.StatusNotFound, ""}, // valid pattern, locale not extracted
+		{"/effects/hat_effect.json", http.StatusNotFound, ""},     // not one of the catalogues
 		{"/effects/stones.json", http.StatusOK, "application/json"},
 		{"/effects/footprints.json", http.StatusOK, "application/json"},
 		{"/effects/other.json", http.StatusNotFound, ""}, // only the catalogues are served bare

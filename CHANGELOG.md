@@ -14,6 +14,69 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-13
+
+### Added
+- **`/effects/hat_effects.json`** (plus `_en` / `_es`): the costumes whose visual
+  is a played effect that `index.json` cannot carry. **22 costumes**, 19 of them
+  a `.str` bundle and 3 a `/effects/sprites/<key>/` one, none of them published
+  before. Two were reported from the board: `420382` *[Visual] Escudo
+  Poenitentia* (`3I4nI57YcRnurxtuIx1B`) and `400149` *[Visual] Aura de
+  Betelgeuse* (`Dn2W4LQeTYMcalaPtko4`).
+- **Why they were missing.** `--effects` only ever enumerated the costumes that
+  draw *nothing* — no resolvable view, or a view whose `.act` is entirely
+  alpha-0 — so a costume with a real sprite was dropped before its `.str` was
+  ever looked for. Poenitentia is exactly that shape: the shield renders (view
+  2594) and the glow around it is a separate
+  `efst_Atque_Poenitentia2/caeffect.str`, so the player sees the shield with no
+  effect. Betelgeuse is the other shape: it draws nothing, but what it plays is
+  a `.spr/.act` rather than a `.str`, which `resolveStr` cannot find, so it came
+  out unresolved and reached no catalogue at all — the tool showed nothing.
+- **The link is the one the README already pointed at.** `EffectHatItemTable.lub`
+  is a flat list with no assets in it, but the client names each `HatEFID`
+  constant after the costume's own resource name (`Atque_Poenitentia` →
+  `HAT_EF_Atque_Poenitentia2`), so `HatEffectIDs` × `HatEffectInfo` keyed by
+  resource name *is* the item → effect map for costumes. 74 of the client's
+  2,278 costumes name a constant; 43 of those name a `.str` this client ships
+  and 3 more a played sprite.
+- **Which of a pair is live is settled by what the GRF holds.** The client ships
+  constants that differ only in case (`HAT_EF_BLACK_THUNDER` /
+  `HAT_EF_black_thunder`) or by a revision digit (`…_Poenitentia` / `…2`), one
+  carrying a `resourceFileName` and the other a built-in `hatEffectID`. The
+  `.str` wins when it is in the GRF; Betelgeuse's (`efst_black_thunder/
+  ros2023_f.str`, a kRO file) is not, so what publishes is the sprite the
+  built-in plays, `data/sprite/이팩트/black_thunder/`. Poenitentia is the only
+  costume where both a `.str` and an effect-sprite folder ship, and no costume
+  has two shipped `.str` — that case reports as ambiguous instead of guessing.
+- Both bundle shapes were checked against the item's own collection artwork:
+  `black_thunder`'s frames are the pink rays on `/icons/collection/400149.png`,
+  and `caeffect.str`'s textures are the purple cathedral glow on
+  `/icons/collection/420382.png`.
+
+### Changed
+- `hat_effects.json` and `index.json` are **disjoint** — a costume is in exactly
+  one of the two, and a consumer reads both. Nothing moved into `index.json`,
+  whose 27 rows are byte-identical to what production serves today: membership
+  there means "this costume has no sprite, draw the effect instead", and
+  latamvisuais' `sync-db.mjs` acts on exactly that, so adding Poenitentia would
+  have deleted its shield. **Republishing is therefore safe on its own, but not
+  sufficient**: a consumer has to read the new file to show these effects.
+- One costume (`31803` *[Visual] Dobra do Vento*) names a built-in with no asset
+  anywhere, and four name a `HatEFID` the client then gives no row — both are
+  reported by `--effects` and publish nothing, the same dead end the built-in
+  graphic stones reach.
+- Where both resolvers reach the same costume, the client's table now checks the
+  other: a costume `index.json` resolved by folder name whose `hatEffectTable`
+  row names a *different* `.str` is reported, since that is either a wrong
+  `STR_OVERRIDE` or a client that moved the file. This client has none. And a
+  costume the folder-name rule could not place but the table did is no longer
+  reported as needing a manual `STR_OVERRIDE` — the run says it was published
+  from `hat_effects.json` instead. That is why `unresolved` drops from 6 to 4.
+- `--effects` writes two catalogues per locale now, so the localized item tables
+  are parsed once each and held rather than re-read per catalogue, and the
+  "is this path in the GRF?" question the new pass asks a few thousand times
+  goes through the name index instead of a full 280k-entry walk per call.
+
 ## 2026-10-27
 
 ### Added

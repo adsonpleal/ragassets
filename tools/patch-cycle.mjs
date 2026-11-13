@@ -206,6 +206,7 @@ const SNAPSHOT = [
   "maps/index.json",
   "bgm/index.json",
   "effects/index.json",
+  "effects/hat_effects.json",
 ];
 
 function snapshot(dir) {
