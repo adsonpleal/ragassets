@@ -31,6 +31,10 @@ const SOURCES = [
   { key: "maps",    path: "maps/index.json",    ids: (d) => byName(d.maps), one: "mapa",       many: "mapas" },
   { key: "bgm",     path: "bgm/index.json",     ids: (d) => byKey(d.maps),  one: "trilha",     many: "trilhas" },
   { key: "effects", path: "effects/index.json", ids: (d) => byId(d.items),  one: "efeito",     many: "efeitos" },
+  // Disjoint from effects/index.json by construction (a costume is in exactly
+  // one of the two), so the two counts add up instead of overlapping. Its own
+  // label because a player reads these as costumes, not as loose effects.
+  { key: "hatEffects", path: "effects/hat_effects.json", ids: (d) => byId(d.items), one: "visual com efeito", many: "visuais com efeito" },
 ];
 
 const byId = (arr) => new Map((arr ?? []).map((e) => [String(e.id), e]));

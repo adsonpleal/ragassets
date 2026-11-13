@@ -179,7 +179,10 @@ function usage() {
       "  bubble1..4) referenced by EFFECT_STR_TABLE (roBrowser's EffectTable.js).",
       "  It also writes stones.json, the graphic-stone catalogue: each Malangdo",
       "  visual-enchant stone that plays a .str hat effect, mapped to its bundle",
-      "  key (STONE_HAT_EFFECT → HatEffectInfo.lub → .str), and footprints.json,",
+      "  key (STONE_HAT_EFFECT → HatEffectInfo.lub → .str), and hat_effects.json,",
+      "  the costumes that play an effect ON TOP of a sprite they also render (so",
+      "  index.json, which means \"no sprite\", cannot hold them) plus the ones whose",
+      "  effect is a played .spr/.act instead of a .str. And footprints.json,",
       "  the stones that instead stamp a decal per footstep — four bundle keys",
       "  (ground mark and puff, per foot) plus the client's placement numbers.",
       "",
@@ -1788,7 +1791,7 @@ export function langItemInfoPath(lang, basePath) {
 
 // id -> display name out of a locale's item table, or null when that locale
 // ships none. For the callers that want nothing but the translated names —
-// --effects' catalogue; --raw reads the whole table instead.
+// --effects' catalogues; --raw reads the whole table instead.
 function localizedItemNames(lang, args) {
   const base = resolveItemInfoPath(args);
   const path = base && langItemInfoPath(lang, base);
@@ -2847,6 +2850,10 @@ function buildEffectCostumes(grf, args) {
 
   const effects = [];
   const excluded = [];
+  // Every costume with a visual slot, effect-only or not. The hat-effect pass
+  // in extractEffects needs the renderable ones too — a costume that draws a
+  // sprite can still play an effect on top of it (see pickHatEffectAsset).
+  const costumes = [];
   for (const [id, entry] of tbl.map) {
     if (typeof id !== "number" || !(entry instanceof LuaTable)) continue;
     if (entry.get("costume") !== true) continue;
@@ -2854,6 +2861,8 @@ function buildEffectCostumes(grf, args) {
     if (!name) continue;
     const slots = parseSlots(entry.get("identifiedDescriptionName"));
     if (!slots.length) continue;
+    const res = decodeClientString(entry.get("identifiedResourceName")) || "";
+    costumes.push({ id, name, slots, res });
 
     // Renderable? (iteminfo carries the view, or its resource name resolves to
     // one) — and does that view actually draw? A view whose .act is entirely
@@ -2868,7 +2877,6 @@ function buildEffectCostumes(grf, args) {
         : resolveView(slots, entry.get("identifiedResourceName"));
     if (view != null && !drawsNothing(view, slots)) continue;
 
-    const res = decodeClientString(entry.get("identifiedResourceName")) || "";
     // "Invisible" costumes hide gear — no .str to extract.
     if (/^인비지블/.test(res) || /invis[íi]vel/i.test(name)) {
       excluded.push({ id, name, res });
@@ -2878,7 +2886,8 @@ function buildEffectCostumes(grf, args) {
   }
   effects.sort((a, b) => a.id - b.id);
   excluded.sort((a, b) => a.id - b.id);
-  return { effects, excluded };
+  costumes.sort((a, b) => a.id - b.id);
+  return { effects, excluded, costumes };
 }
 
 // Index every .str under data/texture/effect/ (normalized, forward-slash paths).
@@ -3027,11 +3036,17 @@ function readHatEffectTable(grf) {
       return null;
     }
   }
-  return hatEffectIndex(
-    globals.get("HatEFID"),
-    globals.get("hatEffectTable"),
-    globals.get("FootPrintEffectTable"),
-  );
+  // Two projections of the same rows: by HAT_EF_* name, which is how a stone
+  // names the one it plays, and by resource name, which is how a costume finds
+  // its own (see hatEffectsByResource).
+  return {
+    byName: hatEffectIndex(
+      globals.get("HatEFID"),
+      globals.get("hatEffectTable"),
+      globals.get("FootPrintEffectTable"),
+    ),
+    byRes: hatEffectsByResource(globals.get("HatEFID"), globals.get("hatEffectTable")),
+  };
 }
 
 // The projection of those three tables: HAT_EF_* name (lowercased — rAthena's
@@ -3045,16 +3060,142 @@ export function hatEffectIndex(ids, table, foot) {
   if (!(ids instanceof LuaTable) || !(table instanceof LuaTable)) return null;
   const out = new Map();
   for (const [name, id] of ids.map) {
-    const row = table.get(id);
-    const res = row instanceof LuaTable ? row.get("resourceFileName") : null;
     out.set(String(name).toLowerCase(), {
-      id,
-      str: typeof res === "string" && res ? normalize(`data/texture/effect/${res}`) : null,
-      builtin: row instanceof LuaTable ? (row.get("hatEffectID") ?? null) : null,
+      ...hatEffectRow(table, id),
       footprint: foot instanceof LuaTable ? footprintRow(foot.get(id)) : null,
     });
   }
   return out;
+}
+
+// One hatEffectTable row, read the same way for both projections of it: the
+// .str as a GRF path, or the executable-compiled effect id it falls back on.
+function hatEffectRow(table, id) {
+  const row = table.get(id);
+  const res = row instanceof LuaTable ? row.get("resourceFileName") : null;
+  return {
+    id,
+    str: typeof res === "string" && res ? normalize(`data/texture/effect/${res}`) : null,
+    builtin: row instanceof LuaTable ? (row.get("hatEffectID") ?? null) : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Hat-effect costumes — the costumes whose visual is a played effect the
+// effect-only pass above cannot see.
+//
+// That pass catches the costumes that draw NOTHING themselves, which is how
+// most auras are built. Two shapes get past it, and a player reads both as a
+// missing visual:
+//
+//   • a costume that renders an ordinary sprite AND plays an effect on top of
+//     it — 420382 [Visual] Escudo Poenitentia draws the shield and surrounds it
+//     with a .str — which the pass drops the moment the view resolves;
+//   • a costume that draws nothing and whose effect is a played .spr/.act
+//     instead of a .str — 400149 [Visual] Aura de Betelgeuse — which resolveStr
+//     cannot find, because there is no .str to find.
+//
+// Both are hat effects, the same mechanism the graphic stones use, so the
+// client's own hatEffectTable names the asset. The half the client does not own
+// is the item → HAT_EF_* link (the server runs it). But unlike a stone, whose
+// enchant script only rAthena publishes, a costume's HatEFID constant is named
+// after the costume's own resource name — Atque_Poenitentia →
+// HAT_EF_Atque_Poenitentia2 — so here that link is a lookup rather than a
+// transcription, and effectHatItemTable (the client's own list of the items
+// whose effect /effect hides) is a second client source to check it against.
+// ---------------------------------------------------------------------------
+
+// The item ids the client marks as carrying a hat effect — what IsEffectHatItem
+// in HatEffect_F.lub answers from. The table is a plain list of ids with no
+// asset in it, so it says which items play an effect and nothing about what.
+function readEffectHatItems(grf) {
+  const bytes = grfLub(grf, "data/luafiles514/lua files/HatEffectInfo/EffectHatItemTable");
+  if (!bytes) return null;
+  try {
+    return effectHatItemSet(runChunk(bytes).get("effectHatItemTable"));
+  } catch (err) {
+    console.error(`  ! EffectHatItemTable.lub: ${err.message}`);
+    return null;
+  }
+}
+
+export function effectHatItemSet(tbl) {
+  if (!(tbl instanceof LuaTable)) return null;
+  const out = new Set();
+  for (const [, id] of tbl.map) if (typeof id === "number" && id > 0) out.add(Math.round(id));
+  return out;
+}
+
+// The comparable form of a resource name and of a HatEFID constant: both sides
+// spell the costume prefix as they please, so drop "HAT_EF_" and a leading "C_"
+// ("C_Sakura_Fubuki" and "HAT_EF_c_sakura_fubuki" both key on sakura_fubuki).
+const hatEfKey = (s) => normRes(s).replace(/^hat_ef_/, "").replace(/^c_/, "");
+
+// HatEffectIDs × hatEffectTable keyed by that form, with EVERY row kept rather
+// than one per name: the client ships constants that differ only in case
+// (HAT_EF_BLACK_THUNDER / HAT_EF_black_thunder) and each row is a real, separate
+// effect, so collapsing them the way hatEffectIndex does — which is right for a
+// stone, since a stone names one exact constant — would hide one of a pair here.
+export function hatEffectsByResource(ids, table) {
+  if (!(ids instanceof LuaTable) || !(table instanceof LuaTable)) return null;
+  const out = new Map();
+  for (const [name, id] of ids.map) {
+    const key = hatEfKey(name);
+    if (!key) continue;
+    if (!out.has(key)) out.set(key, []);
+    out.get(key).push({ name: String(name), ...hatEffectRow(table, id) });
+  }
+  return out;
+}
+
+// The rows a costume's resource name names: its own key, plus the revision the
+// client writes as a trailing digit (Atque_Poenitentia → …Poenitentia2). The
+// bare key comes first so a straight match outranks a revision.
+export function hatEffectCandidates(byRes, res) {
+  const key = hatEfKey(res);
+  if (!key || !byRes) return [];
+  const out = [...(byRes.get(key) ?? [])];
+  for (const [k, rows] of byRes) {
+    if (k !== key && k.startsWith(key) && /^[0-9]+$/.test(k.slice(key.length))) out.push(...rows);
+  }
+  return out;
+}
+
+// The effect sprite a `hatEffectID` row plays: the client keeps it in a folder
+// of the resource's own name under the effect sprite folder, holding a .spr/.act
+// of that name again (data/sprite/이팩트/black_thunder/black_thunder).
+export function effectSpriteBase(res) {
+  const key = hatEfKey(res);
+  return key ? `data/sprite/${kEFFECT}/${key}/${key}` : "";
+}
+
+// Which asset the costume's hat effect plays, out of those candidates. A row
+// points at either a .str or an effect id the client compiles into its
+// executable, and `has` — what this client actually ships — is what settles it:
+//
+//   • one candidate names a .str that ships → that .str. Two would be
+//     ambiguous; no costume in this client has two, and a client that grows one
+//     should report it rather than have this pick blind.
+//   • none does, but the effect sprite folder ships its .spr/.act pair → that
+//     sprite. Those ids run past the end of every public effect table, so the
+//     folder name is the only link left — the same kind of evidence resolveStr
+//     already works from, and the same kind this project verifies by eye.
+//   • neither → `{ builtin }`, the client drawing it from code with no asset to
+//     publish, or `null` when the name resolves to nothing at all.
+export function pickHatEffectAsset(res, cands, has) {
+  if (!cands.length) return null;
+  const strs = cands.filter((c) => c.str && has(c.str));
+  if (strs.length > 1) return { ambiguous: strs.map((c) => c.str) };
+  if (strs.length === 1) return { str: strs[0].str, hatEf: strs[0].name };
+  const base = effectSpriteBase(res);
+  if (base && has(`${base}.spr`) && has(`${base}.act`)) {
+    const played = cands.find((c) => c.builtin != null) ?? cands[0];
+    // `key` is the folder the sprite lives in, which is the name the bundle is
+    // served under — handed back rather than sliced off the path again.
+    return { sprite: base, key: hatEfKey(res), hatEf: played.name, builtin: played.builtin };
+  }
+  const builtin = cands.find((c) => c.builtin != null);
+  return builtin ? { builtin: builtin.builtin, hatEf: builtin.name } : null;
 }
 
 // What the client falls back on when a FootPrintEffectTable row leaves a field
@@ -3335,14 +3476,53 @@ export function effectMaxKey(headerMaxKey, layers, key = "") {
   return lastKey;
 }
 
+// The localized item-name tables, read once: each is ~7 MB of Lua bytecode and
+// --effects writes more than one catalogue out of them.
+function readLocaleItemNames(args) {
+  const out = new Map();
+  for (const lang of Object.keys(RAW_LANGS)) {
+    const { tree } = RAW_LANGS[lang];
+    if (tree) out.set(lang, localizedItemNames(lang, args));
+  }
+  return out;
+}
+
+// One catalogue in the other two locales (<base>_en.json, <base>_es.json): the
+// same rows and the same bundle keys, with each costume's name as that locale's
+// item table spells it. Only the names change — the enumeration itself stays
+// pt-BR-driven, because what makes a costume's visual an effect is a client
+// fact (a blank sprite, a hatEffectTable row) and not a translation.
+function writeLocalizedCatalogues(items, base, root, localeNames) {
+  for (const [lang, names] of localeNames) {
+    const { suffix, tree } = RAW_LANGS[lang];
+    if (!names) {
+      console.error(`  ! System/${tree}/iteminfo_new.lub missing — no ${base}${suffix}.json`);
+      continue;
+    }
+    const translated = items.map((i) => ({ ...i, name: names.get(i.id) ?? i.name }));
+    const missing = items.filter((i) => !names.has(i.id)).length;
+    writeFileSync(join(root, `${base}${suffix}.json`), JSON.stringify({ items: translated }));
+    console.error(`  catalogue: ${base}${suffix}.json${missing ? ` (${missing} names fall back to pt-BR)` : ""}`);
+  }
+}
+
 function extractEffects(grfPath, outBase, args) {
   const grf = openGrf(grfPath);
   try {
     const root = resolve(outBase);
     mkdirSync(root, { recursive: true });
 
+    // "Is this path in the GRF?", asked a few thousand times by the passes
+    // below — once per hat-effect candidate alone. findBestEntry answers it by
+    // walking all ~280k entries and normalizing each name, which at that call
+    // count is most of the run, so resolve it through the name index instead.
+    // Every path asked here is a full `data/...` one, which is the condition
+    // under which the index reproduces findBestEntry (see buildEntryIndex).
+    const entryIndex = buildEntryIndex(grf);
+    const inGrf = (path) => entryIndex.has(normalize(path));
+
     console.error("Enumerating effect-only costumes from iteminfo…");
-    const { effects, excluded } = buildEffectCostumes(grf, args);
+    const { effects, excluded, costumes } = buildEffectCostumes(grf, args);
     const strIndex = indexStrFiles(grf);
     console.error(`  ${effects.length} effect-only costumes, ${excluded.length} excluded (invisible), ${strIndex.length} .str files indexed`);
 
@@ -3388,24 +3568,8 @@ function extractEffects(grfPath, outBase, args) {
       .sort((a, b) => a.id - b.id);
     writeFileSync(join(root, "index.json"), JSON.stringify({ items }));
 
-    // The same catalogue in the other two locales (index_en.json, index_es.json):
-    // the same rows and the same `effect` keys, with each costume's name as that
-    // locale's item table spells it. Only the names are re-read — the enumeration
-    // itself stays pt-BR-driven, because what makes a costume effect-only is a
-    // client fact (a blank sprite, no resolvable view) and not a translation.
-    for (const lang of Object.keys(RAW_LANGS)) {
-      const { suffix, tree } = RAW_LANGS[lang];
-      if (!tree) continue;
-      const names = localizedItemNames(lang, args);
-      if (!names) {
-        console.error(`  ! System/${tree}/iteminfo_new.lub missing — no index${suffix}.json`);
-        continue;
-      }
-      const translated = items.map((i) => ({ ...i, name: names.get(i.id) ?? i.name }));
-      const missing = translated.filter((i, n) => !names.has(items[n].id)).length;
-      writeFileSync(join(root, `index${suffix}.json`), JSON.stringify({ items: translated }));
-      console.error(`  catalogue: index${suffix}.json${missing ? ` (${missing} names fall back to pt-BR)` : ""}`);
-    }
+    const localeNames = readLocaleItemNames(args);
+    writeLocalizedCatalogues(items, "index", root, localeNames);
 
     // Every key produced so far. The costume pass owns a key outright: the map
     // and stone passes below reuse a bundle it already built rather than
@@ -3416,8 +3580,11 @@ function extractEffects(grfPath, outBase, args) {
     // when an earlier pass already produced that key. { error } instead when the
     // .str will not parse or its key is one the gateway would refuse to serve
     // (handleEffect only routes [a-z0-9_]), so the caller can report it.
-    const bundleStr = (strPath, label) => {
-      const key = effectKey("", strPath);
+    // `key` defaults to the one the .str folder gives, which is all a stone or a
+    // map effect has to go on; a caller holding the costume's resource name
+    // passes the key that name produces, so the bundle lands where the costume
+    // pass would have put it and the two never extract the same .str twice.
+    const bundleStr = (strPath, label, key = effectKey("", strPath)) => {
       if (!effectKeyOk(key)) {
         console.error(`  ! ${label}: non-ASCII key ${JSON.stringify(key)}`);
         return { error: `unservable key ${JSON.stringify(key)}` };
@@ -3445,6 +3612,34 @@ function extractEffects(grfPath, outBase, args) {
       }
     };
 
+    // The same for a played .spr/.act, into /effects/sprites/<key>/. A sprite
+    // bundle is a different shape from a .str one (composited frames, not
+    // keyframed layers), so it has its own key space and its own dedupe set.
+    const spritesRoot = join(root, "sprites");
+    const seenSpriteKeys = new Set();
+    const bundleSprite = (spritePath, key, label) => {
+      if (!effectKeyOk(key)) {
+        console.error(`  ! ${label}: unservable key ${JSON.stringify(key)}`);
+        return { error: `unservable key ${JSON.stringify(key)}` };
+      }
+      if (seenSpriteKeys.has(key)) {
+        console.error(`  ✓ sprites/${key} (${label}) → reused`);
+        return { key };
+      }
+      const outDir = join(spritesRoot, key);
+      rmSync(outDir, { recursive: true, force: true });
+      mkdirSync(outDir, { recursive: true });
+      try {
+        const info = buildSpriteEffect(grf, spritePath, key, outDir);
+        console.error(`  ✓ sprites/${key} (${label}) → ${info.frames} frames`);
+        seenSpriteKeys.add(key);
+        return { key };
+      } catch (err) {
+        rmSync(outDir, { recursive: true, force: true });
+        return { error: err.message };
+      }
+    };
+
     // Graphic stones (see STONE_HAT_EFFECT): stone item id → the .str its hat
     // effect plays, resolved through the client's own HatEffectInfo table, and
     // built into the same /effects/<key>/ bundles. Keyed by the STONE's id —
@@ -3457,7 +3652,7 @@ function extractEffects(grfPath, outBase, args) {
     const stoneUnresolved = [];
     for (const [idText, hatEf] of Object.entries(STONE_HAT_EFFECT)) {
       const id = Number(idText);
-      const row = hatEffects?.get(hatEf.toLowerCase());
+      const row = hatEffects?.byName?.get(hatEf.toLowerCase());
       if (!row) {
         stoneUnresolved.push({ id, hatEf, why: hatEffects ? "not in HatEFID" : "hat-effect table unreadable" });
         continue;
@@ -3578,25 +3773,15 @@ function extractEffects(grfPath, outBase, args) {
     // a played .spr/.act, not a .str, so render one bundle per SPRITE_EFFECT_TABLE
     // key into sprites/<key>/ — the map manifests' effects[].sprite refs resolve
     // here. Deduped by key (only a few bundles), independent of which maps extract.
-    const spritesRoot = join(root, "sprites");
     let spritesBuilt = 0;
     const spriteFailed = [];
-    const seenSpriteKeys = new Set();
     for (const def of Object.values(SPRITE_EFFECT_TABLE)) {
       if (seenSpriteKeys.has(def.key)) continue;
-      seenSpriteKeys.add(def.key);
-      const outDir = join(spritesRoot, def.key);
-      rmSync(outDir, { recursive: true, force: true });
-      mkdirSync(outDir, { recursive: true });
-      try {
-        const info = buildSpriteEffect(grf, def.sprite, def.key, outDir);
-        console.error(`  ✓ sprites/${def.key} (map effect) → ${info.frames} frames`);
-        spritesBuilt++;
-      } catch (err) {
-        rmSync(outDir, { recursive: true, force: true });
+      const built = bundleSprite(def.sprite, def.key, "map effect");
+      if (built.error) {
         spriteFailed.push(def.key);
-        console.error(`  ! sprites/${def.key} (map effect): ${err.message}`);
-      }
+        console.error(`  ! sprites/${def.key} (map effect): ${built.error}`);
+      } else spritesBuilt++;
     }
 
     // Skill SPR effects: every `type:"SPR"` row in the effect table is a played
@@ -3617,36 +3802,118 @@ function extractEffects(grfPath, outBase, args) {
         if (!sprPart) continue;
         const key = `eff_${id}`;
         if (seenSpriteKeys.has(key)) continue;
-        seenSpriteKeys.add(key);
         const name = decodeClientString(sprPart.file);
         const candidates = sprEffectCandidates(id, name);
         // Keep candidates[0] when nothing exists, so the failure names a real path.
-        const sprite = candidates.find((c) => findBestEntry(grf, normalize(c + ".spr"))) || candidates[0];
+        const sprite = candidates.find((c) => inGrf(c + ".spr")) || candidates[0];
         const label = sprite === `data/sprite/${kEFFECT}/${name}` ? name : `${name} → ${sprite}`;
-        const outDir = join(spritesRoot, key);
-        rmSync(outDir, { recursive: true, force: true });
-        mkdirSync(outDir, { recursive: true });
-        try {
-          const info = buildSpriteEffect(grf, sprite, key, outDir);
-          console.error(`  ✓ sprites/${key} (skill SPR ${label}) → ${info.frames} frames`);
-          sprEffBuilt++;
-        } catch (err) {
-          rmSync(outDir, { recursive: true, force: true });
-          sprEffFailed.push(`${id}:${name}`);
-        }
+        if (bundleSprite(sprite, key, `skill SPR ${label}`).error) sprEffFailed.push(`${id}:${name}`);
+        else sprEffBuilt++;
       }
       console.error(`  skill SPR effects: ${sprEffBuilt} built` + (sprEffFailed.length ? `, ${sprEffFailed.length} unresolved: [${sprEffFailed.join(", ")}]` : "") + ` → sprites/eff_<id>/`);
     }
+
+    // Hat-effect costumes (see pickHatEffectAsset): every costume whose resource
+    // name names a HatEFID constant, bundled from whichever asset that row
+    // points at — a .str like any other effect, or the played sprite when the
+    // client draws the effect from one.
+    //
+    // These go to hat_effects.json, not into index.json, and the two stay
+    // disjoint. Being in index.json means "this costume has no sprite, draw the
+    // effect instead", so putting one of these there would tell a consumer to
+    // throw away a sprite it must keep drawing (420382's shield). Whatever the
+    // costume pass already catalogued is skipped here for the same reason: a
+    // costume belongs to exactly one of the two files, and a consumer reads both.
+    console.error("\nHat-effect costumes…");
+    const effectHatItems = readEffectHatItems(grf);
+    if (!hatEffects?.byRes) {
+      console.error("  ! hat-effect table unreadable — hat_effects.json will be written empty");
+    }
+    const hatItems = [];
+    const hatBuiltin = [];
+    const hatUnresolved = [];
+    // What index.json already carries. It can only carry an effect-only costume
+    // whose effect is a .str, which is exactly what the pass above resolved, so
+    // skipping those here is what keeps the two catalogues disjoint: a costume
+    // whose effect index.json cannot express — because the costume also draws a
+    // sprite, or because the effect is a played sprite rather than a .str —
+    // lands in this one instead.
+    const indexStr = new Map(resolved.map((e) => [e.id, e.str]));
+    // Where the two resolvers overlap, the client's table is the better
+    // authority, so use it to check the other rather than discard it: a costume
+    // index.json resolved by folder name whose hatEffectTable row names a
+    // different .str is either a wrong STR_OVERRIDE or a client that moved the
+    // file, and both are worth hearing about on the run that introduces them.
+    const hatMismatch = [];
+    for (const c of costumes) {
+      const cands = hatEffectCandidates(hatEffects?.byRes, c.res);
+      if (indexStr.has(c.id)) {
+        const client = cands.length ? pickHatEffectAsset(c.res, cands, inGrf) : null;
+        if (client?.str && client.str !== indexStr.get(c.id)) {
+          hatMismatch.push({ ...c, hatEf: client.hatEf, guessed: indexStr.get(c.id), client: client.str });
+        }
+        continue;
+      }
+      if (!cands.length) continue;
+      const pick = pickHatEffectAsset(c.res, cands, inGrf);
+      if (!pick || pick.ambiguous) {
+        hatUnresolved.push({ ...c, why: pick ? `${pick.ambiguous.length} shipped .str` : "no row in hatEffectTable" });
+        continue;
+      }
+      if (!pick.str && !pick.sprite) {
+        // The client draws this one from its executable, so there is no asset
+        // to publish — the same dead end the built-in stones reach.
+        hatBuiltin.push({ ...c, hatEf: pick.hatEf, effect: pick.builtin });
+        continue;
+      }
+      const label = `costume ${c.id}, ${pick.hatEf}`;
+      const built = pick.str
+        ? bundleStr(pick.str, label, effectKey(c.res, pick.str))
+        : bundleSprite(pick.sprite, pick.key, label);
+      if (built.error) hatUnresolved.push({ ...c, why: built.error });
+      else hatItems.push({ id: c.id, name: c.name, slots: c.slots, [pick.str ? "effect" : "sprite"]: built.key });
+    }
+    hatItems.sort((a, b) => a.id - b.id);
+    writeFileSync(join(root, "hat_effects.json"), JSON.stringify({ items: hatItems }));
+    writeLocalizedCatalogues(hatItems, "hat_effects", root, localeNames);
 
     // Report: resolved / unresolved / excluded (the unresolved set is expected
     // manual follow-up — Korean-named and EXE/shared-bound effects).
     console.error(`\nEffects → ${root}`);
     console.error(`  resolved:   ${resolved.length}`);
-    console.error(`  unresolved: ${unresolved.length}`);
+    // Split by what the hat pass went on to publish: a costume the folder-name
+    // rule could not place is not a gap once the client's own table placed it,
+    // and reporting it as one asks for a STR_OVERRIDE that must not be written.
+    const hatPublished = new Set(hatItems.map((i) => i.id));
+    const stillUnresolved = unresolved.filter((u) => !hatPublished.has(u.id));
+    const coveredByHat = unresolved.filter((u) => hatPublished.has(u.id));
+    console.error(
+      `  unresolved: ${stillUnresolved.length}` +
+        (coveredByHat.length ? ` (${coveredByHat.length} more published from hat_effects.json instead)` : ""),
+    );
     console.error(`  excluded:   ${excluded.length}`);
     console.error(`  map effects: ${mapBuilt} built` + (mapMissing.length ? `, ${mapMissing.length} not in GRF` : "") + (mapFailed.length ? `, ${mapFailed.length} failed` : ""));
     console.error(`  sprite effects: ${spritesBuilt} built` + (spriteFailed.length ? `, ${spriteFailed.length} failed: [${spriteFailed.join(", ")}]` : "") + ` → sprites/`);
     console.error(`  catalogue:  index.json (${items.length} items)`);
+    console.error(
+      `  hat effects: ${hatItems.length} bundled, ${hatBuiltin.length} built into the client, ` +
+        `${hatUnresolved.length} unresolved → hat_effects.json`,
+    );
+    // Coverage against the client's own answer to "does this item have an
+    // effect". That list names no asset, so it cannot resolve anything — but it
+    // is the one place to check the resource-name join against, and the items it
+    // names that neither catalogue publishes are exactly the gaps worth reading.
+    if (effectHatItems) {
+      const published = new Set([...items, ...hatItems].map((i) => i.id));
+      const gaps = [...effectHatItems].filter((id) => !published.has(id)).sort((a, b) => a - b);
+      console.error(
+        `  effectHatItemTable: ${effectHatItems.size - gaps.length}/${effectHatItems.size} of the items the client ` +
+          `marks as having an effect now publish one`,
+      );
+      if (gaps.length) console.error(`    not published: ${gaps.join(", ")}`);
+    } else {
+      console.error("  ! effectHatItemTable unreadable — no coverage check");
+    }
     console.error(
       `  stones:     ${stoneItems.length} bundled, ${stoneBuiltin.length} built into the client, ` +
         `${stoneFootprint.length} footprints, ${stoneUnresolved.length} unresolved` +
@@ -3698,9 +3965,29 @@ function extractEffects(grfPath, outBase, args) {
   Stones unresolved:`);
       for (const x of stoneUnresolved) console.error(`    ${x.id}	${x.hatEf}	${x.why}`);
     }
-    if (unresolved.length) {
+    if (hatMismatch.length) {
+      console.error(`
+  Hat effects where the client's table disagrees with the .str the folder name picked:`);
+      for (const x of hatMismatch) console.error(`    ${x.id}	${x.name}	${x.hatEf}	index.json: ${x.guessed}	client: ${x.client}`);
+    }
+    if (hatBuiltin.length) {
+      // Same dead end as the built-in stones: the client draws these from its
+      // executable and ships no asset for them at all. Listed so the report
+      // accounts for every costume whose resource name names a HatEFID.
+      console.error(`\n  Hat effects skipped (effect compiled into the client, so there is no asset):`);
+      for (const x of hatBuiltin) console.error(`    ${x.id}\t${x.hatEf}\teffect ${x.effect}\t${x.name}`);
+    }
+    if (hatUnresolved.length) {
+      console.error(`\n  Hat effects unresolved:`);
+      for (const x of hatUnresolved) console.error(`    ${x.id}\t${JSON.stringify(x.res)}\t${x.name}\t${x.why}`);
+    }
+    if (coveredByHat.length) {
+      console.error(`\n  Unresolved by name, but published from the client's hat-effect table:`);
+      for (const u of coveredByHat) console.error(`    ${u.id}\t${JSON.stringify(u.res)}\t${u.name}`);
+    }
+    if (stillUnresolved.length) {
       console.error(`\n  Unresolved (need a manual STR_OVERRIDE entry):`);
-      for (const u of unresolved) {
+      for (const u of stillUnresolved) {
         const hint = u.ambiguous ? ` — ambiguous: [${u.ambiguous.join(", ")}]` : u.error ? ` — ${u.error}` : "";
         console.error(`    ${u.id}\t${JSON.stringify(u.res)}\t${u.name}${hint}`);
       }

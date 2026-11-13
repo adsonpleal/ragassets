@@ -120,7 +120,7 @@ func main() {
 	if fi, err := os.Stat(cfg.effectsDir); err != nil || !fi.IsDir() {
 		log.Printf("effects: %s not found — /effects/* will return 404 (run extract-grf.mjs --effects)", cfg.effectsDir)
 	} else {
-		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png}, /effects/sprites/{key}/{sprite.json,N.png}, /effects/index.json (also index_en/index_es), /effects/stones.json and /effects/footprints.json", cfg.effectsDir)
+		log.Printf("effects: serving %s at /effects/{key}/{effect.json,tex_N.png}, /effects/sprites/{key}/{sprite.json,N.png}, /effects/index.json and /effects/hat_effects.json (also _en/_es), /effects/stones.json and /effects/footprints.json", cfg.effectsDir)
 	}
 
 	if fi, err := os.Stat(filepath.Join(cfg.resourceDir, "data", "texture", "effect")); err != nil || !fi.IsDir() {
@@ -410,6 +410,10 @@ func (s *server) servePNGByKind(w http.ResponseWriter, r *http.Request, prefix, 
 //
 //   /effects/index.json              the costume catalogue ({items:[{id,name,slots,effect}]})
 //   /effects/index_en.json           the same catalogue with English names (also _es)
+//   /effects/hat_effects.json        the costumes that play an effect ON TOP of a
+//                                    sprite they also render, plus the ones whose
+//                                    effect is a played sprite rather than a .str
+//                                    ({items:[{id,name,slots,effect|sprite}]}; _en/_es too)
 //   /effects/stones.json             the graphic-stone catalogue ({items:[{id,effect}]})
 //   /effects/{key}/effect.json       the parsed .str keyframe animation
 //   /effects/{key}/tex_N.png         that effect's layer textures
@@ -425,10 +429,11 @@ var effectKeyPattern = regexp.MustCompile(`^[a-z0-9_]+$`)
 var effectFilePattern = regexp.MustCompile(`^(effect\.json|tex_[0-9]+\.png)$`)
 var spriteFilePattern = regexp.MustCompile(`^(sprite\.json|[0-9]+\.png)$`)
 
-// The catalogues served from the effects root as-is. index.json has one copy per
-// locale (index_en.json, index_es.json — the same rows, each costume's name as
-// that locale's item table spells it); stones and footprints carry no text.
-var effectRootPattern = regexp.MustCompile(`^(index(_[a-z]{2})?\.json|stones\.json|footprints\.json)$`)
+// The catalogues served from the effects root as-is. index.json and
+// hat_effects.json have one copy per locale (index_en.json, index_es.json — the
+// same rows, each costume's name as that locale's item table spells it); stones
+// and footprints carry no text.
+var effectRootPattern = regexp.MustCompile(`^((index|hat_effects)(_[a-z]{2})?\.json|stones\.json|footprints\.json)$`)
 
 func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {

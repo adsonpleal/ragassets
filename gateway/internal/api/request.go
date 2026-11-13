@@ -325,6 +325,7 @@ const RootHelp = "ragassets-gateway — renders and serves Ragnarok Online sprit
 	"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n" +
 	"     /illust/card/4001.png      (a card's full-size artwork)\n" +
 	"     /effects/index.json        (effect-only costume catalogue; _en/_es for the other locales)\n" +
+	"     /effects/hat_effects.json  (costumes that play an effect over a sprite they also render)\n" +
 	"     /effects/c_spot_light/effect.json   (one effect's .str animation + textures)\n" +
 	"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's per-frame img/delay/offset)\n" +
 	"     /effect/str?file=stormgust  (a skill effect's parsed .str keyframe animation, as JSON)\n" +
