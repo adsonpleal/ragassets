@@ -144,3 +144,109 @@ func TestParseStrTruncated(t *testing.T) {
 		t.Fatal("want EOF error for truncated STR")
 	}
 }
+
+// buildStrNonFinite assembles the same one-layer STRM as buildStr, but with
+// non-finite floats where real 4th-job *_bottom effects carry them: +Inf in
+// pos[1], -Inf in xy[0], NaN in angle and NaN in the colour's alpha. The D3D
+// client tolerates these; encoding/json refuses to marshal them, so the parser
+// substitutes 0 rather than failing the file.
+func buildStrNonFinite() []byte {
+	var b bytes.Buffer
+	u32 := func(v uint32) { binary.Write(&b, binary.LittleEndian, v) }
+	f32 := func(v float32) { u32(math.Float32bits(v)) }
+	inf := float32(math.Inf(1))
+	negInf := float32(math.Inf(-1))
+	nan := float32(math.NaN())
+
+	b.WriteString("STRM")
+	u32(0x94)                 // version
+	u32(60)                   // fps
+	u32(100)                  // maxKey
+	u32(1)                    // layerCount
+	b.Write(make([]byte, 16)) // reserved
+
+	u32(1) // textureCount
+	field := make([]byte, 128)
+	copy(field, "ring_bottom.bmp")
+	b.Write(field)
+
+	u32(1)                                          // animCount
+	binary.Write(&b, binary.LittleEndian, int32(0)) // frame
+	u32(0)                                          // type
+	f32(1.5)                                        // pos[0]
+	f32(inf)                                        // pos[1]  — non-finite
+	for i := 0; i < 8; i++ {
+		f32(float32(i)) // uv[0..7]
+	}
+	f32(negInf) // xy[0]   — non-finite
+	for i := 1; i < 8; i++ {
+		f32(float32(10 + i)) // xy[1..7]
+	}
+	f32(0.75) // aniframe
+	u32(0)    // anitype
+	f32(4.0)  // delay
+	f32(nan)  // angle    — non-finite
+	f32(255)  // color r
+	f32(128)  // color g
+	f32(64)   // color b
+	f32(nan)  // color a  — non-finite
+	u32(5)    // srcalpha
+	u32(2)    // destalpha
+	u32(7)    // mtpreset
+	return b.Bytes()
+}
+
+// TestParseStrNonFiniteFloats pins that a file carrying Inf/-Inf/NaN parses,
+// marshals and keeps every other field — the keyframe, the layer and the file
+// are not dropped, only the offending floats become 0.
+func TestParseStrNonFiniteFloats(t *testing.T) {
+	str, err := ParseStr(buildStrNonFinite())
+	if err != nil {
+		t.Fatalf("ParseStr: %v", err)
+	}
+	if str.Sanitized != 4 {
+		t.Errorf("Sanitized = %d, want 4", str.Sanitized)
+	}
+	if len(str.Layers) != 1 || len(str.Layers[0].Animations) != 1 {
+		t.Fatalf("layers/keyframes dropped: %d layer(s)", len(str.Layers))
+	}
+	k := str.Layers[0].Animations[0]
+	if k.Pos != [2]float32{1.5, 0} {
+		t.Errorf("pos = %v, want [1.5 0]", k.Pos)
+	}
+	if k.XY != [8]float32{0, 11, 12, 13, 14, 15, 16, 17} {
+		t.Errorf("xy = %v, want [0 11 12 13 14 15 16 17]", k.XY)
+	}
+	if k.Angle != 0 {
+		t.Errorf("angle = %v, want 0", k.Angle)
+	}
+	if k.Color != [4]float32{255, 128, 64, 0} {
+		t.Errorf("color = %v, want [255 128 64 0]", k.Color)
+	}
+	// The finite fields and the raw blend ints are untouched.
+	if k.UV != [8]float32{0, 1, 2, 3, 4, 5, 6, 7} {
+		t.Errorf("uv = %v", k.UV)
+	}
+	if k.Aniframe != 0.75 || k.Delay != 4 {
+		t.Errorf("aniframe = %v, delay = %v", k.Aniframe, k.Delay)
+	}
+	if k.Srcalpha != 5 || k.Destalpha != 2 || k.Mtpreset != 7 {
+		t.Errorf("blend: src=%d dst=%d mt=%d, want 5/2/7", k.Srcalpha, k.Destalpha, k.Mtpreset)
+	}
+
+	raw, err := json.Marshal(str)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err) // the bug: "json: unsupported value: +Inf"
+	}
+	if bytes.Contains(raw, []byte("Inf")) || bytes.Contains(raw, []byte("NaN")) {
+		t.Errorf("JSON carries a non-finite literal: %s", raw)
+	}
+	// Sanitized must not leak into the client contract.
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(m) != 3 {
+		t.Errorf("top-level JSON keys = %v, want exactly fps/maxKey/layers", m)
+	}
+}

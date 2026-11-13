@@ -77,6 +77,26 @@ and do not describe the system today. Check the date before trusting an entry;
   "is this path in the GRF?" question the new pass asks a few thousand times
   goes through the name index instead of a full 280k-entry walk per call.
 
+### Fixed
+- **`/effect/str` no longer 500s on a `.str` carrying non-finite floats.** A
+  survey of the 1,198 STR names in the effect tables against production found
+  **88 of them answering `500 parse failed: json: unsupported value: +Inf`** —
+  1,013 served, 97 genuinely absent from this client. The files are fine and the
+  parse succeeded; `encoding/json` refuses to marshal a non-finite float64, so
+  one `Inf`/`-Inf`/`NaN` in one keyframe field failed the whole effect and the
+  replay viewer drew nothing.
+- **Where they are.** Almost entirely the `*_bottom` ground layers of 4th-job
+  skills (Dragon Knight, Night Watch, Imperial Guard, Shinkiro, Abyss Chaser) —
+  `rockdown_bottom`, `dragonnic_ora_bottom`, `crimsonarrow_cast_bottom`,
+  `deft_stab`, `climax_cast_loop` — which is the content the viewer most needs.
+- **The fix is to substitute 0 for a non-finite float as the keyframe is read**,
+  in `strReader.f32` alone: every float a keyframe holds is read through it, so
+  there is one place to get right and nothing to scatter. The keyframe, the layer
+  and the file are all kept — a zeroed field is what the D3D client effectively
+  draws for one of these anyway, and the rest of the animation is intact. The
+  response shape is unchanged (`Str.Sanitized`, the count, is `json:"-"`); the
+  handler logs it once per parse, naming the file.
+
 ## 2026-10-27
 
 ### Added
