@@ -14,6 +14,64 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-14
+
+### Added
+- **`/effect/model?file=<name>`** — one `.rsm`/`.rsm2` model out of
+  `data/model/`, served raw as `application/octet-stream`. Models could only
+  reach a consumer through a map's `manifest.json` before this, which lists the
+  models *that map places*; nothing names a model that belongs to no map, and
+  `/effect/model`, `/effect/rsm` and `/model` were all 404.
+- **What needed it.** A ground skill's unit — a Fire Wall's flame, Sanctuary's
+  square, a Hunter's trap — is the one visual in this family the client does not
+  key off a skill id. It keys it off the unit's *type*, rathena's `UNT_` number,
+  which the `0x09ca` packet carries, and for **23** of those types the table's
+  answer is not an effect at all: the unit stands as a 3D model, named by a GRF
+  path (`외부소품\트랩01` for Ankle Snare's trap,
+  `effect\deepblindtrap\deep_trap.rsm2` for Deep Blind Trap's). Those 23 drew
+  nothing in the replay viewer, and a trap is common enough in a replay to be
+  worth the route. All 23 names resolve against the current client: 10
+  `외부소품\트랩*`, 9 `event\3차트랩_*`, 4 `effect\*trap\*.rsm2`, no misses.
+- **It is `/effect/str`'s shape, including for the Korean names.** Same
+  `?file=<name>` token, resolved case-insensitively one path segment at a time,
+  same immutable cache policy, same `404` for a name this client never shipped,
+  same wildcard CORS on every arm. The names travel as **UTF-8** and are
+  percent-encoded whole (`encodeURIComponent`), which is what the extracted tree
+  carries — `extract-grf.mjs` decodes the GRF's EUC-KR at extraction time — and
+  the one addition is `resolveSound`'s retry: a name that arrives as raw CP949
+  bytes read as latin1 is decoded and tried again, so a caller whose own table
+  skipped the decode resolves too rather than 404ing on every Korean model.
+  Backslashes and forward slashes both work, and the extension may be omitted.
+- **`.rsm2` needs nothing of its own**, because nothing here parses RSM. The two
+  versions in the unit table — 1.4 for the classic props, 2.3 for the 4th-job
+  ones — share the `GRSM` magic and differ only in the geometry layout, which is
+  the consumer's problem; the map pipeline already hands `.rsm` bytes over raw at
+  `/maps/_m/<hash>.rsm` and the viewer parses them there.
+- **One divergence from `/effect/str`, deliberate: the validator.** `str` hashes
+  the query, because its body is a *parse* of the file and has no mtime of its
+  own. A model *is* the file, so it gets `fileETag` — the mtime+size validator
+  `/effect/sound` and `/icons` use — which changes when a patch replaces the
+  model underneath, where a query hash would not.
+- **Textures stay where they were.** A `< 2.2` model names its textures relative
+  to `data/texture/`, which `/effect/texture` already reaches through the `../`
+  it allows (`?file=../event/r_trap02.bmp`); a `2.3` model names a bare basename
+  that lives beside the model, so `data/model/effect/solidtrap/` →
+  `?file=solidtrap/sol_trap`. Both work today, so the new route needed no
+  texture work. One gap, reported rather than papered over:
+  `deep_trap.rsm2` names a `deep_trap` texture this client's GRF has no file for
+  (the folder ships `dee_trap.bmp`), so that model has no texture to fetch.
+- **Extraction.** `/effect/model` reads `RESOURCE_DIR/data/model`, which the
+  production mirror already holds in full — the whole GRF plus every patch — so
+  nothing changes there. A self-hoster extracting only the gateway's subset needs
+  `model` in the `--match`; the README's command now includes it, and the same
+  tree is the one `--maps` reads a map's models out of.
+- `effect.Store` grew a configurable base and prefix so the model store is the
+  texture store with a different root (`NewModelStore`), rather than a second
+  copy of the case-insensitive walk and the traversal guard.
+  `Store.ResolveEffect` is now `Store.Resolve`, since it no longer resolves only
+  effects. With no prefix folder to climb out of, a model token's `../` is
+  rejected outright instead of reaching a sibling tree.
+
 ## 2026-11-13
 
 ### Added

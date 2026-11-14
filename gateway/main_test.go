@@ -8,10 +8,13 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/text/encoding/korean"
 
 	"github.com/ragassets/gateway/internal/api"
 	"github.com/ragassets/gateway/internal/effect"
@@ -814,6 +817,7 @@ func TestCORSOnEveryResponse(t *testing.T) {
 	s := &server{
 		cfg:    config{resourceDir: root, soundsDir: sounds, port: "0"},
 		estore: effect.NewStore(root),
+		mstore: effect.NewModelStore(root),
 		flight: newFlightGroup(),
 	}
 	h := s.handler()
@@ -829,6 +833,9 @@ func TestCORSOnEveryResponse(t *testing.T) {
 		{"/effect/sound?file=maximizepower", http.StatusNotFound},
 		{"/effect/sound", http.StatusBadRequest},
 		{"/effect/texture?file=new_abr_mother/abr_mother.tga", http.StatusNotFound},
+		{"/effect/model?file=" + url.QueryEscape(`외부소품\트랩01`), http.StatusNotFound},
+		{"/effect/model?file=effect/deepblindtrap/deep_trap.rsm2", http.StatusNotFound},
+		{"/effect/model", http.StatusBadRequest},
 		{"/effect/str", http.StatusBadRequest},
 		{"/effect/nope", http.StatusNotFound},
 		{"/no/such/route", http.StatusNotFound},
@@ -860,6 +867,7 @@ func TestCORSOnMethodNotAllowed(t *testing.T) {
 	s := &server{
 		cfg:    config{resourceDir: root, port: "0"},
 		estore: effect.NewStore(root),
+		mstore: effect.NewModelStore(root),
 		flight: newFlightGroup(),
 	}
 	rec := httptest.NewRecorder()
@@ -869,5 +877,177 @@ func TestCORSOnMethodNotAllowed(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "*")
+	}
+}
+
+// effectModelServer serves a small data/model tree carrying one of each shape
+// the client's ground-unit table names: a Korean, backslash-separated name with
+// no extension (Ankle Snare's prop) and an ASCII one that spells its .rsm2
+// suffix out (Deep Blind Trap's). Both are real names from that table.
+func effectModelServer(t *testing.T) (*server, map[string][]byte) {
+	t.Helper()
+	dir := t.TempDir()
+	bodies := map[string][]byte{
+		filepath.Join("외부소품", "트랩01.rsm"):                          []byte("GRSM\x01\x04classic-prop-bytes"),
+		filepath.Join("effect", "deepblindtrap", "deep_trap.rsm2"): []byte("GRSM\x02\x03fourth-job-bytes"),
+	}
+	for rel, body := range bodies {
+		p := filepath.Join(dir, "data", "model", rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return &server{
+		cfg:    config{resourceDir: dir, port: "0"},
+		estore: effect.NewStore(dir),
+		mstore: effect.NewModelStore(dir),
+		flight: newFlightGroup(),
+	}, bodies
+}
+
+// TestEffectModel pins the contract a consumer builds against: the raw file
+// bytes, unmodified, for a name taken verbatim out of the client's unit table —
+// Korean or ASCII, with the extension or without it, backslashed or not.
+func TestEffectModel(t *testing.T) {
+	s, bodies := effectModelServer(t)
+	classic := bodies[filepath.Join("외부소품", "트랩01.rsm")]
+	modern := bodies[filepath.Join("effect", "deepblindtrap", "deep_trap.rsm2")]
+
+	for _, tc := range []struct {
+		name string
+		file string // the raw `file` value, before query-escaping
+		want []byte
+	}{
+		{"korean name, backslashes, no extension", `외부소품\트랩01`, classic},
+		{"korean name, forward slashes", "외부소품/트랩01", classic},
+		{"korean name, .rsm spelled out", `외부소품\트랩01.rsm`, classic},
+		{"ascii name, .rsm2 spelled out", `effect\deepblindtrap\deep_trap.rsm2`, modern},
+		{"ascii name, .rsm2 omitted", `effect\deepblindtrap\deep_trap`, modern},
+		{"uppercased name", `외부소품\트랩01.RSM`, classic},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := "/effect/model?file=" + url.QueryEscape(tc.file)
+			rec := get(t, s, s.handleEffectAsset, target)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+			}
+			if !bytes.Equal(rec.Body.Bytes(), tc.want) {
+				t.Errorf("body = %q, want %q", rec.Body.Bytes(), tc.want)
+			}
+			if ct := rec.Header().Get("Content-Type"); ct != "application/octet-stream" {
+				t.Errorf("content-type = %q, want application/octet-stream", ct)
+			}
+			if cc := rec.Header().Get("Cache-Control"); cc != api.CacheImmutable {
+				t.Errorf("Cache-Control = %q, want %q", cc, api.CacheImmutable)
+			}
+			if rec.Header().Get("Etag") == "" {
+				t.Error("no ETag: a conditional re-request would re-download the model")
+			}
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+				t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "*")
+			}
+		})
+	}
+}
+
+// A Korean name that reached the caller as a raw CP949 byte stream (what
+// roBrowser's tables carry, and what any table that skipped the decode holds)
+// resolves under its decoded Hangul path, the same retry /effect/sound makes.
+func TestEffectModelEUCKRName(t *testing.T) {
+	s, bodies := effectModelServer(t)
+
+	euckr, err := korean.EUCKR.NewEncoder().String("외부소품\\트랩01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Those bytes read as latin1 are what such a caller sends.
+	var mojibake []rune
+	for _, b := range []byte(euckr) {
+		mojibake = append(mojibake, rune(b))
+	}
+
+	rec := get(t, s, s.handleEffectAsset, "/effect/model?file="+url.QueryEscape(string(mojibake)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if want := bodies[filepath.Join("외부소품", "트랩01.rsm")]; !bytes.Equal(rec.Body.Bytes(), want) {
+		t.Errorf("body = %q, want %q", rec.Body.Bytes(), want)
+	}
+}
+
+// TestEffectModelMissingAndBad covers the arms a consumer has to tell apart: a
+// name this client never shipped (404, and never cached as immutable, because a
+// patch can add it), a missing parameter (400), and a traversal attempt (404,
+// not a file from outside data/model).
+func TestEffectModelMissingAndBad(t *testing.T) {
+	s, _ := effectModelServer(t)
+	// A file above data/model that must stay unreachable.
+	if err := os.WriteFile(filepath.Join(s.cfg.resourceDir, "data", "secret.rsm"), []byte("s"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		target string
+		want   int
+	}{
+		{"/effect/model?file=" + url.QueryEscape(`외부소품\트랩99`), http.StatusNotFound},
+		{"/effect/model?file=nope/nothing_here", http.StatusNotFound},
+		{"/effect/model?file=" + url.QueryEscape("외부소품"), http.StatusNotFound}, // a directory
+		{"/effect/model", http.StatusBadRequest},
+		{"/effect/model?file=", http.StatusBadRequest},
+		{"/effect/model?file=" + url.QueryEscape("../secret"), http.StatusNotFound},
+		{"/effect/model?file=" + url.QueryEscape(`..\secret`), http.StatusNotFound},
+		{"/effect/model?file=" + url.QueryEscape("../../etc/passwd"), http.StatusNotFound},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			rec := get(t, s, s.handleEffectAsset, tc.target)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body: %s)", rec.Code, tc.want, rec.Body.String())
+			}
+			if rec.Body.Len() > 0 && bytes.Contains(rec.Body.Bytes(), []byte("GRSM")) {
+				t.Errorf("served model bytes on a %d: %q", tc.want, rec.Body.Bytes())
+			}
+			if cc := rec.Header().Get("Cache-Control"); cc == api.CacheImmutable {
+				t.Errorf("Cache-Control = %q: a %d must not be cached as immutable", cc, tc.want)
+			}
+			if et := rec.Header().Get("Etag"); et != "" {
+				t.Errorf("Etag = %q: a %d must carry no validator", et, tc.want)
+			}
+		})
+	}
+}
+
+// A conditional re-request of a model must 304 rather than resend it, and the
+// validator must be derived from the file (so a patch that replaces the model
+// invalidates it) rather than from the query (which would not change).
+func TestEffectModelConditional(t *testing.T) {
+	s, _ := effectModelServer(t)
+	target := "/effect/model?file=" + url.QueryEscape(`외부소품\트랩01`)
+
+	first := get(t, s, s.handleEffectAsset, target)
+	etag := first.Header().Get("Etag")
+	if etag == "" {
+		t.Fatal("no ETag on the first response")
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Header.Set("If-None-Match", etag)
+	s.handleEffectAsset(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want 304", rec.Code)
+	}
+
+	// Replace the file: a different size must produce a different validator.
+	p := filepath.Join(s.cfg.resourceDir, "data", "model", "외부소품", "트랩01.rsm")
+	if err := os.WriteFile(p, []byte("GRSM\x01\x04patched-prop-bytes-longer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after := get(t, s, s.handleEffectAsset, target)
+	if after.Header().Get("Etag") == etag {
+		t.Error("ETag survived the file being replaced — a patched model would stay stale in every browser cache")
 	}
 }
