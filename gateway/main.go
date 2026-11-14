@@ -564,6 +564,12 @@ func (s *server) handleEffectStr(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
+		if str.Sanitized > 0 {
+			// Some real .str files carry Inf/-Inf/NaN in keyframe floats, which
+			// the parser zeroes so the effect still serves (encoding/json would
+			// refuse the whole file). Logged once per parse so it stays visible.
+			log.Printf("effect str %q: %d non-finite keyframe float(s) replaced with 0", file, str.Sanitized)
+		}
 		return json.Marshal(str)
 	})
 	if err != nil {

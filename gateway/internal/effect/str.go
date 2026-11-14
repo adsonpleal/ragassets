@@ -22,6 +22,12 @@ type Str struct {
 	FPS    uint32  `json:"fps"`
 	MaxKey uint32  `json:"maxKey"`
 	Layers []Layer `json:"layers"`
+
+	// Sanitized counts float fields whose file value was non-finite and was
+	// replaced with 0 (see strReader.f32). It is json:"-" on purpose: the
+	// /effect/str JSON shape is a client contract, so this is for the server's
+	// log only and must never appear in the response.
+	Sanitized int `json:"-"`
 }
 
 // Layer is one additive draw layer: the textures it may show and its keyframes.
@@ -61,6 +67,9 @@ type strReader struct {
 	buf []byte
 	off int
 	err error
+
+	// nonFinite counts the floats replaced with 0 by f32.
+	nonFinite int
 }
 
 func (r *strReader) need(n int) bool {
@@ -85,7 +94,26 @@ func (r *strReader) u32() uint32 {
 
 func (r *strReader) i32() int32 { return int32(r.u32()) }
 
-func (r *strReader) f32() float32 { return math.Float32frombits(r.u32()) }
+// f32 reads one float32, substituting 0 for a non-finite value.
+//
+// Real client .str files do carry Inf/-Inf/NaN in keyframe floats (position,
+// corner offsets, angle, colour, delay) — 88 of the 1198 names in the effect
+// tables, concentrated on the *_bottom ground layers of 4th-job skills. The D3D
+// client tolerates them and effectively draws the field as nothing, but
+// encoding/json refuses to marshal a non-finite float, which used to fail the
+// whole file with "json: unsupported value: +Inf" and leave the consumer with no
+// animation at all. Zeroing the one field keeps the rest of the effect.
+//
+// Every float a Keyframe holds is read through here (floats() included), so this
+// is the single place the substitution happens.
+func (r *strReader) f32() float32 {
+	v := math.Float32frombits(r.u32())
+	if math.IsInf(float64(v), 0) || math.IsNaN(float64(v)) {
+		r.nonFinite++
+		return 0
+	}
+	return v
+}
 
 func (r *strReader) floats(n int) []float32 {
 	out := make([]float32, n)
@@ -187,5 +215,6 @@ func ParseStr(data []byte) (*Str, error) {
 		}
 		out.Layers = append(out.Layers, Layer{Textures: textures, Animations: anims})
 	}
+	out.Sanitized = r.nonFinite
 	return out, nil
 }

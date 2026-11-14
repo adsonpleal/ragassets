@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
+	"encoding/json"
 	"image/png"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/ragassets/gateway/internal/api"
+	"github.com/ragassets/gateway/internal/effect"
 	"github.com/ragassets/gateway/internal/render/engine"
 	"github.com/ragassets/gateway/internal/render/resolve"
 )
@@ -657,4 +661,128 @@ func TestErrorResponsesCarryACachePolicy(t *testing.T) {
 			t.Errorf("Cache-Control = %q, want %q", cc, api.CacheNoStore)
 		}
 	})
+}
+
+// effectStrServer serves a single synthetic .str out of a temp data/texture/effect
+// tree, so the /effect/str handler can be exercised without the client's GRF.
+func effectStrServer(t *testing.T, name string, body []byte) *server {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "data", "texture", "effect", filepath.FromSlash(name)+".str")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return &server{
+		cfg:    config{resourceDir: dir, port: "0"},
+		estore: effect.NewStore(dir),
+		flight: newFlightGroup(),
+	}
+}
+
+// nonFiniteStr builds a one-layer, one-keyframe STRM carrying +Inf in pos[1],
+// -Inf in xy[0] and NaN in angle — the shape of the 4th-job *_bottom ground
+// layers that used to 500 with "parse failed: json: unsupported value: +Inf".
+func nonFiniteStr() []byte {
+	var b bytes.Buffer
+	u32 := func(v uint32) { binary.Write(&b, binary.LittleEndian, v) }
+	f32 := func(v float32) { u32(math.Float32bits(v)) }
+
+	b.WriteString("STRM")
+	u32(0x94)                 // version
+	u32(60)                   // fps
+	u32(100)                  // maxKey
+	u32(1)                    // layerCount
+	b.Write(make([]byte, 16)) // reserved
+
+	u32(1) // textureCount
+	field := make([]byte, 128)
+	copy(field, "ring_bottom.bmp")
+	b.Write(field)
+
+	u32(1)                                          // animCount
+	binary.Write(&b, binary.LittleEndian, int32(0)) // frame
+	u32(0)                                          // type
+	f32(1.5)                                        // pos[0]
+	f32(float32(math.Inf(1)))                       // pos[1]
+	for i := 0; i < 8; i++ {
+		f32(float32(i)) // uv
+	}
+	f32(float32(math.Inf(-1))) // xy[0]
+	for i := 1; i < 8; i++ {
+		f32(float32(10 + i)) // xy[1..7]
+	}
+	f32(0.75)                // aniframe
+	u32(0)                   // anitype
+	f32(4.0)                 // delay
+	f32(float32(math.NaN())) // angle
+	f32(255)                 // color r
+	f32(128)                 // color g
+	f32(64)                  // color b
+	f32(255)                 // color a
+	u32(5)                   // srcalpha
+	u32(2)                   // destalpha
+	u32(7)                   // mtpreset
+	return b.Bytes()
+}
+
+// TestEffectStrNonFinite pins that a .str with non-finite keyframe floats serves
+// 200 with usable JSON instead of 500, and that the response shape the replay
+// viewer parses — {fps, maxKey, layers:[{textures, animations:[...]}]} — is
+// unchanged, with the offending fields zeroed.
+func TestEffectStrNonFinite(t *testing.T) {
+	s := effectStrServer(t, "rockdown/rockdown_bottom/rockdown_bottom", nonFiniteStr())
+
+	rec := get(t, s, s.handleEffectAsset, "/effect/str?file=rockdown/rockdown_bottom/rockdown_bottom")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q, want application/json", ct)
+	}
+
+	raw := rec.Body.Bytes()
+	if bytes.Contains(raw, []byte("Inf")) || bytes.Contains(raw, []byte("NaN")) {
+		t.Errorf("body carries a non-finite literal: %s", raw)
+	}
+	var got struct {
+		FPS    uint32 `json:"fps"`
+		MaxKey uint32 `json:"maxKey"`
+		Layers []struct {
+			Textures   []string `json:"textures"`
+			Animations []struct {
+				Pos   [2]float32 `json:"pos"`
+				XY    [8]float32 `json:"xy"`
+				Angle float32    `json:"angle"`
+				Color [4]float32 `json:"color"`
+			} `json:"animations"`
+		} `json:"layers"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("body is not valid JSON: %v (%s)", err, raw)
+	}
+	if got.FPS != 60 || got.MaxKey != 100 {
+		t.Errorf("header: fps=%d maxKey=%d, want 60/100", got.FPS, got.MaxKey)
+	}
+	if len(got.Layers) != 1 || len(got.Layers[0].Animations) != 1 {
+		t.Fatalf("layer/keyframe dropped: %#v", got.Layers)
+	}
+	if n := got.Layers[0].Textures; len(n) != 1 || n[0] != "ring_bottom.bmp" {
+		t.Errorf("textures = %#v", n)
+	}
+	k := got.Layers[0].Animations[0]
+	if k.Pos != [2]float32{1.5, 0} {
+		t.Errorf("pos = %v, want [1.5 0]", k.Pos)
+	}
+	if k.XY != [8]float32{0, 11, 12, 13, 14, 15, 16, 17} {
+		t.Errorf("xy = %v, want [0 11 12 13 14 15 16 17]", k.XY)
+	}
+	if k.Angle != 0 {
+		t.Errorf("angle = %v, want 0", k.Angle)
+	}
+	if k.Color != [4]float32{255, 128, 64, 255} {
+		t.Errorf("color = %v, want [255 128 64 255]", k.Color)
+	}
 }
