@@ -83,6 +83,7 @@ type server struct {
 	eng    *engine.Engine
 	flight *flightGroup
 	estore *effect.Store // raw effect assets under RESOURCE_DIR/data/texture/effect
+	mstore *effect.Store // raw .rsm/.rsm2 models under RESOURCE_DIR/data/model
 
 	// Precomputed strong validators for the two embedded lookup tables (their
 	// bytes are fixed at build time, so the ETag is computed once).
@@ -101,6 +102,7 @@ func main() {
 		eng:          engine.New(cfg.resourceDir, resolve.DefaultTables()),
 		flight:       newFlightGroup(),
 		estore:       effect.NewStore(cfg.resourceDir),
+		mstore:       effect.NewModelStore(cfg.resourceDir),
 		skillMapETag: api.ETagForBytes(effect.SkillMapJSON),
 		effTableETag: api.ETagForBytes(effect.EffectTableJSON),
 	}
@@ -127,6 +129,12 @@ func main() {
 		log.Printf("effect assets: %s/data/texture/effect not found — /effect/str and /effect/texture will 404 (extract data/texture/effect into RESOURCE_DIR); /effect/skill-map and /effect/table still serve", cfg.resourceDir)
 	} else {
 		log.Printf("effect assets: serving /effect/str, /effect/texture, /effect/skill-map, /effect/table")
+	}
+
+	if fi, err := os.Stat(filepath.Join(cfg.resourceDir, "data", "model")); err != nil || !fi.IsDir() {
+		log.Printf("models: %s/data/model not found — /effect/model will return 404 (extract data/model into RESOURCE_DIR)", cfg.resourceDir)
+	} else {
+		log.Printf("models: serving /effect/model?file=<name> from %s/data/model", cfg.resourceDir)
 	}
 
 	if fi, err := os.Stat(cfg.mapsDir); err != nil || !fi.IsDir() {
@@ -505,6 +513,7 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 //                                 (raw D3DBLEND src/dest alpha kept verbatim)
 //   /effect/texture?file=<name>   one .str layer texture as a colorkeyed PNG
 //                                 (magenta #FF00FF → alpha; .bmp/.tga source)
+//   /effect/model?file=<name>     one .rsm/.rsm2 model, raw (data/model/<name>)
 //   /effect/sound?file=<name>     one sound effect as browser-playable WAV audio
 //                                 (data/wav/<name>.wav; e.g. effect/ef_portal)
 //   /effect/sound/index.json      the names present in the extracted sound tree
@@ -513,7 +522,8 @@ func (s *server) handleEffect(w http.ResponseWriter, r *http.Request) {
 //
 // str/texture parse on demand from RESOURCE_DIR/data/texture/effect (like /image
 // renders from the sprite tree); <name> is relative to that dir, may omit the
-// .str / .bmp / .tga suffix, and is resolved case-insensitively. skill-map/table
+// .str / .bmp / .tga suffix, and is resolved case-insensitively. model reads
+// RESOURCE_DIR/data/model the same way, with <name> relative to that dir. skill-map/table
 // are embedded JSON ported verbatim from roBrowser (see internal/effect), plus a
 // skill-map `wav` array resolved and verified at generation time (see
 // tools/gen-effect-tables.mjs resolveSkillWav) — every name in it is guaranteed
@@ -533,6 +543,8 @@ func (s *server) handleEffectAsset(w http.ResponseWriter, r *http.Request) {
 		s.handleEffectStr(w, r)
 	case "texture":
 		s.handleEffectTexture(w, r)
+	case "model":
+		s.handleEffectModel(w, r)
 	case "sound":
 		s.handleEffectSound(w, r)
 	case "sound/index.json":
@@ -627,6 +639,60 @@ func (s *server) handleEffectTexture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveBytes(w, r, out, etag, "image/png")
+}
+
+// handleEffectModel serves one .rsm/.rsm2 model from data/model/, raw.
+//
+// Why a model route sits in the /effect namespace: 23 of the client's
+// ground-skill unit types — every Hunter/Ranger trap, and the 4th-job ones —
+// draw no effect at all. The client keys a ground unit's visual off the unit's
+// type, and for those 23 the table's answer is not a .str but a 3D model, named
+// by a GRF path the same way an effect part names its .str. So this is the same
+// question /effect/str answers, for the rows whose asset happens to be geometry.
+//
+// Served raw, like the map pipeline's /maps/_m/<hash>.rsm, and for the same
+// reason the .str is served as data rather than as an image: the consumer
+// renders it, and there is nothing to pre-bake that would not throw away what
+// it needs. Nothing here parses RSM, so .rsm2 needs no handling of its own.
+//
+// It diverges from /effect/str in exactly one respect, deliberately: the
+// validator. str hashes the query because its body is a parse of the file and
+// has no mtime of its own; a model *is* the file, so it gets fileETag — the same
+// mtime+size validator /effect/sound and /icons use — which changes when a patch
+// replaces the model underneath, where a query hash would not. Everything else
+// matches: the immutable cache policy, the 404 for a name this client never
+// shipped, and the wildcard CORS header on every arm (api.AllowCORS stamps it
+// for the whole mux, so a 404 arrives as a 404 rather than as an opaque CORS
+// failure).
+func (s *server) handleEffectModel(w http.ResponseWriter, r *http.Request) {
+	file := r.URL.Query().Get("file")
+	if file == "" {
+		failWith(w, "missing 'file' query parameter", http.StatusBadRequest)
+		return
+	}
+
+	p, ok := s.mstore.ResolveModel(file)
+	if !ok {
+		notFound(w, r) // a model this client never shipped, or data/model not extracted
+		return
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		log.Printf("effect model open failed for %q (%s): %v", file, p, err)
+		failWith(w, "read failed", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		notFound(w, r)
+		return
+	}
+
+	// .gat/.gnd/.rsw/.rsm are all served as opaque binaries (see the /maps
+	// content-type switch); a model has no registered media type of its own.
+	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), "application/octet-stream")
 }
 
 // handleEffectSound serves one sound effect from the extracted data/wav/ tree
