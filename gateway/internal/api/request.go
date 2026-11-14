@@ -330,6 +330,7 @@ const RootHelp = "ragassets-gateway — renders and serves Ragnarok Online sprit
 	"     /effects/sprites/torch_01/sprite.json  (one sprite map-effect's per-frame img/delay/offset)\n" +
 	"     /effect/str?file=stormgust  (a skill effect's parsed .str keyframe animation, as JSON)\n" +
 	"     /effect/texture?file=stormgust/storm_ball  (one .str layer texture, colorkeyed PNG)\n" +
+	"     /effect/model?file=effect/deepblindtrap/deep_trap.rsm2  (one ground-unit model, raw .rsm/.rsm2)\n" +
 	"     /effect/sound?file=effect/ef_portal  (one sound effect, browser-playable WAV)\n" +
 	"     /effect/sound/index.json   (names present in the extracted sound tree)\n" +
 	"     /effect/skill-map          (skillId → effectId(s) lookup, ported from roBrowser)\n" +

@@ -625,15 +625,16 @@ is a separate namespace from [`/effects/...`](#get-effects--effect-only-costumes
 above (pre-built costume/map bundles); `/effect/...` (singular) parses **any**
 effect on demand from the extracted GRF tree.
 
-`str`/`texture` read from `data/texture/effect/` in `RESOURCE_DIR`, so they need
-that subtree extracted (see [GRF extraction](#resources--grf-extraction-required))
-and `404` otherwise. `skill-map`/`table` are embedded in the binary and always
-serve.
+`str`/`texture` read from `data/texture/effect/` in `RESOURCE_DIR` and `model`
+from `data/model/`, so they need those subtrees extracted (see
+[GRF extraction](#resources--grf-extraction-required)) and `404` otherwise.
+`skill-map`/`table` are embedded in the binary and always serve.
 
 | Path | What you get |
 |---|---|
 | `GET /effect/str?file=<name>` | The parsed `.str` as JSON: `{"fps","maxKey","layers":[{"textures":["<name>",…],"animations":[{"frame","type","pos":[x,y],"uv":[8],"xy":[8],"aniframe","anitype","delay","angle","color":[r,g,b,a],"srcalpha","destalpha","mtpreset"}]}]}`. `srcalpha`/`destalpha` are the **raw D3DBLEND ints** (the client maps them to `gl.blendFunc` — never collapsed); `color` stays in the file's `0–255` range. `<name>` is relative to `data/texture/effect/` and may omit the `.str` suffix. |
 | `GET /effect/texture?file=<name>` | One `.str` layer texture as an RGBA PNG: magenta (`#FF00FF`) colorkey → alpha, transparent RGB bled outward to kill bilinear fringes; 32-bit TGA keeps its real alpha. `.bmp`/`.tga` source resolves either way when the extension is omitted. |
+| `GET /effect/model?file=<name>` | One `.rsm`/`.rsm2` model, **raw** (`application/octet-stream`) — the 3D prop a ground skill's unit stands as when its unit type has no effect at all (every trap). `<name>` is the model path the client's own tables carry, relative to `data/model/` and **backslash-separated** (`외부소품\트랩01`, `effect\deepblindtrap\deep_trap.rsm2`); forward slashes work too, and the `.rsm`/`.rsm2` suffix may be omitted. Korean names are UTF-8 — percent-encode the whole value (`encodeURIComponent`). Nothing is parsed here, so both RSM versions (1.4 props, 2.3 for the 4th-job ones) come through byte for byte. |
 | `GET /effect/sound?file=<name>` | One sound effect as browser-playable WAV (`audio/wav`) — the audio behind an effect table row's `wav` field. `<name>` is relative to `data/wav/` **without** the `.wav` extension, exactly as `wav` carries it (`effect/ef_portal`, the bare `_heal_effect`). Reads the static tree `extract-grf.mjs --sounds` writes (`SOUNDS_DIR`); a name the client GRF never shipped `404`s (the viewer treats that as "no sound" and skips it). |
 | `GET /effect/sound/index.json` | `{"count", "names":[…]}` — the sound names present in the extracted tree, for coverage preflighting. |
 | `GET /effect/skill-map` | `skillId → {effectId?, hitEffectId?, groundEffectId?, wav?}` — from roBrowserLegacy's `SkillEffect` (~683 skills, all job eras). `skillId` is the AEGIS/packet id the client sends (matches rAthena). `wav` is a de-duplicated array of sound names already verified against the extracted tree (see below) — fetch `/effect/sound?file=<name>` directly, no fallback needed. It fills in the many 3rd/4th-class skills whose effect has no `wav` in the table below, by also trying the skill's own SKID constant name. |
@@ -644,6 +645,8 @@ serve.
 /effect/str?file=firewall1                  # Fire Wall   (skill 18 → groundEffectId 25)
 /effect/texture?file=snow_a                 # a Storm Gust layer texture (.bmp)
 /effect/texture?file=stormcannon/sto_shine_00
+/effect/model?file=%EC%99%B8%EB%B6%80%EC%86%8C%ED%92%88%5C%ED%8A%B8%EB%9E%A901   # 외부소품\트랩01 — Ankle Snare's trap (unit type 145)
+/effect/model?file=effect/deepblindtrap/deep_trap.rsm2   # Deep Blind Trap (unit type 20852)
 /effect/skill-map
 /effect/table
 /effect/sound?file=effect/ef_portal        # the portal-open whoosh (effect 6)
@@ -674,6 +677,23 @@ pre-composited bundle at
 them, so a skill that maps to a SPR effect has something to play. A skill that
 maps only to `2D`/`3D`/`CYLINDER`/`FUNC` effects still shows nothing: those the
 client generates procedurally.
+
+`/effect/model` is for the one visual in this family that is **not** keyed off a
+skill id. A ground skill's unit — a Fire Wall's flame, Sanctuary's square, a
+Hunter's trap — is keyed off the unit's *type*, rathena's `UNT_` number, which
+the `0x09ca` packet carries; and for 23 of those types the client's table says
+"no effect, stand as this model" and names an `.rsm`/`.rsm2` path instead. All 23
+names resolve in the current LATAM client (10 `외부소품\트랩*` props, 9
+`event\3차트랩_*`, and 4 `effect\*trap\*.rsm2`). The model's **textures** are a
+separate fetch and go through `/effect/texture`: a `< 2.2` model names them
+relative to `data/texture/`, so reach them with the `../` that endpoint already
+allows (`/effect/texture?file=../event/r_trap02.bmp`), while a `2.3` model names
+a bare basename that lives beside the model — `data/model/effect/solidtrap/` →
+`/effect/texture?file=solidtrap/sol_trap`. One of the four does not resolve:
+`deep_trap.rsm2` names a `deep_trap` texture this client's GRF has no file for
+(the folder ships `dee_trap.bmp` instead), so that one model has no texture to
+fetch — the geometry serves, and how to draw it untextured is the consumer's
+call.
 
 `/effect/sound` reads a separate static tree (`extract-grf.mjs --sounds`, see
 [GRF extraction](#resources--grf-extraction-required)) and `404`s until it's built.
@@ -1261,7 +1281,7 @@ Extract exactly the directories the gateway needs into `./resources`:
 
 ```bash
 node extract-grf.mjs --extract resources --grf path/to/data.grf \
-  --match "data\\(sprite|palette|imf|luafiles514|texture\\effect)\\"
+  --match "data\\(sprite|palette|imf|luafiles514|model|texture\\effect)\\"
 ```
 
 > **Pass `--iteminfo` explicitly in anything automated.** With `--grf <directory>`
@@ -1285,7 +1305,11 @@ etc., which the gateway reads via `RESOURCE_DIR` (default `/resources` in the
 container). `texture/effect` holds the `.str` skill/world effects and their layer
 textures that [`/effect/str`](#get-effect--skill--world-effects-data--textures) and
 `/effect/texture` parse on demand; drop `texture\\effect` from the match if you
-don't need those endpoints. The headgear/garment
+don't need those endpoints. `model` holds the `.rsm`/`.rsm2` models that
+[`/effect/model`](#get-effect--skill--world-effects-data--textures) serves — the
+ground-unit props the client draws for the 23 unit types that have no effect —
+and is the same tree `--maps` reads a map's models out of; drop it the same way
+if you serve neither. The headgear/garment
 ID→sprite-name tables are baked from the client `luafiles514/.lub` into the binary
 by `gateway/cmd/gen-resolver` — re-run it when you update the client. Equipment
 ordering uses the full numeric `TB_Layer_Priority` values: direction override,

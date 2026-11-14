@@ -8,10 +8,11 @@ import (
 	"sync"
 )
 
-// Store resolves and reads raw effect assets under RESOURCE_DIR/data/texture/,
-// case-insensitively. GRF paths are EUC-KR with inconsistent casing, and the
-// extracted tree preserves whatever the client shipped; prod runs on a
-// case-sensitive filesystem, so a lowercased directory index is kept per folder
+// Store resolves and reads raw assets out of one subtree of RESOURCE_DIR
+// (data/texture for effects, data/model for models), case-insensitively. GRF
+// paths are EUC-KR with inconsistent casing, and the extracted tree preserves
+// whatever the client shipped; prod runs on a case-sensitive filesystem, so a
+// lowercased directory index is kept per folder
 // (built lazily, then cached — the resource tree is read-only between patches).
 //
 // That cache is why applying a patch must restart this process. The index is per
@@ -29,7 +30,8 @@ import (
 // that a lowercase lookup would fail to find, silently, as 404s.
 // TestTextureTreeHasNoCaseCollisions pins that the mapping is injective.
 type Store struct {
-	base string // <resourceDir>/data/texture
+	base   string // the subtree a token is resolved inside, e.g. <resourceDir>/data/texture
+	prefix string // folder under base a bare token is relative to ("effect", or "" for none)
 
 	mu  sync.Mutex
 	dir map[string]map[string]string // absDir -> lower(entryName) -> realEntryName
@@ -41,18 +43,33 @@ type Store struct {
 // escapes above data/texture are rejected.
 func NewStore(resourceDir string) *Store {
 	return &Store{
-		base: filepath.Join(resourceDir, "data", "texture"),
+		base:   filepath.Join(resourceDir, "data", "texture"),
+		prefix: "effect",
+		dir:    map[string]map[string]string{},
+	}
+}
+
+// NewModelStore roots a Store at <resourceDir>/data/model, the client's .rsm /
+// .rsm2 tree. Unlike the texture store there is no prefix folder: the client's
+// model names are already relative to data/model ("외부소품\트랩01",
+// "effect\deepblindtrap\deep_trap.rsm2"), which is also how the .rsw map files
+// and the effect table's rsm rows spell them. With no prefix to climb out of,
+// any "../" in a token is rejected outright rather than reaching a sibling tree.
+func NewModelStore(resourceDir string) *Store {
+	return &Store{
+		base: filepath.Join(resourceDir, "data", "model"),
 		dir:  map[string]map[string]string{},
 	}
 }
 
-// ResolveEffect maps a caller-supplied file token (relative to data/texture/effect,
-// may use "../" to reach a sibling texture folder) to a real on-disk path, trying
-// each extension in exts in order. A candidate that already ends in one of exts
-// (case-insensitively) is also tried verbatim. Returns "" if nothing resolves or
-// the token escapes data/texture. The lookup is case-insensitive at every segment.
-func (s *Store) ResolveEffect(file string, exts []string) (string, bool) {
-	rel, ok := effectRel(file)
+// Resolve maps a caller-supplied file token (relative to the store's prefix
+// folder, and for the texture store may use "../" to reach a sibling texture
+// folder) to a real on-disk path, trying each extension in exts in order. A
+// candidate that already ends in one of exts (case-insensitively) is also tried
+// verbatim. Returns "" if nothing resolves or the token escapes the store's
+// base. The lookup is case-insensitive at every segment.
+func (s *Store) Resolve(file string, exts []string) (string, bool) {
+	rel, ok := s.rel(file)
 	if !ok {
 		return "", false
 	}
@@ -77,7 +94,7 @@ func (s *Store) ResolveEffect(file string, exts []string) (string, bool) {
 // between BMP and TGA from it — and a resolved *path* is not something an object
 // store has. Returning the name keeps both backings answering the same question.
 func (s *Store) Read(file string, exts []string) ([]byte, string, bool, error) {
-	p, ok := s.ResolveEffect(file, exts)
+	p, ok := s.Resolve(file, exts)
 	if !ok {
 		return nil, "", false, nil
 	}
@@ -88,17 +105,25 @@ func (s *Store) Read(file string, exts []string) ([]byte, string, bool, error) {
 	return data, p, true, nil
 }
 
-// effectRel folds a file token into a slash path under data/texture, constrained
-// to that subtree. The token is interpreted relative to effect/; path.Clean folds
-// any "../", and a result that climbs above data/texture (or is absolute) is
-// rejected. Backslashes are normalized to forward slashes first.
-func effectRel(file string) (string, bool) {
+// rel folds a file token into a slash path under s.base, constrained to that
+// subtree. The token is interpreted relative to s.prefix; path.Clean folds any
+// "../", and a result that climbs above s.base (or is absolute) is rejected.
+// Backslashes are normalized to forward slashes first — the client's own names
+// are backslash-separated GRF paths and arrive that way.
+func (s *Store) rel(file string) (string, bool) {
 	file = strings.ReplaceAll(file, "\\", "/")
 	if file == "" || strings.HasPrefix(file, "/") {
 		return "", false
 	}
-	rel := path.Clean("effect/" + file)
-	if rel == ".." || strings.HasPrefix(rel, "../") {
+	// Concatenating a "" prefix with "/" would make the token absolute, and
+	// path.Clean would then swallow a leading "../" instead of exposing it to the
+	// guard below — so a prefixless store cleans the token on its own.
+	rel := file
+	if s.prefix != "" {
+		rel = s.prefix + "/" + file
+	}
+	rel = path.Clean(rel)
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
 		return "", false
 	}
 	return rel, true
