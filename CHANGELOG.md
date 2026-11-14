@@ -96,6 +96,29 @@ and do not describe the system today. Check the date before trusting an entry;
   draws for one of these anyway, and the rest of the animation is intact. The
   response shape is unchanged (`Str.Sanitized`, the count, is `json:"-"`); the
   handler logs it once per parse, naming the file.
+- **Every response carries `Access-Control-Allow-Origin: *` now, not just the
+  200s.** The header was set by `api.SetAssetHeaders`, which only a success path
+  reaches, so a 404 and a 500 went out bare. In a browser that is not a 404: it
+  is `Access to fetch at '…' has been blocked by CORS policy: No
+  'Access-Control-Allow-Origin' header is present on the requested resource`,
+  and `fetch()` rejects with a status the caller never gets to see — so a missing
+  asset was indistinguishable in client code from this host being down.
+- **Why that is a real cost here.** Callers probe for assets routinely: a skill
+  whose `wav` this client never shipped, a texture an older client lacks. Absence
+  is a normal answer they handle by drawing nothing. `holyhit`, `cwound`, `melt`
+  and `maximizepower` are four sound names that are simply not in this client's
+  tree, and each one was costing the replay viewer a console error instead of a
+  quiet skip.
+- **The fix is `api.AllowCORS`, a middleware around the whole mux**, rather than
+  another call in each handler — the bug was precisely a path that forgot. The
+  header is on the header map before anything can write a status, so it covers
+  the handlers, `http.Error`, `http.NotFound`, `http.ServeContent`, the mux's own
+  404 for an unrouted path, and a 304. Nothing is widened by it: every route is
+  public and unauthenticated, there are no credentials (the wildcard would be
+  illegal beside `Access-Control-Allow-Credentials`, and a test pins that it
+  stays unset), and an error body here is a fixed string. `s.handler()` is now
+  the one place the routes and their wrappers are assembled, so a test can drive
+  the chain production runs.
 
 ## 2026-10-27
 

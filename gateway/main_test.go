@@ -786,3 +786,88 @@ func TestEffectStrNonFinite(t *testing.T) {
 		t.Errorf("color = %v, want [255 128 64 255]", k.Color)
 	}
 }
+
+// TestCORSOnEveryResponse drives the real routing chain (s.handler(), the same
+// value main gives http.Server) rather than a handler in isolation, because the
+// wrapper is where the header now comes from.
+//
+// It is the regression test for the failure that motivated the middleware: a
+// browser asking for an asset this client never shipped got
+//
+//	Access to fetch at '…/effect/sound?file=holyhit' from origin
+//	'http://localhost:5173' has been blocked by CORS policy: No
+//	'Access-Control-Allow-Origin' header is present on the requested resource.
+//
+// instead of the plain 404 it handles by drawing nothing. The four sound names
+// below are real misses against the LATAM client, and `/effect/str` without a
+// `file` is the 400 arm.
+func TestCORSOnEveryResponse(t *testing.T) {
+	root := t.TempDir()
+	sounds := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "data", "texture", "effect"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// One sound that does exist, so the 200 arm goes down the same chain.
+	if err := os.WriteFile(filepath.Join(sounds, "present.wav"), []byte("RIFF\x00\x00\x00\x00WAVE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{
+		cfg:    config{resourceDir: root, soundsDir: sounds, port: "0"},
+		estore: effect.NewStore(root),
+		flight: newFlightGroup(),
+	}
+	h := s.handler()
+
+	cases := []struct {
+		target string
+		want   int
+	}{
+		{"/effect/sound?file=present", http.StatusOK},
+		{"/effect/sound?file=holyhit", http.StatusNotFound},
+		{"/effect/sound?file=cwound", http.StatusNotFound},
+		{"/effect/sound?file=melt", http.StatusNotFound},
+		{"/effect/sound?file=maximizepower", http.StatusNotFound},
+		{"/effect/sound", http.StatusBadRequest},
+		{"/effect/texture?file=new_abr_mother/abr_mother.tga", http.StatusNotFound},
+		{"/effect/str", http.StatusBadRequest},
+		{"/effect/nope", http.StatusNotFound},
+		{"/no/such/route", http.StatusNotFound},
+		{"/healthz", http.StatusOK},
+		{"/", http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.target, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+			req.Header.Set("Origin", "http://localhost:5173")
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body: %s)", rec.Code, tc.want, rec.Body.String())
+			}
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+				t.Errorf("Access-Control-Allow-Origin = %q, want %q — a browser reports this as a CORS failure, not as %d", got, "*", tc.want)
+			}
+		})
+	}
+}
+
+// TestCORSOnMethodNotAllowed covers the one error arm no GET can reach.
+func TestCORSOnMethodNotAllowed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "data", "texture", "effect"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{
+		cfg:    config{resourceDir: root, port: "0"},
+		estore: effect.NewStore(root),
+		flight: newFlightGroup(),
+	}
+	rec := httptest.NewRecorder()
+	s.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/effect/str?file=x", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "*")
+	}
+}
