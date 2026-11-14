@@ -153,6 +153,25 @@ func main() {
 		log.Printf("raw: serving %s at /raw/{name}.json", cfg.rawDir)
 	}
 
+	addr := ":" + cfg.port
+	log.Printf("ragassets-gateway listening on %s (resources: %s)", addr, cfg.resourceDir)
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      s.handler(),
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 130 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
+}
+
+// handler is the whole public surface: the routes, wrapped in the middleware
+// production runs them behind.
+//
+// It is a method rather than inline in main so the tests can drive the real
+// chain. A handler called directly skips the wrappers, and the CORS header on
+// errors lives in one of them — exactly the kind of gap a per-handler test
+// cannot see (TestCORSOnEveryResponse).
+func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/image", s.handleImage)
 	mux.HandleFunc("/gif", s.handleGif)
@@ -169,15 +188,9 @@ func main() {
 	})
 	mux.HandleFunc("/", s.handleRoot)
 
-	addr := ":" + cfg.port
-	log.Printf("ragassets-gateway listening on %s (resources: %s)", addr, cfg.resourceDir)
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      logRequests(mux),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 130 * time.Second,
-	}
-	log.Fatal(srv.ListenAndServe())
+	// AllowCORS outermost: it must stamp the header before anything can write a
+	// status, including a 404 from the mux itself for a path no route claims.
+	return api.AllowCORS(logRequests(mux))
 }
 
 func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {

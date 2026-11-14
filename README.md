@@ -94,6 +94,14 @@ card art, effects, maps, BGM, sounds and the data tables.
 - **Concurrent requests for the same URL trigger exactly one render** (in-process
   single-flight); parsed sprite/palette resources are cached in memory and reused
   across requests.
+- **`Access-Control-Allow-Origin: *` is on every response, errors included.** Any
+  origin may read any route — the bytes are public, nothing here is
+  authenticated, and a simple `GET` needs no preflight. It matters most on the
+  failures: without the header a browser does not report a `404`, it reports a
+  CORS violation, and a caller probing for an asset this client never shipped
+  (a skill with no `wav`, a texture an older client lacks) cannot tell "not here"
+  from "host is down". A `404` from this server is an answer; handle it by
+  drawing nothing.
 - **`GET /icons/*` and `GET /illust/*` are plain static file serving** — the
   icons and the card artwork are extracted once from the client GRF by
   `extract-grf.mjs --icons` / `--illust` (see

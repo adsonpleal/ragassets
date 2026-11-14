@@ -397,11 +397,50 @@ func SetMissingHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", CacheRevalidate)
 }
 
-// SetAssetHeaders applies a cache policy, a quoted ETag, and the wildcard CORS
-// header every served asset carries. The bytes are public and read-only, so any
-// origin may read them and a simple GET needs no preflight.
+// SetAssetHeaders applies a cache policy and a quoted ETag. The wildcard CORS
+// header is not set here — AllowCORS stamps it on every response, success and
+// failure alike — but a handler that writes its own headers still reaches the
+// same contract.
 func SetAssetHeaders(w http.ResponseWriter, etag, cacheControl string) {
 	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("Etag", `"`+etag+`"`)
+	SetCORS(w)
+}
+
+// SetCORS stamps the wildcard CORS header every response carries. The bytes are
+// public and read-only, so any origin may read them and a simple GET needs no
+// preflight.
+//
+// It belongs on errors as much as on assets, and that is the half that was
+// missing until 2026-11-14. Without the header on a 404, a browser does not
+// report the 404: fetch() rejects with "No 'Access-Control-Allow-Origin' header
+// is present", which is indistinguishable in client code from the host being
+// down or the request being blocked. Callers here routinely probe for assets
+// this client never shipped — a sound a skill has no wav for, a texture an older
+// client lacks — and absence is a normal answer they handle by drawing nothing.
+// Hiding it behind a CORS failure turned every such probe into a console error
+// and cost the client the status code it needed to tell "missing" from "broken".
+//
+// Nothing is leaked by doing so. Every route is public and unauthenticated,
+// there are no cookies and no credentials (so the wildcard stays legal, which it
+// would not be beside Access-Control-Allow-Credentials), and the body of an
+// error here is a fixed string, never anything about the caller.
+func SetCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+}
+
+// AllowCORS wraps a handler so that every response it produces carries the
+// wildcard CORS header, whatever its status.
+//
+// A middleware rather than a call in each handler, because the failure it fixes
+// was precisely a path that forgot: the header was set by SetAssetHeaders, which
+// only the success paths reach, so 404s and 500s went out bare. Stamping it on
+// the way in means it is already on the header map whoever writes first — the
+// handler, http.Error, http.NotFound, http.ServeContent, or the server's own
+// response to a panic.
+func AllowCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		SetCORS(w)
+		next.ServeHTTP(w, r)
+	})
 }
