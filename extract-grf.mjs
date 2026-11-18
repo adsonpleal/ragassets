@@ -12,7 +12,7 @@
 // Usage:
 //   node extract-grf.mjs --list   <file.grf>
 //   node extract-grf.mjs --extract <out-dir> --grf <file.grf> [--match <regex>]
-//   node extract-grf.mjs --prune-robes <resources-dir> [--dry-run]
+//   node extract-grf.mjs --prune-robes <resources-dir> [--min-folders <n>] [--dry-run]
 //   node extract-grf.mjs --dump   <file.grf>::<path>      # one file to stdout (fwd-slash path)
 //   node extract-grf.mjs --icons  <out-dir> --grf <file.grf> [--iteminfo <path>]
 //   node extract-grf.mjs --illust <out-dir> --grf <file.grf>
@@ -122,6 +122,9 @@ function parseArgs(argv) {
     else if (a === "--prune-robes") out.pruneRobes = argv[++i];
     else if (a === "--robe-index") out.robeIndex = argv[++i];
     else if (a === "--index") out.index = argv[++i];
+    // Unknown flags fall through this chain in silence, so a --min-folders with
+    // no entry here would be dropped without a word.
+    else if (a === "--min-folders") out.minFolders = argv[++i];
     else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--match") out.match = argv[++i];
     else if (a === "--icons") out.icons = argv[++i];
@@ -147,7 +150,7 @@ function usage() {
       "",
       "  node extract-grf.mjs --list    <file.grf>",
       "  node extract-grf.mjs --extract <out-dir> --grf <file.grf> [--match <regex>]",
-      "  node extract-grf.mjs --prune-robes <resources-dir> [--index <f.json>] [--dry-run]",
+      "  node extract-grf.mjs --prune-robes <resources-dir> [--index <f.json>] [--min-folders <n>] [--dry-run]",
       "  node extract-grf.mjs --robe-index <out.json> --grf <resources-dir>",
       "  node extract-grf.mjs --dump    <file.grf>::<path>",
       "  node extract-grf.mjs --icons   <out-dir> --grf <file.grf> [--iteminfo <path>]",
@@ -157,6 +160,11 @@ function usage() {
       "",
       "  --prune-robes deletes the adventurer-backpack sprites Gravity leaves in",
       "  every robe folder it copies that folder to make. Run it after --extract.",
+      "",
+      "  --min-folders lowers the \"shared by how many folders\" threshold from the",
+      "  default 10. The threshold is absolute, so a partial tree (a mirror with 9",
+      "  robe folders, say) never reaches it and nothing is pruned at all. Validate",
+      "  what a lower threshold flags before deleting with it.",
       "",
       "  --robe-index records path->hash for the robe tree, and --prune-robes",
       "  --index reuses it. The decision only ever compares hashes, so this lets",
@@ -256,7 +264,15 @@ function main() {
   }
 
   if (args.pruneRobes) {
-    pruneRobes(args.pruneRobes, { dryRun: args.dryRun, indexPath: args.index });
+    let minFolders = null;
+    if (args.minFolders !== undefined) {
+      minFolders = Number(args.minFolders);
+      if (!Number.isInteger(minFolders) || minFolders < 2) {
+        console.error("--min-folders takes an integer of 2 or more.");
+        process.exit(2);
+      }
+    }
+    pruneRobes(args.pruneRobes, { dryRun: args.dryRun, indexPath: args.index, minFolders });
     process.exit(process.exitCode || 0);
   }
 
@@ -1065,20 +1081,41 @@ export function openTree({ root, index = null }) {
 // Extraction
 // ---------------------------------------------------------------------------
 
-// readGrfEntry pulls one entry's bytes out of an open archive: read the raw
-// span, undo whichever DES pass the entry took, then inflate unless it was
-// stored. This is openGrf's read(); nothing else should touch grf.fd.
-function readGrfEntry(fd, entry) {
+// Where one entry's bytes sit in the archive. An entry carries its own offset
+// and compressed length, so this is all a caller needs to read a single file
+// out of an archive it does not have: an HTTP range request over a 300 MB patch
+// fetches the few hundred KB of one sprite.
+export function grfEntrySpan(entry) {
+  return { start: 0x2e + entry.offset, length: entry.compSizeAligned };
+}
+
+// Turn an entry's raw span into its real bytes: undo whichever DES pass the
+// entry took, then inflate unless it was stored. Separate from the reading so
+// the format logic has one home no matter where the bytes came from — a local
+// file descriptor here, a range response elsewhere.
+//
+// `raw` is modified in place by the DES passes, as the originals are.
+export function decodeGrfEntry(raw, entry) {
   const FILE_BIT = 0x01;
   const ENC_MIXED = 0x02;
   const ENC_HEADER = 0x04;
+  // A file table lists directories as well as files, told apart only by this
+  // bit. A directory entry decodes to no bytes, and writing it would put an
+  // empty file where a directory has to go.
   if (!(entry.flags & FILE_BIT)) return new Uint8Array(0);
-  const raw = readBytes(fd, entry.compSizeAligned, 0x2e + entry.offset);
   if (entry.flags & ENC_MIXED) desDecodeFull(raw, entry.compSizeAligned, entry.compSize);
   else if (entry.flags & ENC_HEADER) desDecodeHeader(raw, entry.compSizeAligned);
   // Stored (not deflated) when compressed size == real size.
   if (entry.uncompSize === entry.compSize) return raw;
   return inflateSync(raw);
+}
+
+// readGrfEntry pulls one entry's bytes out of an open archive. This is openGrf's
+// read(); nothing else should touch grf.fd.
+function readGrfEntry(fd, entry) {
+  if (!(entry.flags & 0x01)) return new Uint8Array(0);
+  const { start, length } = grfEntrySpan(entry);
+  return decodeGrfEntry(readBytes(fd, length, start), entry);
 }
 
 // extractFile and closeGrf are the only things every mode uses to get at an
@@ -1279,8 +1316,15 @@ export const ROBE_INDEX_VERSION = 2;
  *
  * Paths are forward-slashed and relative to resourcesDir, so they map straight
  * onto object keys as well as onto the tree.
+ *
+ * `minFolders` is stored in the index because the threshold is **absolute**, and
+ * a partial tree silently finds nothing: a mirror holding 9 robe folders per
+ * origin never reaches the default 10, so every leftover survives. Lower it for
+ * a subset — but validate first that what it then flags is really shared
+ * template content, because the lower the threshold the easier it is to delete
+ * art that only happens to repeat.
  */
-export function buildRobeIndex(resourcesDir) {
+export function buildRobeIndex(resourcesDir, { minFolders = ROBE_TEMPLATE_MIN_FOLDERS } = {}) {
   const root = resolve(resourcesDir);
   const robeRoot = join(root, "data", "sprite", kROBE);
   const folders = {};
@@ -1297,7 +1341,7 @@ export function buildRobeIndex(resourcesDir) {
       })),
     };
   }
-  return { version: ROBE_INDEX_VERSION, minFolders: ROBE_TEMPLATE_MIN_FOLDERS, folders };
+  return { version: ROBE_INDEX_VERSION, minFolders, folders };
 }
 
 /**
@@ -1388,7 +1432,7 @@ function relPosix(root, p) {
   return p.slice(root.length).replace(/^[\\/]+/, "").split("\\").join("/");
 }
 
-function pruneRobes(resourcesDir, { dryRun = false, indexPath = null } = {}) {
+function pruneRobes(resourcesDir, { dryRun = false, indexPath = null, minFolders = null } = {}) {
   const robeRoot = join(resolve(resourcesDir), "data", "sprite", kROBE);
   if (!existsSync(robeRoot)) {
     console.error(`No robe tree at ${robeRoot} — run --extract first.`);
@@ -1410,12 +1454,16 @@ function pruneRobes(resourcesDir, { dryRun = false, indexPath = null } = {}) {
     // the file by hand. The tree it describes is right here, so rebuild it.
     if (index?.version !== ROBE_INDEX_VERSION) {
       console.error(`  index is version ${index?.version}, expected ${ROBE_INDEX_VERSION} — rebuilding`);
-      index = buildRobeIndex(resourcesDir);
+      index = buildRobeIndex(resourcesDir, minFolders === null ? {} : { minFolders });
       if (!dryRun) writeFileSync(indexPath, JSON.stringify(index));
     }
+    // An explicit --min-folders applies to an index that was already on disk,
+    // without forcing a rebuild: the hashes do not depend on the threshold,
+    // only the decision does.
+    if (minFolders !== null) index = { ...index, minFolders };
   } else {
     console.error(`Indexing ${robeRoot}…`);
-    index = buildRobeIndex(resourcesDir);
+    index = buildRobeIndex(resourcesDir, minFolders === null ? {} : { minFolders });
   }
 
   const folderCount = Object.keys(index.folders).length;

@@ -14,6 +14,40 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-18
+
+### Added
+- **`grfEntrySpan(entry)` and `decodeGrfEntry(raw, entry)`**, exported — the two
+  halves `readGrfEntry` was. A GRF entry carries its own offset and compressed
+  length, so where the bytes come from and what they mean are separable
+  concerns: `grfEntrySpan` says where one file sits in the archive, and
+  `decodeGrfEntry` turns that span into real bytes (DES pass, then inflate
+  unless stored). `readGrfEntry` is now those two calls and behaves exactly as
+  before.
+- **What needed it.** A caller that does *not* have the archive can now read one
+  file out of it over HTTP with a range request. Reading 70,989 sprites out of
+  215 Gravity patches took **499 requests and 577 MB** this way, against roughly
+  11 GB to download the same patches whole — the sprites wanted are a few
+  hundred KB of a 2–292 MB patch. The caller is a costume-extraction pipeline
+  outside this repo; nothing here changes behaviour.
+- **A directory entry decodes to zero bytes, and that is now said out loud.** A
+  file table lists directories alongside files, told apart only by flag
+  `0x01`. Writing one puts an empty file where a directory has to go, and the
+  next real entry under it fails to `mkdir`. `decodeGrfEntry` returns an empty
+  array for them, as `readGrfEntry` always did; the comment is there because a
+  range-reading caller has to filter them itself.
+- **`--prune-robes --min-folders <n>`** lowers the "shared by how many folders"
+  threshold from the default 10, and `buildRobeIndex` takes it as an option.
+  Without it, `--prune-robes` on a **partial** robe tree finds nothing and says
+  nothing: the threshold is absolute, so a tree holding 9 robe folders never
+  reaches 10 and every backpack leftover survives. Validated before shipping —
+  on a 9-folder subset the 8 hashes a lowered threshold flags were checked
+  against the already-pruned production tree, and **8 of 8 are absent there**,
+  so all 8 are genuine leftovers rather than art that merely repeats. Pruning
+  that subset removed 1,119 files from 9 folders. The usage text warns to
+  validate before deleting with a lower threshold, because the lower it goes the
+  easier it is to delete art that only happens to repeat.
+
 ## 2026-11-14
 
 ### Added
