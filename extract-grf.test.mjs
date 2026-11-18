@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { gzipSync } from "node:zlib";
+import { deflateSync, gzipSync } from "node:zlib";
 import { join, dirname } from "node:path";
 import {
   LuaTable,
@@ -68,7 +68,10 @@ import {
   openTree,
   readRgz,
   rgzData,
+  ROBE_INDEX_VERSION,
   buildRobeIndex,
+  decodeGrfEntry,
+  grfEntrySpan,
   robePrunePlan,
   robeTemplateHashes,
   sanitizePath,
@@ -2419,4 +2422,101 @@ test("effectHatItemSet reads the client's effect-hat item list as a set", () => 
   const set = effectHatItemSet(luaTbl({ 1: 20522, 2: 400149, 3: 0, 4: "nope" }));
   assert.deepEqual([...set].sort((a, b) => a - b), [20522, 400149]);
   assert.equal(effectHatItemSet(undefined), null);
+});
+
+// grfEntrySpan / decodeGrfEntry — the split that lets a caller read one entry's
+// bytes over the network (a range request) instead of downloading the archive.
+test("grfEntrySpan places an entry past the 0x2e header", () => {
+  assert.deepEqual(grfEntrySpan({ offset: 0, compSizeAligned: 16 }), { start: 0x2e, length: 16 });
+  assert.deepEqual(grfEntrySpan({ offset: 1000, compSizeAligned: 256 }), {
+    start: 1046,
+    length: 256,
+  });
+});
+
+test("decodeGrfEntry inflates a deflated entry", () => {
+  const real = Buffer.from("spr bytes".repeat(40));
+  const comp = deflateSync(real);
+  const got = decodeGrfEntry(Buffer.from(comp), {
+    flags: 0x01,
+    compSize: comp.length,
+    compSizeAligned: comp.length,
+    uncompSize: real.length,
+  });
+  assert.deepEqual(Buffer.from(got), real);
+});
+
+test("decodeGrfEntry returns a stored entry untouched", () => {
+  // Stored when the compressed size equals the real size; inflating would throw.
+  const real = Buffer.from([1, 2, 3, 4]);
+  const got = decodeGrfEntry(Buffer.from(real), {
+    flags: 0x01,
+    compSize: 4,
+    compSizeAligned: 4,
+    uncompSize: 4,
+  });
+  assert.deepEqual(Buffer.from(got), real);
+});
+
+test("decodeGrfEntry gives a directory entry no bytes", () => {
+  // flags without the file bit is a directory record, not a zero-length file.
+  assert.equal(decodeGrfEntry(Buffer.alloc(8), { flags: 0x02, compSizeAligned: 8 }).length, 0);
+});
+
+test("decodeGrfEntry round-trips through the header-encrypted path", () => {
+  // flags 0x04 scrambles only the leading blocks, so the decode must undo it
+  // before inflating. Build the ciphertext by running the same pass over the
+  // plaintext: desDecodeHeader is its own inverse on the bytes it touches.
+  const real = Buffer.from("x".repeat(600));
+  const comp = deflateSync(real);
+  const aligned = Buffer.alloc(Math.ceil(comp.length / 8) * 8);
+  comp.copy(aligned);
+  const entry = {
+    flags: 0x04,
+    compSize: comp.length,
+    compSizeAligned: aligned.length,
+    uncompSize: real.length,
+  };
+  // Encrypt: feeding the plaintext through the decoder yields the ciphertext,
+  // and feeding that back yields the plaintext again.
+  const scrambled = Buffer.from(aligned);
+  decodeGrfEntry(scrambled, { ...entry, uncompSize: aligned.length, compSize: aligned.length });
+  const back = Buffer.from(scrambled);
+  decodeGrfEntry(back, { ...entry, uncompSize: aligned.length, compSize: aligned.length });
+  assert.deepEqual(back, aligned, "the header pass must be its own inverse");
+});
+
+// --min-folders: the threshold is absolute, so a partial robe tree shares the
+// same template across proportionally fewer folders and the default of 10 finds
+// nothing there. Measured on a 59-folder subset assembled from selected
+// patches: 8 contents in 8 folders each, and all 8 absent from a pruned full
+// tree, which is what proves they were leftovers.
+test("robeTemplateHashes finds a subset's template once the threshold suits the tree", () => {
+  const spread = (n, hash) =>
+    Object.fromEntries(Array.from({ length: n }, (_, i) => [`c_g${i}`, ["own" + i, hash]]));
+  const idx = robeIndex(spread(8, "bag"));
+  assert.deepEqual([...robeTemplateHashes(idx, 10)], [], "the default misses it on a subset");
+  assert.deepEqual([...robeTemplateHashes(idx, 5)], ["bag"], "a measured threshold finds it");
+});
+
+test("robePrunePlan honours the threshold the index was built with", () => {
+  const folders = {};
+  for (let i = 0; i < 8; i++) {
+    folders[`c_g${i}`] = {
+      root: true,
+      rootHash: `root${i}`,
+      sprites: [
+        { path: `data/sprite/robe/c_g${i}/m/own.spr`, hash: `own${i}` },
+        { path: `data/sprite/robe/c_g${i}/m/bag.spr`, hash: "bag" },
+      ],
+    };
+  }
+  const at10 = robePrunePlan({ version: ROBE_INDEX_VERSION, minFolders: 10, folders });
+  assert.equal(at10.remove.length, 0);
+  const at5 = robePrunePlan({ version: ROBE_INDEX_VERSION, minFolders: 5, folders });
+  assert.equal(at5.remove.length, 8, "one leftover per folder");
+  assert.ok(
+    at5.remove.every((p) => p.endsWith("bag.spr")),
+    "only the shared content goes",
+  );
 });
