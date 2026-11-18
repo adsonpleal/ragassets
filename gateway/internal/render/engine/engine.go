@@ -690,3 +690,29 @@ func (e *Engine) accessoryPriority(s *sprite.Sprite, direction int) int {
 	// Unknown views retain the request's upper, middle, lower equipment slots.
 	return [...]int{200, 100, 300}[s.TypeOrder]
 }
+
+// RenderWithTables renders a request whose sprite names come from t rather than
+// the tables this Engine was built with.
+//
+// This is the per-request half of serving a foreign costume: the Engine — and
+// so the resource tree and its cache — is chosen per origin, while the names
+// that tree should be read with arrive with each request.
+//
+// It swaps the tables on a shallow copy rather than passing a resolver into the
+// render, because the resolver is consulted in both halves of a render and only
+// one of them takes an argument: BuildPlan is given one, while the draw itself
+// asks e.res for the sprite name (processPlayer). Handing BuildPlan an
+// overridden resolver and leaving e.res alone plans the foreign hat and then
+// draws nothing, which is a 200 and a PNG of a bare head — the exact failure
+// this whole parameter exists to remove. The copy shares the Manager, so it
+// shares the cache and costs no memory; per-request state in Engine is already
+// local, which is what makes it safe to copy at all.
+func (e *Engine) RenderWithTables(req Request, t resolve.Tables) (*Result, error) {
+	if t == nil {
+		return e.Render(req)
+	}
+	c := *e
+	c.res = e.res.WithTables(t)
+	c.tables = t
+	return c.Render(req)
+}

@@ -84,3 +84,49 @@ func (m MapSource) Get(key string) ([]byte, error) {
 	}
 	return nil, fmt.Errorf("resource %q not prefetched: %w", key, fs.ErrNotExist)
 }
+
+// OverlaySource reads a key from the first Source that has it.
+//
+// This serves a costume that only exists in another official server's client.
+// Those trees are kept beside the merged LATAM mirror rather than inside it:
+// the same resource key names different art in different clients (the LATAM
+// 남_두건 and the kRO Zero one are both real and not the same file), so merging
+// them would silently overwrite one with the other. An overlay keeps the
+// foreign tree in front and the LATAM tree behind it, which is what a foreign
+// costume needs — its hat comes from its own client, every other piece of the
+// character (body, head, palettes) from ours.
+//
+// One Source per origin, each with its own Manager, because a Manager caches by
+// resource key: two origins sharing one cache would serve whichever 남_두건 was
+// read first to both.
+type OverlaySource []Source
+
+func (o OverlaySource) Get(key string) ([]byte, error) {
+	var firstErr error
+	for _, s := range o {
+		b, err := s.Get(key)
+		if err == nil {
+			return b, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr == nil {
+		firstErr = fmt.Errorf("overlay has no sources: %w", fs.ErrNotExist)
+	}
+	return nil, firstErr
+}
+
+// OverlayExistence probes each tree in the same order as OverlaySource, so a
+// plan built against it names keys the Source can actually read.
+type OverlayExistence []Existence
+
+func (o OverlayExistence) Has(key string) bool {
+	for _, e := range o {
+		if e.Has(key) {
+			return true
+		}
+	}
+	return false
+}
