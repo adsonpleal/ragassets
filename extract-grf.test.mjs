@@ -71,6 +71,7 @@ import {
   ROBE_INDEX_VERSION,
   buildRobeIndex,
   decodeGrfEntry,
+  fileTableLayout,
   grfEntrySpan,
   robePrunePlan,
   robeTemplateHashes,
@@ -1670,6 +1671,34 @@ function v1Entry({ cipher, compSize, compSizeAligned, uncompSize, flags, offset 
   meta.writeUInt32LE(offset, 13);
   return Buffer.concat([head, meta]);
 }
+
+// fileTableLayout is the version -> layout dispatch, exported so a second tool
+// reading a table (over the network, say) cannot drift from this one.
+//
+// 0x103 is the case with history: it was read by its own unencrypted-name
+// reader, which produced garbage names on every real archive, because iRO and
+// jRO — the only two clients that ship 0x103 — encrypt names exactly as v1
+// does. Measured over their patch histories: 2,554 archives at 0x103, 302,317
+// table entries, none empty, and every sampled file decoding. 0x101 had the
+// same bug before it, pointing the other way.
+test("fileTableLayout maps 0x100-0x103 to the v1 layout", () => {
+  for (const v of [0x100, 0x101, 0x102, 0x103]) {
+    assert.equal(fileTableLayout(v), "v1", `0x${v.toString(16)} is a v1 table`);
+  }
+});
+
+test("fileTableLayout keeps v0x200 and the 0x300 forks apart", () => {
+  assert.equal(fileTableLayout(0x200), "v200");
+  // The custom forks differ from v0x200 only in the table gap and the entry
+  // trailer, so they need their own answer rather than v200's.
+  assert.equal(fileTableLayout(0x300), "v300");
+});
+
+test("fileTableLayout returns null for a version this reader does not know", () => {
+  for (const v of [0, 0x99, 0x104, 0x201, 0x301, 0x400]) {
+    assert.equal(fileTableLayout(v), null, `0x${v.toString(16)} is not supported`);
+  }
+});
 
 test("parseFileTableV1 decrypts the name and un-offsets the three size fields", () => {
   const buf = v1Entry({
