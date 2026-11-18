@@ -322,6 +322,10 @@ const RootHelp = "ragassets-gateway — renders and serves Ragnarok Online sprit
 	"Try: /image?job=1002            (still image)\n" +
 	"     /image?job=1002&action=0   (animation, APNG)\n" +
 	"     /gif?job=1002&action=0     (same, as an animated GIF)\n" +
+	"     /image?job=1002&headgear=2904&origin=twrozero&headgearSprite=2904:_c_harword_doll_hat\n" +
+	"                                (a costume from another official server. origin picks the asset\n" +
+	"                                 tree; the sprite name says what it is called there, because a\n" +
+	"                                 foreign view id means nothing here — or means a different hat)\n" +
 	"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n" +
 	"     /illust/card/4001.png      (a card's full-size artwork)\n" +
 	"     /effects/index.json        (effect-only costume catalogue; _en/_es for the other locales)\n" +

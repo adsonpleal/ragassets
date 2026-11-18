@@ -50,6 +50,7 @@ type config struct {
 	bgmDir      string
 	soundsDir   string
 	rawDir      string
+	foreignDir  string // one subdirectory per other official server (see foreign.go)
 	port        string
 }
 
@@ -63,6 +64,7 @@ func loadConfig() config {
 		bgmDir:      env("BGM_DIR", "/bgm"),
 		soundsDir:   env("SOUNDS_DIR", "/sounds"),
 		rawDir:      env("RAW_DIR", "/raw"),
+		foreignDir:  env("FOREIGN_DIR", "/mirror-foreign"),
 		port:        env("GATEWAY_PORT", "8080"),
 	}
 }
@@ -79,11 +81,12 @@ func env(key, def string) string {
 // ---------------------------------------------------------------------------
 
 type server struct {
-	cfg    config
-	eng    *engine.Engine
-	flight *flightGroup
-	estore *effect.Store // raw effect assets under RESOURCE_DIR/data/texture/effect
-	mstore *effect.Store // raw .rsm/.rsm2 models under RESOURCE_DIR/data/model
+	cfg     config
+	eng     *engine.Engine
+	flight  *flightGroup
+	foreign *foreignTrees // per-origin trees for costumes from other official servers
+	estore  *effect.Store // raw effect assets under RESOURCE_DIR/data/texture/effect
+	mstore  *effect.Store // raw .rsm/.rsm2 models under RESOURCE_DIR/data/model
 
 	// Precomputed strong validators for the two embedded lookup tables (their
 	// bytes are fixed at build time, so the ETag is computed once).
@@ -101,6 +104,7 @@ func main() {
 		cfg:          cfg,
 		eng:          engine.New(cfg.resourceDir, resolve.DefaultTables()),
 		flight:       newFlightGroup(),
+		foreign:      mountForeign(cfg.foreignDir, cfg.resourceDir),
 		estore:       effect.NewStore(cfg.resourceDir),
 		mstore:       effect.NewModelStore(cfg.resourceDir),
 		skillMapETag: api.ETagForBytes(effect.SkillMapJSON),
@@ -227,6 +231,11 @@ func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 		failWith(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	fr, err := api.BuildForeign(q)
+	if err != nil {
+		failWith(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	etag := api.ETagFor(q)
 	contentType := contentTypeForExt(ext)
@@ -241,7 +250,7 @@ func (s *server) handleImage(w http.ResponseWriter, r *http.Request) {
 	// Render once even under a burst of identical requests (single-flight); the
 	// bytes are served directly and cached only by the browser/CDN.
 	data, err := s.flight.Do(etag+ext, func() ([]byte, error) {
-		return s.renderImage(req, ext)
+		return s.renderImage(req, ext, fr)
 	})
 	if err != nil {
 		log.Printf("render failed for %s: %v", r.URL.RawQuery, err)
@@ -273,6 +282,11 @@ func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 		failWith(w, "outputFormat=zip is not supported on /gif (it returns a single GIF image)", http.StatusBadRequest)
 		return
 	}
+	fr, err := api.BuildForeign(q)
+	if err != nil {
+		failWith(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	// A distinct ETag so /gif never collides with /image's validators for the
 	// same query (their bytes differ).
@@ -284,7 +298,7 @@ func (s *server) handleGif(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data, err := s.flight.Do(etag, func() ([]byte, error) {
-		png, err := s.renderImage(req, ".png")
+		png, err := s.renderImage(req, ".png", fr)
 		if err != nil {
 			return nil, err
 		}

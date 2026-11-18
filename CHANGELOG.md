@@ -14,6 +14,49 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-18 (3)
+
+### Added
+- **`/image` can render a costume from another official server**, via two new
+  parameters: `origin=<id>` picks which client's asset tree to read, and
+  `headgearSprite=<viewID>:<name>` / `garmentSprite=<viewID>:<name>` say what
+  the sprite is called in it. `/gif` takes them too.
+
+  The names are in the request because **a view id is not a costume** — it is
+  one client's index into its own name table. Asking this client for a foreign
+  id fails in two ways, and both are silent. Usually the id is simply absent
+  and the renderer draws the character with no hat: a 200, a valid PNG, the
+  right character, no costume, and nothing downstream can tell that apart from
+  a request that asked for nothing. Measured against production before this
+  change, `/image?job=0&headgear=2904` came back **byte-identical** to the same
+  URL with no `headgear` at all. Sometimes the id is present and means a
+  different hat here (view 2696 is one), and then the renderer draws that one
+  instead — which is worse, because the picture looks right.
+
+  Trees live beside the mirror, one directory per origin (`FOREIGN_DIR`,
+  `/home/ubuntu/ragassets/mirror-foreign` on the box), and are read *in front
+  of* it rather than instead of it: a foreign costume takes its hat from its own
+  client and its body, head and palettes from ours. They are not merged into
+  `mirror/` because the same resource key names different art in different
+  clients — the LATAM `남_두건` and the kRO Zero one are both real files and not
+  the same picture, so merging would overwrite one with the other.
+
+  `origin` takes a list, up to four — a character wears three headgears and a
+  garment, and a hat from one server with a cape from another is an ordinary
+  thing to want. The trees are layered in the order given.
+
+  One `Engine` per origin *combination*, built on first use and capped at eight
+  resident, because a `Manager` caches by resource key: two origins sharing a
+  cache would serve whichever `남_두건` was read first to both. Their cache
+  budgets are much smaller than the default tree's (12/6 MiB against 96/48), so
+  even a full set of resident engines fits `GOMEMLIMIT=500MiB` beside the main
+  one.
+
+  Verified end to end against a local gateway over the six extracted trees: one
+  costume per origin, **6 of 6 drawn**, plus a jRO hat and an iRO garment on one
+  character — each compared pixel-wise against the same character with no
+  costume, not against a status code.
+
 ## 2026-11-18 (2)
 
 ### Fixed

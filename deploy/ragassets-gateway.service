@@ -23,6 +23,11 @@ ExecStart=/home/ubuntu/ragassets/gateway/ragassets-gateway
 # RESOURCE_DIR is the merged client mirror — the extractor's input and the
 # renderer's source. The rest are the derived stores it produces.
 Environment=RESOURCE_DIR=/home/ubuntu/ragassets/mirror
+# One subdirectory per other official server, read in FRONT of the mirror for
+# a request that names an origin. Deliberately beside mirror/ and not inside
+# it: the same path holds different art in different clients, so merging the
+# trees would overwrite LATAM sprites with foreign ones.
+Environment=FOREIGN_DIR=/home/ubuntu/ragassets/mirror-foreign
 Environment=ICONS_DIR=/home/ubuntu/ragassets/resources/icons
 Environment=ILLUST_DIR=/home/ubuntu/ragassets/resources/illust
 Environment=EFFECTS_DIR=/home/ubuntu/ragassets/resources/effects

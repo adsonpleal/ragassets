@@ -446,3 +446,14 @@ func AlternativeMadogearJobName(jobID uint32) string {
 	}
 	return "meister_madogear2" // Meister
 }
+
+// WithTables returns a Resolver answering from t while reusing this Resolver's
+// already-parsed static tables. Cheap enough to build per request, which is the
+// point: the name overrides a foreign costume needs arrive with the request,
+// not at boot.
+func (r *Resolver) WithTables(t Tables) *Resolver {
+	if t == nil {
+		return r
+	}
+	return &Resolver{static: r.static, tables: t}
+}
