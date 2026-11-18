@@ -14,6 +14,38 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-18 (2)
+
+### Fixed
+- **GRF v0x103 was read by the wrong file-table reader, and every name came out
+  as garbage.** 0x103 had its own reader, which expects unencrypted names in the
+  table. iRO and jRO — the only two clients that ship 0x103 — encrypt names
+  exactly as v1 does, so `--list` printed things like
+  `RBÅ£W'RvrR&£BFPUD` instead of `data\idnum2itemdesctable.txt`, and even the
+  flags byte was mis-parsed (`0x1` where the entry is `0x3`). An `--extract` of
+  any of those patches wrote files under unusable names. 0x103 now routes to the
+  v1 reader, which decrypts.
+- **The evidence.** 2,554 archives across the two patch histories report 0x103
+  (iRO 752, jRO 1,802), together 302,317 table entries, **none of them empty**,
+  parsed with the v1 layout and every sampled file decoding through
+  `decodeSprFrames`/`parseActFrames`. Reproduced before and after on two real
+  archives, one per client. 0x102 is unaffected (verified against a LATAM patch
+  of 25,498 files).
+- **This is the same bug 0x101 had**, pointing the other way: 0x101 used to be
+  routed to the 0x103 reader and was moved to v1. The dispatch had no test, so
+  the second half of it stayed wrong.
+
+### Added
+- **`fileTableLayout(version)`**, exported — the version → layout dispatch, in
+  one place. A second tool that reads a file table (one reading it over the
+  network, from a server it cannot open locally) has to agree with this file, and
+  without an export it agrees by being a copy. Three tests pin the mapping,
+  including that an unknown version returns `null` rather than a guess.
+
+### Removed
+- `readFileTableV103`, which nothing routes to any more. No archive in evidence
+  needs it: what it did was the bug above.
+
 ## 2026-11-18
 
 ### Added

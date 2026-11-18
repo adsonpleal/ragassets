@@ -442,8 +442,25 @@ function decodeName(bytes) {
 }
 
 // ---------------------------------------------------------------------------
-// GRF reader (versions 0x101, 0x103, 0x200, and custom 0x300 forks)
+// GRF reader (versions 0x100-0x103, 0x200, and custom 0x300 forks)
 // ---------------------------------------------------------------------------
+
+/**
+ * Which file-table layout a GRF version uses.
+ *
+ * Exported because the dispatch is knowledge about the format, and a second
+ * tool that reads a table — one reading it over the network, say, from a
+ * server it cannot open locally — has to agree with this file or the two drift
+ * apart silently. A `null` means this reader does not know the version.
+ */
+export function fileTableLayout(version) {
+  if (version === 0x300) return "v300";
+  if (version === 0x200) return "v200";
+  // 0x100/0x101 come from the format spec and share v1's layout, but no
+  // archive was available to test them against.
+  if (version >= 0x100 && version <= 0x103) return "v1";
+  return null;
+}
 
 function openGrf(path) {
   // A directory is a mirrored client tree rather than an archive. Dispatching
@@ -491,15 +508,14 @@ function openGrf(path) {
     // Custom forks (Event Horizon etc.) — 4-byte gap before the compressed
     // table and a 21-byte entry trailer (extra u32 vs v0x200).
     files = readFileTableV200(fd, 0x32 + filetableOffset, 21);
-  } else if (version === 0x103) {
-    files = readFileTableV103(fd, 0x2e + filetableOffset, fileCount, fileSize);
-  } else if (version === 0x102 || version === 0x101 || version === 0x100) {
-    // 0x101 used to be routed to the 0x103 reader. That could not have worked:
-    // v1 encrypts filenames and offsets the size fields, so the 0x103 reader
-    // yields garbage names and sizes that fail to inflate. Only 0x102 is
-    // verified against real archives (every LATAM .gpf patch); 0x100/0x101 come
-    // from the format spec and share the layout, but no archive was available to
-    // test them against.
+  } else if (fileTableLayout(version) === "v1") {
+    // 0x101 and then 0x103 were both routed to the 0x103 reader, and neither
+    // could have worked: v1 encrypts filenames, so that reader yields garbage
+    // names. 0x102 is verified against every LATAM .gpf patch, and 0x103
+    // against 2,554 iRO and jRO patches (302,317 entries, none empty, every
+    // sampled file decoding) — those two clients are the only ones that ship
+    // it. 0x100/0x101 come from the format spec and share the layout, but no
+    // archive was available to test them against.
     files = readFileTableV1(fd, 0x2e + filetableOffset, fileCount, fileSize);
   } else {
     closeSync(fd);
@@ -559,27 +575,6 @@ function readFileTableV200(fd, tableStart, entryTrailerBytes = 17) {
     const offsetHigh = entryTrailerBytes >= 21 ? table.readUInt32LE(p + 17) : 0;
     const offset = offsetHigh * 0x100000000 + offsetLow;
     p += entryTrailerBytes;
-    files.push({ filename, compSize, compSizeAligned, uncompSize, flags, offset });
-  }
-  return files;
-}
-
-function readFileTableV103(fd, tableStart, fileCount, fileSize) {
-  const buf = readBytes(fd, fileSize - tableStart, tableStart);
-  const files = [];
-  let p = 0;
-  for (let i = 0; i < fileCount && p < buf.length; i++) {
-    const len = buf.readUInt32LE(p);
-    p += 4;
-    const filename = decodeName(buf.subarray(p + 2, p + 2 + len - 6));
-    p += len;
-    if (p + 17 > buf.length) break;
-    const compSize = buf.readUInt32LE(p);
-    const compSizeAligned = buf.readUInt32LE(p + 4);
-    const uncompSize = buf.readUInt32LE(p + 8);
-    const flags = buf.readUInt8(p + 12);
-    const offset = buf.readUInt32LE(p + 13);
-    p += 17;
     files.push({ filename, compSize, compSizeAligned, uncompSize, flags, offset });
   }
   return files;
