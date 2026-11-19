@@ -9,6 +9,7 @@
 //   node tools/multiserver/cli.mjs fetch       [--origin <id>] [--limit N]
 //   node tools/multiserver/cli.mjs publishable [--out <dir>]
 //   node tools/multiserver/cli.mjs icons       [--origin all] [--plan-only] [--limit N]
+//   node tools/multiserver/cli.mjs icons       --from-plan [--out <dir>]
 //   node tools/multiserver/cli.mjs assets      [--origin all] [--limit N] [--dry-run]
 //
 // --origin takes `all`, `foreign` (everything but LATAM) or a comma list of ids.
@@ -66,6 +67,7 @@ function usage(code = 2) {
       "  --out <dir>                    publishable: also write the catalogue there",
       "                                 icons: where the PNG tree goes",
       "  --plan-only                    icons: write icons-plan.tsv, fetch nothing",
+      "  --from-plan                    icons: fetch an existing plan; no index needed",
       "",
       `  origins: ${Object.keys(ORIGINS).join(", ")}`,
       `  state:   ${paths.root}`,
@@ -346,26 +348,47 @@ async function cmdPublishable() {
 }
 
 async function cmdIcons() {
-  const origins = selectOrigins(flag("--origin", "all"));
-  const costumes = catalogueCostumes();
-  const plan = await planIcons({
-    origins,
-    costumes,
-    onProgress: (p) => console.error(`    ${p.msg}`),
-  });
-  console.error(
-    `
+  // Planning and fetching need very different things, and splitting them is
+  // what makes this store reproducible somewhere other than the machine that
+  // planned it. The scan reads every origin's path index — hundreds of MB of
+  // ledgers, built over days — plus the published catalogue. The fetch reads
+  // `icons-plan.tsv` and the public patch servers, and nothing else. So the
+  // origin box, which has neither the index nor the catalogue, can still
+  // rebuild the whole tree from a 150 KB plan file: copy it in, --from-plan.
+  if (has("--from-plan")) {
+    if (!existsSync(paths.iconPlan())) {
+      throw new Error(
+        `--from-plan: no plan at ${paths.iconPlan()} — copy one in, or drop the flag to scan for one`,
+      );
+    }
+    const rows = readRows(paths.iconPlan());
+    const archives = new Set(rows.map((r) => `${r.origin}|${r.archive}`));
+    console.error(
+      `\nplano existente: ${rows.length} ícone(s) em ${archives.size} patch(es), sem replanejar`,
+    );
+    console.error(`    plano: ${paths.iconPlan()}`);
+  } else {
+    const origins = selectOrigins(flag("--origin", "all"));
+    const costumes = catalogueCostumes();
+    const plan = await planIcons({
+      origins,
+      costumes,
+      onProgress: (p) => console.error(`    ${p.msg}`),
+    });
+    console.error(
+      `
 ${plan.covered}/${plan.wanted} ícone(s) em ${plan.archives} patch(es), ` +
-      `${mb(plan.bytes)} descomprimidos`,
-  );
-  console.error(`    patches por origem: ${JSON.stringify(plan.perOrigin)}`);
-  // A sprite no client ships an icon for is a 404 on purpose: the consumer
-  // falls back to a rendered thumbnail, which is the costume rather than a
-  // placeholder claiming to be it.
-  if (plan.missing.length) {
-    console.error(`    ${plan.missing.length} sem ícone em nenhum cliente (404 de propósito)`);
+        `${mb(plan.bytes)} descomprimidos`,
+    );
+    console.error(`    patches por origem: ${JSON.stringify(plan.perOrigin)}`);
+    // A sprite no client ships an icon for is a 404 on purpose: the consumer
+    // falls back to a rendered thumbnail, which is the costume rather than a
+    // placeholder claiming to be it.
+    if (plan.missing.length) {
+      console.error(`    ${plan.missing.length} sem ícone em nenhum cliente (404 de propósito)`);
+    }
+    console.error(`    plano: ${paths.iconPlan()}`);
   }
-  console.error(`    plano: ${paths.iconPlan()}`);
   if (has("--plan-only")) return;
 
   const fetched = await fetchPlan({
