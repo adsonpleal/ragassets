@@ -331,6 +331,9 @@ async function cmdPublishable() {
     `${stats.total} fantasia(s) complet(as) no espelho, ${stats.named} nomeada(s), ` +
       `${stats.withAegis} com identificador inglês`,
   );
+  console.error(
+    `    ${stats.withNames} com nomes por cliente: ${JSON.stringify(stats.namesPerOrigin)}`,
+  );
   console.error(`    por origem: ${JSON.stringify(stats.perOrigin)}`);
   console.error(`    por slot:   ${JSON.stringify(stats.perSlot)}`);
   // An incomplete costume is left out on purpose: it would be a 404 with a name.

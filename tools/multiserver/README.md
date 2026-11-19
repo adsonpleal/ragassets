@@ -420,11 +420,66 @@ Zero publishes none, so its chip would read zero for want of data. The path
 index is the only one all six answer the same way, and it undercounts rather
 than inventing: an archive with no readable file table is invisible to it.
 
-Each entry is `{kind, view, sprite, origin, origins, name, nameOrigin, aegis,
-slots, files}`, plus `blank: true` on the 17 that render nothing (stage 5b). `name`
-is whichever client names the item, which is not always the client the art came
-from: an item id is global, so twRO can name a costume iRO supplies. `aegis` is
-the English identifier, a translation base rather than a display name.
+Each entry is `{kind, view, sprite, origin, origins, name, nameOrigin, names,
+aegis, slots, files}`, plus `blank: true` on the 17 that render nothing (stage
+5b). `name` is whichever client names the item, which is not always the client
+the art came from: an item id is global, so twRO can name a costume iRO
+supplies. `aegis` is the English identifier, a translation base rather than a
+display name.
+
+#### `names` — what every client calls it
+
+`name` answers "what is this costume called" with one string and the id of the
+client it came from, which means this pipeline already chose the language. A
+consumer that wants to pick differently — English first, say — cannot, because
+the other six answers are gone by the time it reads the file. `names` keeps
+them all:
+
+```json
+"names": {
+  "iro": "Hair Band",
+  "jro": "[衣装] ヘアバンド",
+  "kro": "머리띠",
+  "latam": "Faixa de Cabelo",
+  "twro": "(服飾)髮箍",
+  "twrozero": "髮箍"
+}
+```
+
+Two properties a consumer should not have to guess at:
+
+- **Display-ready.** `idnum2itemdisplaynametable.txt` stores names
+  underscore-joined and the client renders them with spaces — the file reads
+  `19507#Costume:_Shining_Sun#`, and 7,379 of iRO's 8,367 names carry an
+  underscore against 132 carrying a space. That transform is applied here, per
+  client, decided by whether that client was actually read through that file.
+  The clients read through `iteminfo_new.lub` already hold spaced names and are
+  left alone.
+- **Marker-intact.** `(服飾)`, `[衣装]`, `Costume:` and `[Visual]` are the
+  clients' own words for "costume version" and are published verbatim. This is
+  deliberate: 465 of the 663 carry a marker on every name they have, so for
+  those rows it is the only thing separating the costume from the base item of
+  the same name, and stripping it upstream would be lossy and irreversible. A
+  consumer that wants them gone has four patterns to strip and they are listed
+  right here.
+
+The key is **absent**, never empty, for a client that cannot name the costume —
+`krozero` never appears at all, because kRO Zero ships no item table and no name
+table, which is a different fact from "has no name for this one".
+
+605 of the 663 carry `names`; 390 have one from more than one client. The join
+is by **resource name**, not view id: a client's `items.tsv` maps item id →
+resource name, a costume's resource name is its sprite, and `names.tsv` turns
+the id into that client's display name. `counts.namesPerOrigin` reports what
+each client could name: jRO 455, twRO 445, twRO Zero 216, iRO 99, LATAM 76,
+kRO 71.
+
+**iRO is the scarce one, and that surprises people.** It supplies the art for
+231 costumes and names 99, because its item table is small and old. An
+English-first picker therefore yields English on 99 rows and Japanese on 366.
+That is a property of the clients, not of this code, and no second English
+source exists among the six. `docs/per-client-names.md` has the full
+measurement.
 
 ### 5b. `find-blank-visuals` — the ones that draw nothing
 

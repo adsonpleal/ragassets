@@ -14,6 +14,44 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-19
+
+### Added
+- **`/raw/foreign-costumes.json` now carries `names`** — what *every* client
+  calls each costume, keyed by origin, so a consumer picks the language instead
+  of inheriting the one this pipeline chose for `name`. 605 of the 663 rows
+  have it and 390 have a name from more than one client. `name` and
+  `nameOrigin` are unchanged, so nothing that reads them breaks. The file grew
+  from 223,657 to 302,048 bytes.
+
+  The join is by **resource name, not view id**: `items.tsv` maps item id →
+  resource name, a costume's resource name is its sprite, and `names.tsv` turns
+  the id into that client's display name. New module
+  `tools/multiserver/clientnames.mjs`.
+
+  Two properties worth knowing before consuming it, both measured in
+  `docs/per-client-names.md`:
+
+  - **Display-ready.** `idnum2itemdisplaynametable.txt` stores names
+    underscore-joined (`19507#Costume:_Shining_Sun#`) and the client spaces them
+    when it draws; 7,379 of iRO's 8,367 names carry an underscore against 132
+    carrying a space. That transform is applied per client, decided by whether
+    that client was actually read through that file rather than by a hardcoded
+    list.
+  - **Marker-intact.** `(服飾)`, `[衣装]`, `Costume:` and `[Visual]` are
+    published verbatim. 465 rows carry a marker on *every* name they have, so
+    for those it is the only thing separating the costume from the base item of
+    the same name; stripping upstream would be lossy and irreversible.
+
+  A client with no table is **absent from the object, not empty**: `krozero`
+  never appears, because kRO Zero ships no item table and no name table at all,
+  which is a different fact from having no name for a given costume.
+
+  The finding that shaped the consumer's ordering: **iRO is the scarcest namer,
+  not the richest.** It supplies the art for 231 costumes and names 99, so an
+  English-first picker yields English on 99 rows and Japanese on 366. No second
+  English source exists among the six clients.
+
 ## 2026-11-18 (4)
 
 ### Added

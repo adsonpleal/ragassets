@@ -44,6 +44,12 @@ import {
 } from "./stage4-plan.mjs";
 import { COALESCE_GAP, coalesceSpans, fileEntries, rangeCost } from "./ranges.mjs";
 import {
+  clientNamesBySprite,
+  isPlaceholderName,
+  normResource,
+  spaceOut,
+} from "./clientnames.mjs";
+import {
   buildCatalogue,
   catalogueDocument,
   costumeDraws,
@@ -1085,6 +1091,137 @@ describe("buildCatalogue", () => {
     });
     assert.deepStrictEqual(other.costumes[0].slots, []);
     assert.deepStrictEqual(other.stats.perSlot, { "?": 1 });
+  });
+
+  it("carries every client's name, keyed by the normalised sprite", () => {
+    const withNames = buildCatalogue({
+      plan,
+      shortlist,
+      slots,
+      probe,
+      present: (origin, path) => path !== "b.spr",
+      // The catalogue's sprite is `bom`; a client's table would hold `_Bom`.
+      clientNames: new Map([["bom", { iro: "Good Hat", jro: "[衣装] 良い帽子" }]]),
+    });
+    assert.deepStrictEqual(withNames.costumes[0].names, {
+      iro: "Good Hat",
+      jro: "[衣装] 良い帽子",
+    });
+    hasFields(withNames.stats, {
+      withNames: 1,
+      namesPerOrigin: { iro: 1, jro: 1 },
+    });
+  });
+
+  it("omits `names` rather than publishing an empty object", () => {
+    // kRO Zero ships no item table at all, so "no key" is the honest statement
+    // and `{}` would claim we looked and found nothing.
+    for (const clientNames of [new Map(), new Map([["bom", {}]])]) {
+      const got = buildCatalogue({
+        plan,
+        shortlist,
+        slots,
+        probe,
+        present: (origin, path) => path !== "b.spr",
+        clientNames,
+      });
+      assert.ok(!("names" in got.costumes[0]));
+      hasFields(got.stats, { withNames: 0, namesPerOrigin: {} });
+    }
+  });
+});
+
+describe("clientNamesBySprite", () => {
+  const tables = [
+    {
+      origin: "iro",
+      // The .txt tables store names underscore-joined; the client spaces them.
+      items: [[2211, "두건"], [20203, "두건"]],
+      names: new Map([[2211, "Bandana"], [20203, "Costume:_Bandana"]]),
+      underscored: true,
+    },
+    {
+      origin: "twro",
+      items: [[2211, "두건"], [20203, "두건"]],
+      names: new Map([[2211, "方頭巾"], [20203, "(服飾)方頭巾"]]),
+      underscored: false,
+    },
+  ];
+
+  it("prefers the costume-flagged id when several items share a sprite", () => {
+    const got = clientNamesBySprite({ tables, isCostume: (id) => id === 20203 });
+    assert.deepStrictEqual(got.get("두건"), {
+      iro: "Costume: Bandana",
+      twro: "(服飾)方頭巾",
+    });
+  });
+
+  it("falls back to the lowest id when nothing is flagged", () => {
+    const got = clientNamesBySprite({ tables });
+    assert.deepStrictEqual(got.get("두건"), { iro: "Bandana", twro: "方頭巾" });
+  });
+
+  it("keys on the normalised sprite, so `_Name` and `name` meet", () => {
+    const got = clientNamesBySprite({
+      tables: [
+        {
+          origin: "jro",
+          items: [[1, "_C_Rhythm_Hairband"]],
+          names: new Map([[1, "リズム"]]),
+        },
+      ],
+    });
+    assert.deepStrictEqual(got.get("c_rhythm_hairband"), { jro: "リズム" });
+    assert.strictEqual(got.get("_c_rhythm_hairband"), undefined);
+  });
+
+  it("leaves the costume markers alone", () => {
+    const got = clientNamesBySprite({ tables, isCostume: (id) => id === 20203 });
+    // `(服飾)` is the only thing separating this from the base item of the same
+    // name, so it is published as the client writes it.
+    assert.match(got.get("두건").twro, /^[(（]服飾/);
+  });
+
+  it("drops a client that has no name table rather than keying it empty", () => {
+    const got = clientNamesBySprite({
+      tables: [{ origin: "krozero", items: [[1, "두건"]], names: new Map() }, ...tables],
+    });
+    assert.ok(!("krozero" in got.get("두건")));
+  });
+
+  it("skips the placeholders the clients ship for unreleased rows", () => {
+    const got = clientNamesBySprite({
+      tables: [
+        {
+          origin: "kro",
+          items: [[1, "x"], [2, "y"], [3, "z"]],
+          names: new Map([[1, "#비매품#"], [2, "  "], [3, "Sprite Name"]]),
+        },
+      ],
+    });
+    assert.strictEqual(got.size, 0);
+  });
+});
+
+describe("the name helpers", () => {
+  it("normResource lowercases and drops the accessory underscore", () => {
+    assert.strictEqual(normResource("_C_Rhythm_Hairband"), "c_rhythm_hairband");
+    assert.strictEqual(normResource("__두건"), "두건");
+    assert.strictEqual(normResource(undefined), "");
+  });
+
+  it("spaceOut undoes the .txt tables' underscore convention", () => {
+    assert.strictEqual(spaceOut("Costume:_Shining_Sun"), "Costume: Shining Sun");
+    assert.strictEqual(spaceOut("Red_Potion"), "Red Potion");
+  });
+
+  it("isPlaceholderName catches the stubs and nothing real", () => {
+    for (const bad of ["", "   ", "#비매품#", "Sprite Name", null, undefined]) {
+      assert.ok(isPlaceholderName(bad), `${bad} should be a placeholder`);
+    }
+    for (const good of ["Bandana", "(服飾)方頭巾", "두건"]) {
+      assert.ok(!isPlaceholderName(good), `${good} should be kept`);
+    }
   });
 });
 
