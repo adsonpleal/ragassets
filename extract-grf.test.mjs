@@ -46,6 +46,8 @@ import {
   decodeImaAdpcm,
   toPlayableWav,
   decodeClientString,
+  decodeTableString,
+  parseFileTableV2,
   reportUnrepairedCyrillic,
   actDrawsNothing,
   hatEffectSprite,
@@ -1698,6 +1700,165 @@ test("fileTableLayout returns null for a version this reader does not know", () 
   for (const v of [0, 0x99, 0x104, 0x201, 0x301, 0x400]) {
     assert.equal(fileTableLayout(v), null, `0x${v.toString(16)} is not supported`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// v0x200 / v0x300 file table, from a buffer.
+//
+// Split out of the fd reader so tools/multiserver can parse a table it read
+// over the network — the same reason readGrfEntry was split into grfEntrySpan
+// and decodeGrfEntry. These tests build the table rather than mocking a file,
+// which is also what the remote caller hands it.
+// ---------------------------------------------------------------------------
+
+// One v2 entry: name, NUL, then the fixed trailer.
+function v2Entry({ name, compSize, compSizeAligned, uncompSize, flags, offset, trailer = 17 }) {
+  const nameBytes = Buffer.from(name, "latin1");
+  const buf = Buffer.alloc(nameBytes.length + 1 + trailer);
+  nameBytes.copy(buf, 0);
+  buf.writeUInt32LE(compSize, nameBytes.length + 1);
+  buf.writeUInt32LE(compSizeAligned, nameBytes.length + 5);
+  buf.writeUInt32LE(uncompSize, nameBytes.length + 9);
+  buf.writeUInt8(flags, nameBytes.length + 13);
+  buf.writeUInt32LE(offset % 0x100000000, nameBytes.length + 14);
+  if (trailer >= 21) buf.writeUInt32LE(Math.floor(offset / 0x100000000), nameBytes.length + 18);
+  return buf;
+}
+
+// The table block as it sits in the archive: [u32 compressed][u32 raw][deflate].
+function v2Table(entries) {
+  const table = Buffer.concat(entries);
+  const deflated = deflateSync(table);
+  const head = Buffer.alloc(8);
+  head.writeUInt32LE(deflated.length, 0);
+  head.writeUInt32LE(table.length, 4);
+  return Buffer.concat([head, deflated]);
+}
+
+test("parseFileTableV2 inflates the table and reads every entry", () => {
+  const files = parseFileTableV2(
+    v2Table([
+      v2Entry({
+        name: String.raw`data\sprite\one.spr`,
+        compSize: 100,
+        compSizeAligned: 104,
+        uncompSize: 400,
+        flags: 0x01,
+        offset: 0x30,
+      }),
+      v2Entry({
+        name: String.raw`data\sprite\two.act`,
+        compSize: 7,
+        compSizeAligned: 8,
+        uncompSize: 9,
+        flags: 0x01,
+        offset: 0x1000,
+      }),
+    ]),
+  );
+  assert.equal(files.length, 2);
+  assert.deepEqual(
+    files.map((f) => [f.filename, f.compSize, f.compSizeAligned, f.uncompSize, f.flags, f.offset]),
+    [
+      [String.raw`data\sprite\one.spr`, 100, 104, 400, 0x01, 0x30],
+      [String.raw`data\sprite\two.act`, 7, 8, 9, 0x01, 0x1000],
+    ],
+  );
+});
+
+test("parseFileTableV2 reads a v0x300 entry's 64-bit offset", () => {
+  // Past 4 GB, which is where the recent patches in a merged client sit: with a
+  // 17-byte trailer the high word is not read and the offset wraps.
+  const offset = 0x1_0000_0030;
+  const [f] = parseFileTableV2(
+    v2Table([
+      v2Entry({
+        name: String.raw`data\big.gnd`,
+        compSize: 1,
+        compSizeAligned: 8,
+        uncompSize: 2,
+        flags: 0x80,
+        offset,
+        trailer: 21,
+      }),
+    ]),
+    21,
+  );
+  assert.equal(f.offset, offset);
+  assert.equal(f.flags, 0x80);
+});
+
+test("parseFileTableV2 decodes an EUC-KR entry name", () => {
+  // "data\무.spr" — a Korean syllable in the middle of an archive path,
+  // which is how every sprite path in a real client is spelled.
+  const name = Buffer.from([0x64, 0x61, 0x74, 0x61, 0x5c, 0xb9, 0xab, 0x2e, 0x73, 0x70, 0x72]);
+  const [f] = parseFileTableV2(
+    v2Table([
+      v2Entry({
+        name: name.toString("latin1"),
+        compSize: 1,
+        compSizeAligned: 8,
+        uncompSize: 2,
+        flags: 0x01,
+        offset: 0,
+      }),
+    ]),
+  );
+  assert.equal(f.filename, String.raw`data\무.spr`);
+});
+
+test("parseFileTableV2 ignores bytes past the compressed table", () => {
+  // The remote reader asks for "everything from the table offset to the end of
+  // the file", so the buffer it passes carries the 17-byte archive trailer too.
+  const block = v2Table([
+    v2Entry({
+      name: String.raw`data\one.spr`,
+      compSize: 1,
+      compSizeAligned: 8,
+      uncompSize: 2,
+      flags: 0x01,
+      offset: 0,
+    }),
+  ]);
+  const files = parseFileTableV2(Buffer.concat([block, Buffer.alloc(17, 0xff)]));
+  assert.equal(files.length, 1);
+  assert.equal(files[0].filename, String.raw`data\one.spr`);
+});
+
+// ---------------------------------------------------------------------------
+// decodeTableString — resource-name tables, which are never UTF-8.
+// ---------------------------------------------------------------------------
+
+test("decodeTableString reads an EUC-KR name whose bytes are valid UTF-8", () => {
+  // AccNameTable view 14: "_캡" is 5F C4 B8, and C4 B8 is a legal UTF-8
+  // sequence for U+0138, so decodeClientString's UTF-8-first ladder hands back
+  // "_ĸ" — a name that matches no sprite in any client. Every one of the
+  // seven official clients ships this row.
+  const cap = Buffer.from([0x5f, 0xc4, 0xb8]).toString("latin1");
+  assert.equal(decodeTableString(cap), "_캡");
+  assert.equal(decodeClientString(cap), "_ĸ"); // the reason this function exists
+});
+
+test("decodeTableString reads a name outside Hangul", () => {
+  // iRO's ItemDBNameTbl has "C_Ｇhostring_Tall_Hat" — a fullwidth G, EUC-KR
+  // A3 C7, which reads as "£Ç" in CP1252. A display-name decoder asks
+  // whether the Korean reading contains Hangul; a resource name reaches well
+  // outside it, so the only question is whether the Latin reading is text.
+  const bytes = Buffer.from([0x43, 0x5f, 0xa3, 0xc7, 0x68, 0x61, 0x74]).toString("latin1");
+  assert.equal(decodeTableString(bytes), "C_Ｇhat");
+});
+
+test("decodeTableString keeps an ASCII name and a Korean one with an ASCII prefix", () => {
+  assert.equal(decodeTableString("_c_chained_bear"), "_c_chained_bear");
+  const korean = [0x5f, 0x43, 0xc0, 0xfc, 0xc5, 0xeb, 0xc0, 0xc7, 0xc8, 0xe6, 0xc0, 0xfb];
+  assert.equal(decodeTableString(Buffer.from(korean).toString("latin1")), "_C전통의흑적");
+});
+
+test("decodeTableString still prefers plausible accented Latin over Hangul", () => {
+  // The tie-break decodeClientCharset needs for the same reason: an uppercase
+  // Portuguese pair is a valid Hangul double byte too.
+  const bytes = Buffer.from("AÇÃO", "latin1").toString("latin1");
+  assert.equal(decodeTableString(bytes), "AÇÃO");
 });
 
 test("parseFileTableV1 decrypts the name and un-offsets the three size fields", () => {

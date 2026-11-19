@@ -14,6 +14,108 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-18 (4)
+
+### Added
+- **The multi-server extraction pipeline lives here now** — `tools/multiserver/`,
+  the six stages that index all seven official patch servers, read each client's
+  own name tables, decide which archive every wanted sprite is cheapest to pull
+  from, and read it out by byte range without downloading the patch. It arrived
+  from the consuming app, where it had grown its own copies of three things this
+  repo already owns. Those copies are gone, which was the point of the move:
+
+  | Was a second copy | Is now an import |
+  |---|---|
+  | its own v2 GRF file-table parser | `parseFileTableV2`, split out of the fd reader for this |
+  | `decodeName` over the v1 table | `decodeClientString` / `fileTableLayout` / `parseFileTableV1` |
+  | `lua51.mjs`, 123 lines of Lua 5.1 undumper | `runChunk` / `runChunkInto` / `LuaTable` |
+  | `extractor.mjs`, a dynamic import of a machine path in `EXTRACT_GRF` | `import … from "../../extract-grf.mjs"` |
+  | its own patch-list parser | `parsePatchList` from `tools/patchlist.mjs`, now the superset both need |
+  | a hand-rolled BMP reader | `bmpToPng`, the same magenta keying the LATAM icons get |
+
+  Swapping the Lua interpreter was the one merge worth proving rather than
+  assuming, so it was: the VM here reproduces **every row** of all seven
+  clients' accessory, robe and aegis-name tables — 0 differences. Getting there
+  found a real decoder bug on the way (see Fixed).
+
+  `net.mjs` and `ranges.mjs` stay the pipeline's own on purpose. This repo's only
+  downloader is a bare `fetch` in `apply-patches.mjs` with no rate limiter, no
+  range reads, no FTP and no retry, so merging them would mean growing that file
+  into this one rather than reusing anything.
+
+  The catalogue publishes the way every other table here does:
+  `publishable --out "$RAW_DIR"` writes `foreign-costumes.json`, and
+  `/raw/{name}.json` already accepts that name, so it is served at
+  `/raw/foreign-costumes.json` with **no gateway change** — under the
+  revalidating policy, since these tables are rewritten in place after a client
+  update. 663 costumes, 17 of them flagged `blank: true` because they render
+  nothing at all.
+
+  What did **not** come across is `export-app-catalogue.mjs`: it mints synthetic
+  ids off a `FOREIGN_ID_BASE`, lowercases sprites for its own URLs and maps slots
+  to its own vocabulary. Those are the consumer's conventions. Everything
+  upstream of it is extraction, and that is the boundary.
+
+- **`/icons/costume?sprite=<name>` — the inventory picture of a foreign
+  costume.** `extract-grf.mjs --icons` goes item id → the item's
+  `identifiedResourceName` → `data/texture/유저인터페이스/item/<res>.bmp` →
+  `<out>/item/<id>.png`, and none of that chain crosses the border: a foreign
+  costume has no item id here, and kRO Zero publishes no item table at all.
+
+  It needs none. `identifiedResourceName` **is** the accessory sprite name — the
+  premise `resolveView` already rests on — so the catalogue's sprite name goes
+  straight to the BMP with the client's leading underscore stripped. Both sizes,
+  `item/` (~24x24) and `collection/` (~75x100), through this repo's own
+  `bmpToPng`, so the foreign tree and the LATAM one cannot drift apart.
+
+  **Keyed by sprite name, with no origin dimension** — deliberately unlike the
+  sprites, which are stored one tree per origin with each costume pinned to one.
+  Both reasons that rule exists there are absent here. A costume's `.spr` and
+  `.act` must come from one client because 282 `.act` files differ between
+  clients; an icon is one standalone BMP with no companion to disagree with. And
+  asking each costume's own tree for its icon finds 556 of 663 (83.9%) where
+  asking every client finds 637 (96.1%) — the missing 12% are costumes whose art
+  was cheapest to fetch from a client that ships no icon for it, which says
+  nothing about the icon. Provenance is kept instead of imposed:
+  `icons-plan.tsv` and the tree's `manifest.json` each record which client every
+  picture came from.
+
+  The route is query-shaped because the key is a client resource name and those
+  are Korean or Chinese far more often than not (`_두건`, `_c7학년풍선`), which
+  the path form's `^[a-z0-9_]+\.png$` cannot spell — the same reason
+  `/effect/sound?file=` and `headgearSprite=` are query-shaped. Names run through
+  the same `cleanSpriteName` that guards the render parameters, so the traversal
+  surface is the one already tested. `/icons/item/<id>.png` is untouched, and
+  `kind` defaults to the inventory icon. The 25 costumes with neither size in any
+  client are a **404 on purpose**: the consumer already falls back to a rendered
+  thumbnail, and a placeholder would be a picture claiming to be the costume.
+
+### Fixed
+- **A resource name that is valid UTF-8 by accident was decoded as UTF-8, and
+  came out as the wrong name.** `decodeClientString` tries UTF-8 first, which is
+  right for a *display* name — those are per-server, and some clients do ship
+  UTF-8. A **resource** name is not per-server: it is a path inside a GRF, and
+  those are EUC-KR in every client, including the Latin-script ones. The two
+  readings collide. `캡` is `C4 B8` in EUC-KR, which is also a well-formed UTF-8
+  sequence for `ĸ` (U+0138), so the name table's `_캡` read as `_ĸ` — a name no
+  file is called, and a silent miss rather than an error.
+
+  `decodeTableString` is the resource-name decoder: EUC-KR first, CP1252 only
+  when the bytes read as plausible Latin text, UTF-8 last. The tie-break has to
+  be "is the Latin reading plausible text?" and not "is there Hangul?", because
+  iRO ships `C_Ｇhostring_Tall_Hat` with a fullwidth `Ｇ` (EUC-KR `A3 C7`), which
+  is all-ASCII apart from that one character and reads as `£Ç` in CP1252 — not
+  text, so the EUC-KR reading wins. With it, the Lua VM reproduces all seven
+  clients' tables exactly.
+
+  **`buildViewResolver` in `extract-grf.mjs` has the same latent bug and is
+  deliberately left alone here.** It reads the LATAM client's accessory table
+  through `decodeClientString`, so a LATAM name shaped like `_캡` would resolve
+  wrong there too. Changing it moves the baked resolver tables and therefore
+  render output, and `CLAUDE.md` is explicit that anything which could move those
+  bytes needs comparing against production by hand. That comparison is not part
+  of this change.
+
 ## 2026-11-18 (3)
 
 ### Added

@@ -51,7 +51,11 @@ type config struct {
 	soundsDir   string
 	rawDir      string
 	foreignDir  string // one subdirectory per other official server (see foreign.go)
-	port        string
+	// Costume icons for the other official servers' costumes, keyed by sprite
+	// name rather than by item id. A derived store like the others, so it sits
+	// under resources/ and not beside the asset trees in mirror-foreign/.
+	foreignIconsDir string
+	port            string
 }
 
 func loadConfig() config {
@@ -65,7 +69,9 @@ func loadConfig() config {
 		soundsDir:   env("SOUNDS_DIR", "/sounds"),
 		rawDir:      env("RAW_DIR", "/raw"),
 		foreignDir:  env("FOREIGN_DIR", "/mirror-foreign"),
-		port:        env("GATEWAY_PORT", "8080"),
+
+		foreignIconsDir: env("FOREIGN_ICONS_DIR", "/icons-foreign"),
+		port:            env("GATEWAY_PORT", "8080"),
 	}
 }
 
@@ -163,6 +169,12 @@ func main() {
 		log.Printf("raw: %s not found — /raw/* will return 404 (run extract-grf.mjs --raw)", cfg.rawDir)
 	} else {
 		log.Printf("raw: serving %s at /raw/{name}.json", cfg.rawDir)
+	}
+
+	if fi, err := os.Stat(cfg.foreignIconsDir); err != nil || !fi.IsDir() {
+		log.Printf("foreign icons: %s not found — /icons/costume will return 404 (run tools/multiserver/cli.mjs icons)", cfg.foreignIconsDir)
+	} else {
+		log.Printf("foreign icons: serving %s at /icons/costume?sprite=<name>", cfg.foreignIconsDir)
 	}
 
 	addr := ":" + cfg.port
@@ -384,9 +396,56 @@ func notModified(w http.ResponseWriter, etag string) {
 var iconKinds = map[string]bool{"item": true, "collection": true, "skill": true, "job": true, "status": true, "ui": true}
 var iconFilePattern = regexp.MustCompile(`^[a-z0-9_]+\.png$`)
 
-// handleIcon serves /icons/{type}/{name}.png from the icons dir.
+// handleIcon serves /icons/{type}/{name}.png from the icons dir, and
+// /icons/costume from the per-sprite foreign tree.
+//
+// One route rather than a second prefix because both answer "the picture of
+// this thing": a consumer showing a grid of costumes asks this path for all of
+// them and only the key changes. "costume" cannot collide with a kind — the
+// kinds are a fixed whitelist and the path form needs a second segment.
 func (s *server) handleIcon(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/icons/costume" {
+		s.handleCostumeIcon(w, r)
+		return
+	}
 	s.servePNGByKind(w, r, "/icons/", s.cfg.iconsDir, iconKinds)
+}
+
+// handleCostumeIcon serves /icons/costume?sprite=<name>[&kind=item|collection].
+//
+// Query-shaped, like /image?origin=…&headgearSprite=<view>:<name> and
+// /effect/sound?file=<name>, and for the same reason: the key is a client
+// resource name, which is Korean or Chinese far more often than not
+// (_두건, _c7학년풍선), and those do not fit the path form's
+// ^[a-z0-9_]+\.png$. The name is validated by the same cleanSpriteName that
+// guards the render parameters, so it cannot leave the directory.
+func (s *server) handleCostumeIcon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		failWith(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ic, err := api.BuildCostumeIcon(r.URL.Query())
+	if err != nil {
+		// A bad parameter is the caller's mistake and worth saying out loud; a
+		// name nobody has an icon for is a 404 below, which is what the
+		// consumer's rendered-thumbnail fallback expects.
+		failWith(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	f, err := os.Open(filepath.Join(s.cfg.foreignIconsDir, ic.Kind, ic.Sprite+".png"))
+	if err != nil {
+		notFound(w, r) // no client ships an icon for it, or the tree isn't built
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		notFound(w, r)
+		return
+	}
+	s.serveReader(w, r, f, fi.ModTime(), fileETag(fi), "image/png")
 }
 
 // ---------------------------------------------------------------------------

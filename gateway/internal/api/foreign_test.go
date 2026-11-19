@@ -144,3 +144,77 @@ func TestBuildForeignCombinesOrigins(t *testing.T) {
 		t.Error("more than MaxOrigins should be refused")
 	}
 }
+
+func TestBuildCostumeIconDefaultsToTheInventoryIcon(t *testing.T) {
+	// A grid of costumes wants the small one, so that is what a request with no
+	// 'kind' gets; the collection picture is asked for by name.
+	ic, err := BuildCostumeIcon(q("sprite=_C_Chained_Bear"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ic.Kind != "item" {
+		t.Errorf("kind = %q, want item", ic.Kind)
+	}
+	// Lowercased and with the accessory table's leading underscore gone, which
+	// is the form stage6-icons.mjs writes the file under.
+	if ic.Sprite != "c_chained_bear" {
+		t.Errorf("sprite = %q, want c_chained_bear", ic.Sprite)
+	}
+
+	ic, err = BuildCostumeIcon(q("sprite=c_chained_bear&kind=collection"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ic.Kind != "collection" || ic.Sprite != "c_chained_bear" {
+		t.Errorf("got %+v, want collection/c_chained_bear", ic)
+	}
+}
+
+func TestBuildCostumeIconKeepsKoreanNames(t *testing.T) {
+	// The reason this route is query-shaped at all: most foreign costume sprite
+	// names are not spellable in the /icons/{kind}/<name>.png pattern. They must
+	// survive parsing unchanged apart from the underscore.
+	for _, c := range []struct{ in, want string }{
+		{"sprite=%EC%BA%A1", "캡"},                                    // 캡, a garment name with no underscore
+		{"sprite=_%EC%BA%A1", "캡"},                                   // the accessory table's _캡
+		{"sprite=_c7%ED%95%99%EB%85%84%ED%92%8D%EC%84%A0", "c7학년풍선"}, // mixed ASCII and Hangul
+	} {
+		ic, err := BuildCostumeIcon(q(c.in))
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", c.in, err)
+		}
+		if ic.Sprite != c.want {
+			t.Errorf("%s: sprite = %q, want %q", c.in, ic.Sprite, c.want)
+		}
+	}
+}
+
+func TestBuildCostumeIconRejectsBadInput(t *testing.T) {
+	for _, c := range []struct{ query, why string }{
+		{"", "no sprite at all"},
+		{"kind=item", "kind without a sprite"},
+		{"sprite=", "an empty sprite name"},
+		{"sprite=___", "a name of nothing but underscores"},
+		{"sprite=_hat&kind=portrait", "a kind that is not one of the two directories"},
+		{"sprite=../../main.go", "a parent reference"},
+		{"sprite=item/_hat", "a path separator"},
+		{`sprite=item\_hat`, "a windows path separator"},
+	} {
+		if _, err := BuildCostumeIcon(q(c.query)); err == nil {
+			t.Errorf("%q (%s) should be refused", c.query, c.why)
+		}
+	}
+}
+
+func TestBuildCostumeIconErrorsNameTheParameter(t *testing.T) {
+	// These reach a browser's network tab, so they have to say which parameter
+	// was wrong rather than only that something was.
+	_, err := BuildCostumeIcon(q("sprite=_hat&kind=portrait"))
+	if err == nil || !strings.Contains(err.Error(), "kind") {
+		t.Errorf("error = %v, want it to name 'kind'", err)
+	}
+	_, err = BuildCostumeIcon(q("kind=item"))
+	if err == nil || !strings.Contains(err.Error(), "sprite") {
+		t.Errorf("error = %v, want it to name 'sprite'", err)
+	}
+}

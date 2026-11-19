@@ -1,0 +1,127 @@
+{
+  "note": "Visuais estrangeiros que renderizam identicos ao personagem pelado, nos dois generos. Gerado por find-blank-visuals.mjs; lido por export-app-catalogue.mjs.",
+  "checkedAt": "2026-11-18",
+  "base": "https://assets.latam-tools.com.br",
+  "count": 17,
+  "blank": [
+    {
+      "origin": "iro",
+      "view": 89,
+      "viewKind": "garment",
+      "sprite": "c_capoo_bag_tw",
+      "name": "(服飾)咖波包"
+    },
+    {
+      "origin": "iro",
+      "view": 1275,
+      "viewKind": "headgear",
+      "sprite": "_흩날리는낙엽",
+      "name": "Folhas Outonais"
+    },
+    {
+      "origin": "iro",
+      "view": 1461,
+      "viewKind": "headgear",
+      "sprite": "_c흩날리는깃털",
+      "name": "[Visual] Penas Coloridas"
+    },
+    {
+      "origin": "iro",
+      "view": 1528,
+      "viewKind": "headgear",
+      "sprite": "_c골드샤워",
+      "name": "[Visual] Chuva Dourada"
+    },
+    {
+      "origin": "iro",
+      "view": 2150,
+      "viewKind": "headgear",
+      "sprite": "_c_cat_footprints",
+      "name": "(服飾)喵喵肉球印"
+    },
+    {
+      "origin": "iro",
+      "view": 2353,
+      "viewKind": "headgear",
+      "sprite": "_ghost_fire_tw",
+      "name": "幽魅火球"
+    },
+    {
+      "origin": "iro",
+      "view": 2432,
+      "viewKind": "headgear",
+      "sprite": "_c_s_attack_ring",
+      "name": "(服飾)金環(受到攻擊)"
+    },
+    {
+      "origin": "krozero",
+      "view": 1309,
+      "viewKind": "headgear",
+      "sprite": "_시간의장식",
+      "name": "[Visual] Ilusões do Tempo"
+    },
+    {
+      "origin": "krozero",
+      "view": 1331,
+      "viewKind": "headgear",
+      "sprite": "_흩날리는벚꽃",
+      "name": "Aura de Amatsu"
+    },
+    {
+      "origin": "krozero",
+      "view": 1378,
+      "viewKind": "headgear",
+      "sprite": "_c나비의날갯짓",
+      "name": "(服飾)飄揚的蝴蝶"
+    },
+    {
+      "origin": "krozero",
+      "view": 1772,
+      "viewKind": "headgear",
+      "sprite": "_return_tw_2th_hat",
+      "name": "(服飾)回歸二週年頭飾"
+    },
+    {
+      "origin": "krozero",
+      "view": 1931,
+      "viewKind": "headgear",
+      "sprite": "_c_dullahan_mask",
+      "name": "[Visual] Capacete de Dullahan"
+    },
+    {
+      "origin": "twro",
+      "view": 1230,
+      "viewKind": "headgear",
+      "sprite": "_부유하는현자의돌",
+      "name": "(服飾)飄浮的賢者之石"
+    },
+    {
+      "origin": "twro",
+      "view": 1380,
+      "viewKind": "headgear",
+      "sprite": "_c흩날리는천사의날개",
+      "name": "[Visual] Penas Encantadas"
+    },
+    {
+      "origin": "twro",
+      "view": 1665,
+      "viewKind": "headgear",
+      "sprite": "_c_flutterbutterfly_bl",
+      "name": "(服飾)幽暗的蝴蝶"
+    },
+    {
+      "origin": "twro",
+      "view": 1821,
+      "viewKind": "headgear",
+      "sprite": "_romanticrose",
+      "name": "(服飾)浪漫玫瑰"
+    },
+    {
+      "origin": "twrozero",
+      "view": 2533,
+      "viewKind": "headgear",
+      "sprite": "_c_clb_ss_ll",
+      "name": "(服飾)發懶滷哥氣球"
+    }
+  ]
+}

@@ -16,13 +16,23 @@ export const PATCH_FILE = "https://ro1patch.gnjoylatam.com/LIVE/patchfile";
 // parsePatchList reads the index: "<seq> <filename>" per line. A tab-indented
 // line prefixed with // is a patch that was pulled after release — the official
 // patcher skips those and so do we, though the files often still exist on the
-// CDN.
-export function parsePatchList(text) {
+// CDN, which is why `includePulled` exists: tools/multiserver walks a whole
+// patch history looking for the one archive that still carries an old table,
+// and a pulled patch is a copy like any other there.
+//
+// The format and the `//` convention are the same on every official server
+// checked — LATAM, iRO, kRO, kRO Zero, jRO, twRO and twRO Zero — which is why
+// this one parser serves both the LATAM patch cycle and the multi-server
+// extraction. Each row carries `pulled` so a caller that asked for them can
+// still tell them apart.
+export function parsePatchList(text, { includePulled = false } = {}) {
   const out = [];
   for (const raw of text.split(/\r?\n/)) {
-    if (!raw.trim() || /^\s*\/\//.test(raw)) continue;
-    const m = raw.match(/^\s*(\d+)[\s\t]+(\S+)\s*$/);
-    if (m) out.push({ seq: Number(m[1]), file: m[2] });
+    if (!raw.trim()) continue;
+    const pulled = /^\s*\/\//.test(raw);
+    if (pulled && !includePulled) continue;
+    const m = raw.replace(/^\s*\/\//, "").match(/^\s*(\d+)[\s\t]+(\S+)\s*$/);
+    if (m) out.push({ seq: Number(m[1]), file: m[2], pulled });
   }
   return out;
 }

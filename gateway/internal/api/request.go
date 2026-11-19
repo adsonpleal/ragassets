@@ -327,6 +327,11 @@ const RootHelp = "ragassets-gateway — renders and serves Ragnarok Online sprit
 	"                                 tree; the sprite name says what it is called there, because a\n" +
 	"                                 foreign view id means nothing here — or means a different hat)\n" +
 	"     /icons/item/501.png        (static item/collection/skill/job/ui images)\n" +
+	"     /icons/costume?sprite=_c_chained_bear&kind=item\n" +
+	"                                (the inventory picture of a costume from another official server.\n" +
+	"                                 Keyed by sprite name and not by item id, because a foreign\n" +
+	"                                 costume has no item id here and the names are mostly Korean.\n" +
+	"                                 kind=item (default, ~24x24) or collection (~75x100))\n" +
 	"     /illust/card/4001.png      (a card's full-size artwork)\n" +
 	"     /effects/index.json        (effect-only costume catalogue; _en/_es for the other locales)\n" +
 	"     /effects/hat_effects.json  (costumes that play an effect over a sprite they also render)\n" +

@@ -547,12 +547,36 @@ function readBytes(fd, length, position) {
   return buf;
 }
 
+// The fd half: read the table's own size prefix, then the block, then parse it.
+// Split from parseFileTableV2 for the same reason readGrfEntry was split into
+// grfEntrySpan + decodeGrfEntry — tools/multiserver reads these tables over the
+// network, where there is no fd and the whole block arrives as one buffer, and
+// the format logic must not exist twice.
 function readFileTableV200(fd, tableStart, entryTrailerBytes = 17) {
   const sizes = readBytes(fd, 8, tableStart);
   const compressedSize = sizes.readUInt32LE(0);
-  const uncompressedSize = sizes.readUInt32LE(4);
-  const compressed = readBytes(fd, compressedSize, tableStart + 8);
-  const table = inflateSync(compressed);
+  return parseFileTableV2(
+    Buffer.concat([sizes, readBytes(fd, compressedSize, tableStart + 8)]),
+    entryTrailerBytes,
+  );
+}
+
+/**
+ * v0x200 / v0x300 file table, from the bytes at the table offset.
+ *
+ * Layout: [u32 compressed][u32 uncompressed][deflate], and the inflated block
+ * is one `name NUL` + fixed-size trailer per entry. v0x300 ("Event Horizon")
+ * uses a 21-byte trailer — the standard 17 plus a high u32 — so files appended
+ * past the 4 GB mark resolve correctly; v0x200 is 32-bit.
+ *
+ * `buf` starts at the table offset and must hold at least 8 + compressed bytes;
+ * anything after that is ignored, so a caller that read "the rest of the file"
+ * can pass it straight in.
+ */
+export function parseFileTableV2(buf, entryTrailerBytes = 17) {
+  const compressedSize = buf.readUInt32LE(0);
+  const uncompressedSize = buf.readUInt32LE(4);
+  const table = inflateSync(buf.subarray(8, 8 + compressedSize));
   if (table.length !== uncompressedSize) {
     console.warn(`! filetable inflate size ${table.length} != expected ${uncompressedSize}`);
   }
@@ -1764,6 +1788,47 @@ export function decodeClientString(latin1) {
   return decoded == null ? decoded : repairLatamAccents(decoded);
 }
 
+// A value out of a *resource-name* table — AccNameTable, RobeNameTable,
+// ItemDBNameTbl, idnum2itemresnametable — rather than out of a display-name
+// one. These hold GRF paths, so they are ASCII or EUC-KR Korean in every
+// region's client and never UTF-8, and that is the whole difference:
+// decodeClientString tries UTF-8 first because the patched iteminfo_new.lub IS
+// UTF-8, and a two-byte EUC-KR syllable can be valid UTF-8 by accident. AccName
+// view 14 is the attested case — "_캡" (a cap) is 5F C4 B8, and C4 B8 decodes as
+// U+0138 ĸ, so the UTF-8 branch wins and hands back "_ĸ", a name that matches no
+// sprite in any client. Every one of the seven official clients ships that same
+// row, so it is the table that is misread, not one server's table.
+//
+// So: EUC-KR first, and the CP1252 tie-break below only where that fails. UTF-8
+// is still tried last rather than not at all, because a patched table could be
+// re-encoded one day and a clean UTF-8 read is better than a CP1252 guess.
+export function decodeTableString(latin1) {
+  if (latin1 == null) return null;
+  const bytes = Buffer.from(latin1, "latin1");
+  if (!bytes.some((x) => x >= 0x80)) return latin1; // pure ASCII, the common case
+  try {
+    const korean = EUCKR.decode(bytes);
+    // A tie-break is still needed, for the reason decodeClientCharset explains:
+    // an uppercase Portuguese pair like "ÇÃ" is a valid Hangul double byte too,
+    // so a clean EUC-KR decode proves nothing on its own. But the test is only
+    // whether the CP1252 reading is plausible Latin text — NOT, as it is for a
+    // display name, whether the Korean reading contains Hangul. A resource name
+    // is a GRF path and reaches well outside Hangul: ItemDBNameTbl has
+    // "C_Ｇhostring_Tall_Hat" with a fullwidth Ｇ (EUC-KR A3 C7), which reads as
+    // "£Ç" in CP1252 — not text, so the EUC-KR reading is the right one.
+    if (!/[A-Za-z]/.test(latin1)) return korean;
+    const latin = CP1252.decode(bytes);
+    return isLatinText(latin) ? latin : korean;
+  } catch {
+    /* not EUC-KR */
+  }
+  try {
+    return UTF8.decode(bytes);
+  } catch {
+    return CP1252.decode(bytes);
+  }
+}
+
 function decodeClientCharset(latin1) {
   if (latin1 == null) return null;
   const bytes = Buffer.from(latin1, "latin1");
@@ -2123,7 +2188,11 @@ function encodePng(width, height, rgba) {
   ]);
 }
 
-function bmpToPng(bmpBytes, opts = {}) {
+// Exported for tools/multiserver, which turns the same BMPs into the same PNGs
+// for the other official clients' costumes — read out of their patch archives
+// instead of out of a GRF on disk, but magenta-keyed by this one function so
+// the two trees cannot come out looking different.
+export function bmpToPng(bmpBytes, opts = {}) {
   const decoded = bmpToRgba(bmpBytes);
   if (!decoded) return null;
   // For UI elements that carry no magenta colorkey, derive transparency from the
