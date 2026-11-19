@@ -509,6 +509,54 @@ and those are Korean or Chinese far more often than not (`_두건`,
 is validated by the same `cleanSpriteName` that guards the render parameters, and
 `/icons/item/<id>.png` is untouched.
 
+## Putting the two stores on the origin box
+
+The gateway serves two things this pipeline produces, and they get there by
+different routes because only one of them can be rebuilt away from the machine
+that planned it.
+
+**`resources/icons-foreign/` — rebuilt on the box, from the committed plan.**
+Planning needs every origin's path index (hundreds of MB of ledgers, built over
+days) and the published catalogue. Fetching needs `icons-plan.tsv` and the
+public patch servers, and nothing else. `icons-plan.tsv` is committed beside
+this README for exactly that reason, so the box needs no index, no catalogue and
+no file copied from a laptop:
+
+```bash
+cd ~/ragassets && git pull
+mkdir -p ~/ro-multiserver && cp tools/multiserver/icons-plan.tsv ~/ro-multiserver/
+node tools/multiserver/cli.mjs icons --from-plan --out ~/ragassets/resources/icons-foreign
+```
+
+About 20 minutes: 695 range reads at one request per second per host, 47 MB
+transferred, no patch downloaded whole. It is resumable — the mirror under
+`~/ro-multiserver/mirror/` is skipped on a re-run — and it writes only under
+`--out`, so it cannot disturb the derived stores beside it. Re-run
+`icons --plan-only` here and commit the new `icons-plan.tsv` whenever the
+catalogue grows; the plan is a snapshot of where each icon was found, not a
+live query.
+
+**`resources/raw/foreign-costumes.json` — copied up.** It cannot be rebuilt on
+the box at any cost: it is `catalogueFromDisk` over all seven mirrors plus every
+client's name tables, which is the whole pipeline. That is the same deal as
+`raw/mobs.json`, which is also produced off-box and shipped with the rest of
+`resources/raw`.
+
+**The unit file needs root, and the deploy deliberately does not install it.**
+`deploy/deploy-from-ci.sh` ships code, never units — it warns when the checkout's
+copy differs from the installed one and leaves it alone, because installing a
+unit needs `sudo` and the CI key is confined to a forced command that cannot get
+it. So `FOREIGN_ICONS_DIR` reaches the running service only when a human runs:
+
+```bash
+sudo install -m 0644 ~/ragassets/deploy/ragassets-gateway.service /etc/systemd/system/ragassets-gateway.service
+sudo systemctl daemon-reload && sudo systemctl restart ragassets-gateway
+```
+
+Until then the route answers 404 for every sprite and says so at boot — which is
+how every derived store behaves before it exists, and is why the consumer falls
+back to a rendered thumbnail rather than breaking.
+
 ## What is shared with extract-grf.mjs
 
 The dedupe is the point of this directory living here. What used to be a second
