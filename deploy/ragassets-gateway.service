@@ -35,6 +35,11 @@ Environment=MAPS_DIR=/home/ubuntu/ragassets/resources/maps
 Environment=BGM_DIR=/home/ubuntu/ragassets/resources/bgm
 Environment=SOUNDS_DIR=/home/ubuntu/ragassets/resources/sounds
 Environment=RAW_DIR=/home/ubuntu/ragassets/resources/raw
+# The foreign costumes' inventory icons, keyed by sprite name rather than by
+# item id. A derived store like the ones above, so it belongs under resources/
+# and not beside the asset trees in mirror-foreign/; built by
+# `node tools/multiserver/cli.mjs icons --out <this dir>`.
+Environment=FOREIGN_ICONS_DIR=/home/ubuntu/ragassets/resources/icons-foreign
 Environment=GATEWAY_PORT=8080
 
 # 500 MiB is the number the parse-cache budgets in resource/manager.go are sized

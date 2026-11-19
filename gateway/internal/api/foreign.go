@@ -98,6 +98,66 @@ func BuildForeign(q url.Values) (Foreign, error) {
 	return f, nil
 }
 
+// CostumeIcon is a request for the inventory picture of a costume, named the
+// way the published catalogue names it: by sprite, not by item id.
+//
+// /icons/{item,collection}/<id>.png cannot answer this. Its key is a LATAM item
+// id, and a foreign costume has none — it is a view id in another client's
+// table, and the clients reuse each other's numbers. Its filename pattern is
+// also ^[a-z0-9_]+\.png$, while these names are mostly Korean (_두건) or
+// Chinese, so they could not be spelled in that route even with an id to hand.
+//
+// There is deliberately no origin in this request. The sprites are stored one
+// tree per origin because a costume's .spr and .act must come from one client;
+// an icon is a single standalone BMP with nothing to be consistent with, and
+// asking each costume's own client for its icon finds 83.9% of them where
+// asking every client finds 96.1%. See tools/multiserver/stage6-icons.mjs.
+type CostumeIcon struct {
+	// Kind is "item" (the ~24x24 inventory icon) or "collection" (~75x100).
+	Kind string
+	// Sprite is the costume's sprite name, lowercased, with the leading
+	// underscore of an accessory name stripped — the form the extraction
+	// writes its files under.
+	Sprite string
+}
+
+// IconKinds are the two sizes the client ships, and the only two directories
+// this route will read. Keep in sync with ICON_KINDS in stage6-icons.mjs.
+var IconKinds = []string{"item", "collection"}
+
+// BuildCostumeIcon parses /icons/costume's query.
+//
+// `kind` defaults to the inventory icon, which is what a grid of costumes
+// wants; `collection` is the big one, asked for explicitly.
+func BuildCostumeIcon(q url.Values) (CostumeIcon, error) {
+	var ic CostumeIcon
+
+	ic.Kind = "item"
+	if raw := strings.TrimSpace(q.Get("kind")); raw != "" {
+		ic.Kind = strings.ToLower(raw)
+		if ic.Kind != "item" && ic.Kind != "collection" {
+			return ic, fmt.Errorf("invalid 'kind' %q: expected one of %v", raw, IconKinds)
+		}
+	}
+
+	if !q.Has("sprite") {
+		return ic, errors.New("'sprite' is required, e.g. sprite=_c_chained_bear (the name the catalogue carries)")
+	}
+	name, err := cleanSpriteName("sprite", q.Get("sprite"))
+	if err != nil {
+		return ic, err
+	}
+	// The stored file name drops the accessory tables' leading underscore,
+	// because that marker is not part of the resource name the BMP is called
+	// after. Accepting the name either way is the point: a consumer passes the
+	// catalogue's `sprite` through untouched and does not have to know that.
+	ic.Sprite = strings.TrimLeft(name, "_")
+	if ic.Sprite == "" {
+		return ic, fmt.Errorf("invalid 'sprite' %q: a name of underscores names nothing", q.Get("sprite"))
+	}
+	return ic, nil
+}
+
 // ParseOriginID accepts the shape of an origin id and nothing else. Which ids
 // exist is the handler's business — it knows what was mounted — but a value
 // that could escape a directory must never reach it.

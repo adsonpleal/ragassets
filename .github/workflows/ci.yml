@@ -42,6 +42,13 @@ jobs:
       - name: Test the tools
         run: node --test tools/*.test.mjs
 
+      # A second line rather than a wider glob: `tools/*.test.mjs` does not
+      # reach a subdirectory, and the multi-server pipeline's tests live in one.
+      # They are hermetic as well — every archive, GRF table and Lua chunk they
+      # read is built in the test, and nothing touches a patch server.
+      - name: Test the multi-server pipeline
+        run: node --test tools/multiserver/*.test.mjs
+
       # Most Go tests skip without resources/ (gitignored) — but not the golden
       # renders. Those run against a committed fixture pack precisely so CI
       # cannot pass vacuously on the one thing that guards the renderer.
