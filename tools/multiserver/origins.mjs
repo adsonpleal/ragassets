@@ -111,7 +111,13 @@ export const ORIGINS = {
     // in the WHATWG encoding set, which is what TextDecoder implements, so the
     // canonical name is the one written here.
     encoding: "windows-874",
-    note: "v0x102 like twRO; the only origin that names anything in Thai",
+    // Its names are NOT Thai, measured 2026-11-19: 18,843 of its 18,889 item
+    // names are pure ASCII English and only 28 carry any Thai script (local
+    // produce and Ayothaya fishing items). It is a second English name source,
+    // which is the scarce one here — iRO names 99 of our 663 costumes and thRO
+    // names 316, 234 of them ones iRO cannot. The encoding still matters for
+    // those 28. See docs/per-client-names.md.
+    note: "v0x102 like twRO; a second English name table, not a Thai one",
   },
 };
 
