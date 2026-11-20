@@ -37,6 +37,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sanitizePath } from "../../extract-grf.mjs";
+import { clientNamesFromDisk, normResource } from "./clientnames.mjs";
 import { ORIGINS } from "./origins.mjs";
 import { ACC_DIR, ROBE_DIR, SEX_PREFIX, normalizePath, robeTargets } from "./pathshapes.mjs";
 import { paths, readRows } from "./store.mjs";
@@ -272,6 +273,10 @@ export function buildCatalogue({
   present = () => false,
   pathIndex = new Map(),
   blank = [],
+  // sprite -> { origin: name }, from every client's own item and name tables.
+  // Empty by default so a caller that does not want the join — or a test —
+  // builds the catalogue it always built.
+  clientNames = new Map(),
 } = {}) {
   const byCostume = planByCostume(plan);
   const short = shortlistByCostume(shortlist);
@@ -317,6 +322,20 @@ export function buildCatalogue({
       // from: an item id is global, so twRO can name a costume iRO supplies.
       name: s.name || null,
       nameOrigin: s.name ? s.nameOrigin : null,
+      // Every client's own name for this costume, so a consumer can pick by
+      // language instead of inheriting the choice `name` already made. Display
+      // ready — the underscore convention of the .txt tables is undone — but
+      // marker intact: `(服飾)`, `[衣装]`, `Costume:` and `[Visual]` are the
+      // clients' own words for "costume version", and for 465 rows that marker
+      // is the only thing separating the costume from the base item of the same
+      // name, so stripping it upstream would be lossy.
+      //
+      // Absent, never empty: a client with no table (kRO Zero has neither) is
+      // not a client with no name, and an empty object would claim otherwise.
+      ...(() => {
+        const n = clientNames.get(normResource(s.sprite));
+        return n && Object.keys(n).length ? { names: n } : {};
+      })(),
       // The English identifier, the only English any client ships. It is a
       // translation base, not a display name.
       aegis: s.aegis || null,
@@ -337,12 +356,20 @@ export function buildCatalogue({
   let named = 0;
   let withAegis = 0;
   let blankCount = 0;
+  let withNames = 0;
+  // How many costumes each client can name, which is not how many it has art
+  // for: iRO supplies the art for 231 and names 99.
+  const namesPerOrigin = {};
   for (const c of costumes) {
     perOrigin[c.origin] = (perOrigin[c.origin] ?? 0) + 1;
     for (const s of c.slots.length ? c.slots : ["?"]) perSlot[s] = (perSlot[s] ?? 0) + 1;
     if (c.name) named++;
     if (c.aegis) withAegis++;
     if (c.blank) blankCount++;
+    if (c.names) {
+      withNames++;
+      for (const o of Object.keys(c.names)) namesPerOrigin[o] = (namesPerOrigin[o] ?? 0) + 1;
+    }
   }
 
   return {
@@ -351,6 +378,8 @@ export function buildCatalogue({
       total: costumes.length,
       named,
       withAegis,
+      withNames,
+      namesPerOrigin,
       blank: blankCount,
       perOrigin,
       perSlot,
@@ -376,6 +405,8 @@ export function catalogueDocument({ costumes, stats }, { generatedAt } = {}) {
       total: stats.total,
       named: stats.named,
       withAegis: stats.withAegis,
+      withNames: stats.withNames,
+      namesPerOrigin: stats.namesPerOrigin,
       blank: stats.blank,
       perOrigin: stats.perOrigin,
       perSlot: stats.perSlot,
@@ -406,6 +437,7 @@ export function catalogueFromDisk(opts = {}) {
     slots: readRows(paths.slots()),
     blank: readBlankVisuals(),
     pathIndex: readPathIndex(),
+    clientNames: clientNamesFromDisk(),
     present: (origin, path) => {
       const safe = sanitizePath(path);
       return safe ? existsSync(join(paths.mirrorDir(origin), safe)) : false;
