@@ -31,6 +31,7 @@ const SEX_F = "여";
 const accPath = (sex, key = "chapeu") =>
   `data/sprite/악세사리/${sex}/${sex}${key}.spr`;
 import { ORIGINS, parsePatchList, rgzProbeOrder, selectOrigins, GRF_EXT, RGZ_EXT } from "./origins.mjs";
+import { ITEM_INFO_FILES, ITEM_INFO_TAILS } from "./iteminfo.mjs";
 import { normalizePath, robeTargets, spriteTargets, targetsFor } from "./pathshapes.mjs";
 import { legacyNameCoverage } from "./coverage.mjs";
 import {
@@ -231,6 +232,46 @@ describe("ORIGINS", () => {
   it("registers thRO, the second English name source", () => {
     assert.ok(ORIGINS.thro, "thro must stay registered");
     assert.strictEqual(new TextDecoder(ORIGINS.thro.encoding).encoding, "windows-874");
+  });
+});
+
+describe("ITEM_INFO_FILES", () => {
+  // The bug this guards: stage 2 matched only `iteminfo_new.lub`, iRO ships
+  // `System/itemInfo.lub`, and iRO therefore read its item names out of a table
+  // last patched on 2016-12-01 -- 8,367 names where the lub has 19,763. The
+  // probe ledger had recorded `system/iteminfo.lub` inside 33 archives it had
+  // already paid to download.
+  it("knows both spellings, the common one first", () => {
+    assert.deepStrictEqual(ITEM_INFO_FILES, ["iteminfo_new.lub", "iteminfo.lub"]);
+    assert.deepStrictEqual(ITEM_INFO_TAILS, [
+      "system/iteminfo_new.lub",
+      "system/iteminfo.lub",
+    ]);
+  });
+
+  it("matches the path iRO actually ships, as the probe normalizes it", () => {
+    // Built rather than written as a literal: a backslash in a test source
+    // is one editor away from being eaten, and this assertion is the point.
+    const BS = String.fromCharCode(92);
+    const iro = normalizePath("System" + BS + "itemInfo.lub");
+    assert.ok(
+      ITEM_INFO_TAILS.some((t) => iro.endsWith(t)),
+      `${iro} must match one of ${ITEM_INFO_TAILS.join(", ")}`,
+    );
+    // and the common spelling still matches, from a deeper root
+    const twro = normalizePath(["data", "System", "iteminfo_new.lub"].join(BS));
+    assert.ok(ITEM_INFO_TAILS.some((t) => twro.endsWith(t)));
+  });
+
+  it("does not match a file that merely contains the name", () => {
+    for (const p of ["system/iteminfo_new.lub.bak", "system/myiteminfo.lub"]) {
+      if (p.endsWith(".bak")) {
+        assert.ok(!ITEM_INFO_TAILS.some((t) => p.endsWith(t)), p);
+      } else {
+        // `myiteminfo.lub` ends with "iteminfo.lub" but not with "system/iteminfo.lub"
+        assert.ok(!ITEM_INFO_TAILS.some((t) => p.endsWith(t)), p);
+      }
+    }
   });
 });
 

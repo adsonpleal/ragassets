@@ -28,13 +28,14 @@ const PROBE_HEADER = ["seq", "file", "bytes", "entries", "contents"];
 
 /**
  * Download .rgz patches newest-first until one contains a file whose normalized
- * path ends with `tail`, and write that file next to the other extracted tables.
+ * path ends with `tail` — a string, or several candidate tails in the order
+ * they are preferred — and write that file next to the other extracted tables.
  *
  * @returns {Promise<{found: boolean, path?: string, archive?: string, seq?: number,
  *   tried: number, bytes: number, fromCache: number}>}
  */
 export async function findInRgz(origin, tail, { limit = 12, outDir, onProgress } = {}) {
-  const want = tail.toLowerCase();
+  const wants = (Array.isArray(tail) ? tail : [tail]).map((t) => t.toLowerCase());
   // The ledger lives beside rgz.tsv rather than in it: rgz.tsv is stage 1's
   // record of what exists; this is a record of what was opened.
   const ledger = paths.rgz(origin.id) + ".probe";
@@ -50,7 +51,7 @@ export async function findInRgz(origin, tail, { limit = 12, outDir, onProgress }
   for (const row of order) {
     // Already opened in an earlier probe: trust the recorded contents.
     const seen = probed.get(row.file);
-    if (seen && !seen.contents.split("|").some((p) => p.endsWith(want))) continue;
+    if (seen && !seen.contents.split("|").some((p) => wants.some((w) => p.endsWith(w)))) continue;
     if (out.tried >= limit) break;
     out.tried++;
 
@@ -90,7 +91,11 @@ export async function findInRgz(origin, tail, { limit = 12, outDir, onProgress }
       ]);
     }
 
-    const hit = files.find((e) => normalizePath(e.name).endsWith(want));
+    // By candidate first, not by position in the archive: where a client ships
+    // two of them, the preferred name must win whatever order they are stored in.
+    const hit = wants
+      .flatMap((w) => files.filter((e) => normalizePath(e.name).endsWith(w)))
+      .at(0);
     onProgress?.({
       archive: row.file,
       seq: Number(row.seq),

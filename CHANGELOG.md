@@ -14,6 +14,73 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-19 (4)
+
+### Fixed
+- **iRO's item names were ten years out of date, and that was our bug.** iRO
+  stopped patching `data/idnum2itemdisplaynametable.txt` on **2016-12-01** (seq
+  3009, against seq 5707 at the head of its index). Its current table is
+  `System/itemInfo.lub` — 10.3 MB, 20,046 items, **19,763 display names** —
+  which every other client spells `iteminfo_new.lub`, and that was the only name
+  stage 2 looked for.
+
+  The evidence was already in `index/iro/rgz.tsv.probe`: **36 archives probed,
+  96 MB downloaded, `system/iteminfo.lub` recorded inside 33 of them.** The
+  probe found the file 33 times and discarded it 33 times on a string compare.
+  Re-reading it cost no new bandwidth — every archive was still in `cache/iro`.
+
+  `ITEM_INFO_FILES` in `iteminfo.mjs` is now the one list of names this file can
+  have, used by the stage-1 wanted table, `findExtracted` and `findInRgz`. Where
+  a client ships both spellings the preferred one wins by candidate order rather
+  than by whichever the directory walk reached first.
+
+- **The underscore transform could have been applied to iRO's modern names.**
+  `clientnames.mjs` decided it by whether the origin had
+  `idnum2itemdisplaynametable.txt` on disk, and iRO has both that file and the
+  current lub. It now asks whether a modern table is present, which is what
+  stage 2 actually prefers. Nothing published was affected — this is the trap
+  closing before it fired.
+
+- **Four more jRO rows were naming the base item.** The `costume` flag is pooled
+  across every readable item table, so iRO's 2,363 flags sharpened the tie-break
+  for another client: `_오크히어로투구` 5094 → **20385**, `_아프로가발` 5258 →
+  **400132**, `_C_Sakura_Witch_Hat_W` 400721 → **400898**, and
+  `_C_Elegant_Wave` 20476 → **31944**, which had been showing jRO's
+  「レンタル衣装」 *rental* costume rather than the permanent one.
+
+### Added
+- **iRO names 420 of the 663 costumes, against 99 before**, and resolves 421
+  item ids against 100. 321 rows gain an iRO name and none loses one.
+  `withNames` 624 → **630**, `withIds` 628 → **634**, 663 rows unchanged,
+  `origins` untouched. The file grew from 376,202 to 397,706 bytes.
+
+  **English coverage is now 464 of 663**, from 99 two changes ago: thRO added
+  237 iRO could not name, and iRO's own current table added 321. Rows with no
+  name from any client fall from 58 to 33.
+
+  29 iRO names changed. 18 are iRO rewording the same item — 14 of those only
+  drop the colon, `Costume: Fillet` → `Costume Fillet`, which is iRO's own
+  change of style between the 2016 `.txt` and the current lub. The other 11
+  replace the base item with the costume: `Unicorn Horn` → `Costume Unicorn
+  Horn`, `Panda Hat` → `Costume Panda Hat`, and `Surprised Mask` → `Costume
+  Goblin Mask`, which was not even the same hat.
+
+### Notes
+- `docs/per-client-names.md` now carries all three measurements and marks which
+  of its own conclusions were superseded. The claim it made at first — that the
+  English gap "is not closeable from these clients" — was wrong twice over: a
+  seventh client had an English table, and iRO's own was being read from a 2016
+  file.
+- **Slots are deliberately not touched.** `slotindex.mjs` also matches
+  `iteminfo_new.lub` by name, so iRO's table does not feed it and
+  `counts.perSlot` is unchanged. Slots decide whether the app can show a costume
+  at all, so re-deriving them is its own measurement rather than a side effect
+  of this one.
+- Published by `scp` as before; `resources/` is gitignored on the box and the
+  deploy does not carry it. sha256
+  `6f4785bce0b8039f8ec944767e055d754cfa7d482dfd6049e11185b3903fe5a7`, verified
+  byte-identical over the public URL. Nothing here needed root.
+
 ## 2026-11-19 (3)
 
 ### Added

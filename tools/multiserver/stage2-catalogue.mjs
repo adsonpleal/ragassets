@@ -37,7 +37,7 @@ import {
   readResourceTable,
   readDisplayNameTable,
 } from "./lubtables.mjs";
-import { readItemInfo } from "./iteminfo.mjs";
+import { ITEM_INFO_FILES, ITEM_INFO_TAILS, readItemInfo } from "./iteminfo.mjs";
 import { legacyNameCoverage } from "./coverage.mjs";
 import { findInRgz } from "./rgzprobe.mjs";
 import { EXTRACTOR, paths, ensureDir, readRows, streamRows, writeRows } from "./store.mjs";
@@ -50,7 +50,8 @@ const execFileAsync = promisify(execFile);
 const WANTED = [
   { key: "accessoryId", tail: "datainfo/accessoryid.lub" },
   { key: "accName", tail: "datainfo/accname.lub" },
-  { key: "itemInfo", tail: "system/iteminfo_new.lub" },
+  // Two spellings, iRO's being the bare one — see ITEM_INFO_FILES.
+  { key: "itemInfo", tail: ITEM_INFO_TAILS },
   { key: "itemRes", tail: "idnum2itemresnametable.txt" },
   { key: "itemName", tail: "idnum2itemdisplaynametable.txt" },
   { key: "robeId", tail: "datainfo/spriterobeid.lub" },
@@ -63,7 +64,8 @@ const WANTED = [
   { key: "aegisName", tail: "lua files/itemdbnametbl.lub" },
 ];
 
-const matches = (want, normPath) => normPath.endsWith(want.tail);
+const tailsOf = (want) => (Array.isArray(want.tail) ? want.tail : [want.tail]);
+const matches = (want, normPath) => tailsOf(want).some((t) => normPath.endsWith(t));
 
 /**
  * Newest *extractable* archive per wanted file, out of the stage-1 index.
@@ -111,7 +113,11 @@ export async function locateTables(originId) {
 
 /** Where extract-grf.mjs put a file whose GRF path ended with `tail`. */
 function findExtracted(root, tail) {
-  const want = tail.toLowerCase();
+  // Several candidates resolve by *candidate* order, not by the order the
+  // directory walk happens to reach them, so a client shipping both spellings
+  // still yields the preferred one.
+  const wants = (Array.isArray(tail) ? tail : [tail]).map((t) => t.toLowerCase());
+  const best = new Map();
   const stack = [root];
   while (stack.length) {
     const dir = stack.pop();
@@ -123,10 +129,16 @@ function findExtracted(root, tail) {
     }
     for (const e of entries) {
       const full = join(dir, e.name);
-      if (e.isDirectory()) stack.push(full);
-      else if (normalizePath(full).endsWith(want)) return full;
+      if (e.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      const norm = normalizePath(full);
+      const i = wants.findIndex((w) => norm.endsWith(w));
+      if (i >= 0 && !best.has(i)) best.set(i, full);
     }
   }
+  for (let i = 0; i < wants.length; i++) if (best.has(i)) return best.get(i);
   return null;
 }
 
@@ -221,7 +233,7 @@ export async function catalogueOrigin(origin, { onProgress, probeRgz = true, rgz
   // stage-1 index has no copy the newest client patches get probed for one.
   let itemInfoFile =
     located.has("itemInfo") && !located.get("itemInfo").blocked
-      ? findExtracted(outDir, "iteminfo_new.lub")
+      ? findExtracted(outDir, ITEM_INFO_FILES)
       : null;
   let itemInfoFrom = itemInfoFile ? "grf" : null;
 
@@ -267,7 +279,7 @@ export async function catalogueOrigin(origin, { onProgress, probeRgz = true, rgz
       origin: origin.id,
       rgz: { why: `.txt tables name ${legacy.label} (${(legacy.ratio * 100).toFixed(0)}%)` },
     });
-    const probe = await findInRgz(origin, "system/iteminfo_new.lub", {
+    const probe = await findInRgz(origin, ITEM_INFO_TAILS, {
       limit: rgzLimit,
       outDir,
       onProgress: (p) => onProgress?.({ origin: origin.id, rgz: p }),

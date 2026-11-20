@@ -203,11 +203,18 @@ kRO/kRO Zero/iRO ship no reachable modern table. But item ids are global, so
 those three name **2,753 (kind, view) pairs** — 1,399 top, 459 mid, 635 low,
 260 garment — well beyond the costumes they themselves offer.
 
-thRO ships one too, and it is the widest of the four: it alone knows 19619,
-410368, 410508 and 480591, which is why adding it moved four published rows off
-the *base* item and onto the costume — iRO's "Corsair" 5019 became "Costume:
-Corsair" 19619, and three jRO rows gained their 「衣装」 prefix. The 2,753 figure
-above is the three-source measurement and was not re-run, so it understates.
+thRO ships one too, and **iRO ships one under a name of its own**,
+`System/itemInfo.lub` — see `ITEM_INFO_FILES` in `iteminfo.mjs` for how long
+that cost us. So there are five, and the 2,753 figure above is the three-source
+measurement and was not re-run, so it understates.
+
+Each new one improves the *other* clients, because the `costume` flag is pooled
+across every readable table and the name/id tie-break prefers a flagged id.
+Adding thRO moved four published rows off the *base* item and onto the costume
+(iRO's "Corsair" 5019 → 19619, three jRO rows gaining 「衣装」); adding iRO's moved
+four more jRO rows, one of them off a 「レンタル衣装」 *rental* costume and onto the
+permanent one. That is the strongest argument for adding an origin that brings
+no artwork at all.
 
 Where two clients disagree (236 pairs do), the earlier source wins and the
 sources come in origin order, LATAM first: LATAM is the server the app
@@ -474,24 +481,32 @@ The key is **absent**, never empty, for a client that cannot name the costume �
 `krozero` never appears at all, because kRO Zero ships no item table and no name
 table, which is a different fact from "has no name for this one".
 
-624 of the 663 carry `names`; 390 have one from more than one client. The join
+630 of the 663 carry `names`; 390 have one from more than one client. The join
 is by **resource name**, not view id: a client's `items.tsv` maps item id →
 resource name, a costume's resource name is its sprite, and `names.tsv` turns
 the id into that client's display name. `counts.namesPerOrigin` reports what
-each client could name: jRO 455, twRO 445, thRO 316, twRO Zero 216, iRO 99,
+each client could name: jRO 455, twRO 445, iRO 420, thRO 316, twRO Zero 216,
 LATAM 76, kRO 71.
 
-**iRO is the scarce English source, and that surprises people.** It supplies the
-art for 231 costumes and names only 99, because its item table is small and old.
-That used to be the end of it, and this file used to say the gap was not
-closeable from these clients.
+**English used to be the scarce one here, and it is not any more.** iRO named 99
+of the 663 and was the only English client, which this file reported as a
+property of the clients and a gap that could not be closed. Both halves of that
+were wrong, for two different reasons, and both were found by measuring rather
+than by reasoning about what a region ships.
 
-It was closeable by adding one. **thRO's item table is in English**, not Thai —
-18,843 of its 18,889 names are pure ASCII, 28 carry any Thai script, and those
-28 are local produce and Ayothaya fishing gear. It names 316 of the 663 and 237
-that iRO cannot, so an English-first picker now yields English on **336 of 663
-instead of 99**, and 19 rows that had no name from any client have one.
-`docs/per-client-names.md` has both measurements.
+**thRO's item table is in English**, not Thai — 18,843 of its 18,889 names are
+pure ASCII, 28 carry any Thai script, and those 28 are local produce and
+Ayothaya fishing gear. It names 316 of the 663.
+
+**iRO's own table was ten years stale, and the pipeline's fault.** iRO stopped
+patching `idnum2itemdisplaynametable.txt` on 2016-12-01; its current table is
+`System/itemInfo.lub`, which no other client spells that way, and stage 2 only
+ever looked for `iteminfo_new.lub`. The probe had already downloaded it 33
+times. Reading it takes iRO from **99 names to 420**.
+
+Together: an English-first picker now yields English on **464 of 663** rather
+than 99, and rows with no name from any client fall from 58 to 33.
+`docs/per-client-names.md` has all three measurements.
 
 #### `ids` — the real item id, per client
 
@@ -505,7 +520,7 @@ exists in no client's item table, so a link built from it is a guaranteed 404.
 
 Same join and same key as `names`, and where a client appears in both, **the id
 is the one that very name was read from** — they can never describe two
-different items. `ids` is the wider of the two (628 rows against 624), because a
+different items. `ids` is the wider of the two (634 rows against 630), because a
 client can know an item without naming it.
 
 The AegisName is not a substitute. Searching divine-pride for `Bird_Nest_Hat`
@@ -514,11 +529,12 @@ in the result saying which was meant. The number is unambiguous where the name
 is not.
 
 **The clients do not always agree, and the disagreement is usually meaningful.**
-Of the 470 rows that carry an id from more than one client, 342 give the same
-number everywhere and 128 differ. The breakdown that follows was classified by
-hand on the 112 that differed **before thRO was added**; the 16 thRO brought
-were counted but not classified, so read the three numbers below as a reading of
-that earlier set, not of all 128. 55 genuinely diverge — twRO assigned
+Of the 516 rows that carry an id from more than one client, 379 give the same
+number everywhere and 137 differ. The breakdown that follows was classified by
+hand on the 112 that differed **before thRO and iRO's real table arrived**; the
+25 those two added were counted but not classified, so read the three numbers
+below as a reading of that earlier set, not of all 137. 55 genuinely diverge —
+twRO assigned
 `_Low_Pony_BU` the id 31341 where jRO and LATAM use 31218, and both resolve to
 "Costume: Low Pony (Blue)" on divine-pride, so both are right. The other 57 are
 the tie-break showing through: a shared id exists, but for 51 of them it is the

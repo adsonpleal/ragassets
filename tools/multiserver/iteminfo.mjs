@@ -27,6 +27,26 @@ import { readFileSync } from "node:fs";
 import { LuaTable, decodeClientString, runChunk } from "../../extract-grf.mjs";
 import { parseSlotsFromLines } from "./slots.mjs";
 
+/**
+ * What a client may call this table, in the order we prefer it.
+ *
+ * Most clients ship `System/iteminfo_new.lub`. **iRO ships plain
+ * `System/itemInfo.lub`**, and that one difference cost this pipeline the whole
+ * table: stage 2 probed 36 of iRO's .rgz patches for 96 MB, the ledger recorded
+ * `system/iteminfo.lub` inside 33 of them, and every one was rejected because
+ * the probe was matching `iteminfo_new.lub`. iRO then fell back to its .txt
+ * pair, which it stopped patching on **2016-12-01** — 8,367 names against this
+ * file's 19,749.
+ *
+ * The lesson is not "iRO is different". It is that matching a vendor's filename
+ * is a guess about their filing habits, and here the probe ledger
+ * (index/<origin>/rgz.tsv.probe) already held the answer in plain text.
+ */
+export const ITEM_INFO_FILES = ["iteminfo_new.lub", "iteminfo.lub"];
+
+/** The same, as path tails for the stage-1 index and the .rgz probe. */
+export const ITEM_INFO_TAILS = ITEM_INFO_FILES.map((f) => `system/${f}`);
+
 const PLACEHOLDER = /^(\(null\)|null|n\/a|unknown)$/i;
 
 /**
