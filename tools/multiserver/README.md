@@ -421,7 +421,7 @@ index is the only one all six answer the same way, and it undercounts rather
 than inventing: an archive with no readable file table is invisible to it.
 
 Each entry is `{kind, view, sprite, origin, origins, name, nameOrigin, names,
-aegis, slots, files}`, plus `blank: true` on the 17 that render nothing (stage
+ids, aegis, slots, files}`, plus `blank: true` on the 17 that render nothing (stage
 5b). `name` is whichever client names the item, which is not always the client
 the art came from: an item id is global, so twRO can name a costume iRO
 supplies. `aegis` is the English identifier, a translation base rather than a
@@ -480,6 +480,41 @@ English-first picker therefore yields English on 99 rows and Japanese on 366.
 That is a property of the clients, not of this code, and no second English
 source exists among the six. `docs/per-client-names.md` has the full
 measurement.
+
+#### `ids` — the real item id, per client
+
+A costume's id in the consuming app is synthetic (a base plus the view id) and
+exists in no client's item table, so a link built from it is a guaranteed 404.
+`ids` carries the number each client actually uses:
+
+```json
+"ids": { "latam": 2211, "iro": 2211, "kro": 2211, "jro": 20203, "twro": 20203 }
+```
+
+Same join and same key as `names`, and where a client appears in both, **the id
+is the one that very name was read from** — they can never describe two
+different items. `ids` is the wider of the two (610 rows against 605), because a
+client can know an item without naming it.
+
+The AegisName is not a substitute. Searching divine-pride for `Bird_Nest_Hat`
+returns both 5183 and 20265 — the ordinary hat and the costume — with nothing
+in the result saying which was meant. The number is unambiguous where the name
+is not.
+
+**The clients do not always agree, and the disagreement is usually meaningful.**
+Of the 407 rows that carry an id from more than one client, 295 give the same
+number everywhere. Of the 112 that differ, 55 genuinely diverge — twRO assigned
+`_Low_Pony_BU` the id 31341 where jRO and LATAM use 31218, and both resolve to
+"Costume: Low Pony (Blue)" on divine-pride, so both are right. The other 57 are
+the tie-break showing through: a shared id exists, but for 51 of them it is the
+*base* item — `_두건` is 2211, the ordinary Bandana, in the four clients that
+never shipped the costume, and 20203, `Costume: Bandana`, in the two that did.
+Collapsing those to the shared number would link the wrong thing, so the
+per-client pick is kept and each client's answer published as its own.
+
+A consumer that wants one link per costume rather than one per server should
+take **the highest id in the object**: that lands on the costume item rather
+than the base for 479 of the 489 rows where a costume id exists at all (98.0%).
 
 ### 5b. `find-blank-visuals` — the ones that draw nothing
 
