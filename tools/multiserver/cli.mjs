@@ -4,6 +4,7 @@
 //   node tools/multiserver/cli.mjs status
 //   node tools/multiserver/cli.mjs index       [--origin all] [--limit N]
 //   node tools/multiserver/cli.mjs catalogue   [--origin all] [--no-rgz-probe]
+//   node tools/multiserver/cli.mjs renderable  [--origin latam] [--job N] [--limit N]
 //   node tools/multiserver/cli.mjs shortlist   [--renderable <tsv>] [--app <json>]
 //   node tools/multiserver/cli.mjs plan        [--origin all] [--tiers core]
 //   node tools/multiserver/cli.mjs fetch       [--origin <id>] [--limit N]
@@ -26,11 +27,12 @@
 import { existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ORIGINS, selectOrigins } from "./origins.mjs";
-import { paths, readRows } from "./store.mjs";
+import { paths, readRows, writeRows } from "./store.mjs";
 import { indexOrigin } from "./stage1-index.mjs";
 import { catalogueOrigin, catalogueExists } from "./stage2-catalogue.mjs";
 import { seedOrigin } from "./seed.mjs";
 import { buildShortlist } from "./stage3-shortlist.mjs";
+import { DEFAULT_BASE, probeRenderable } from "./renderprobe.mjs";
 import { buildSlotIndex, readSlotIndex } from "./slotindex.mjs";
 import { planFetch } from "./stage4-plan.mjs";
 import { fetchPlan } from "./stage4-fetch.mjs";
@@ -51,13 +53,15 @@ const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
 function usage(code = 2) {
   console.error(
     [
-      "usage: cli.mjs <status|index|catalogue|seed|shortlist|slots|plan|fetch|publishable|icons|assets> [options]",
+      "usage: cli.mjs <status|index|catalogue|seed|renderable|shortlist|slots|plan|fetch|publishable|icons|assets> [options]",
       "",
       "  --origin all|foreign|<id,id>   default all",
       "  --limit N                      cap archives touched this run",
       "  --from <dir> [--force]         seed: where the *-accessories.tsv live",
       "  --oldest-first                 walk the index forward instead of newest-first",
       "  --include-pulled               also read patches the index marks // pulled",
+      "  --job N                        renderable: class to render on (default 4054)",
+      "  --base <url>                   renderable: which gateway to probe",
       "  --renderable <tsv>             stage 3: the LATAM render probe output",
       "  --app <json>                   stage 3: the app's own costume catalogue",
       "  --dry-run                      stage 4: resolve archives, download nothing",
@@ -214,6 +218,44 @@ async function cmdSeed() {
     const r = seedOrigin(o.id, join(dir, `${o.id}-accessories.tsv`));
     console.error(r ? `${o.id}: seeded ${r.views} views from ${r.from}` : `${o.id}: nothing to seed`);
   }
+}
+
+// Produces the file stage 3 reads next. It lived in the app repo until
+// 2026-11-20, which meant that re-running it after a resolver rebake -- a
+// ragassets maintenance operation -- needed a checkout of the consumer.
+async function cmdRenderable() {
+  const originId = flag("--origin", "latam");
+  const file = join(paths.catalogDir(originId), "views.tsv");
+  if (!existsSync(file)) {
+    throw new Error(
+      `no views.tsv for ${originId} at ${file} — run: cli.mjs catalogue --origin ${originId}`,
+    );
+  }
+  const limit = Number(flag("--limit", 0)) || Infinity;
+  const views = readRows(file)
+    .filter((r) => Number.isInteger(Number(r.view)))
+    .slice(0, limit)
+    .map((r) => ({ view: Number(r.view), sprite: r.sprite }));
+  const base = flag("--base", DEFAULT_BASE);
+  const job = Number(flag("--job", 4054));
+  console.error(`${views.length} view(s) de ${originId} contra ${base}, job ${job}`);
+  const r = await probeRenderable(views, { base, job, log: (m) => console.error(m) });
+  writeRows(
+    paths.renderProbe(),
+    ["view", "sprite", "result", "pose", "bytes"],
+    r.rows.map((x) => [x.view, x.sprite, x.result, x.pose, x.bytes]),
+  );
+  console.error(
+    `${r.counts.drew} desenham, ${r.counts.blank} em branco, ${r.counts.error} com erro ` +
+      `(${views.length + r.extra} renderizações, até ${r.poses} poses por view)`,
+  );
+  // The share is what is worth watching across resolver rebakes: it only moves
+  // when the resolver's own table changes.
+  const decided = r.counts.drew + r.counts.blank;
+  if (decided) {
+    console.error(`    renderizáveis: ${((r.counts.drew / decided) * 100).toFixed(1)}%`);
+  }
+  console.error(`    sonda: ${paths.renderProbe()}`);
 }
 
 async function cmdShortlist() {
@@ -448,6 +490,7 @@ const commands = {
   index: cmdIndex,
   catalogue: cmdCatalogue,
   seed: cmdSeed,
+  renderable: cmdRenderable,
   shortlist: cmdShortlist,
   slots: cmdSlots,
   plan: cmdPlan,

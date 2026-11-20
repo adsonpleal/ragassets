@@ -32,6 +32,8 @@ const accPath = (sex, key = "chapeu") =>
   `data/sprite/악세사리/${sex}/${sex}${key}.spr`;
 import { ORIGINS, parsePatchList, rgzProbeOrder, selectOrigins, GRF_EXT, RGZ_EXT } from "./origins.mjs";
 import { ITEM_INFO_FILES, ITEM_INFO_TAILS } from "./iteminfo.mjs";
+import { ACTIONS, GENDERS, firstPoseThatDraws, poseLadder } from "./renderprobe.mjs";
+import { diffCatalogues, indexRows } from "./diff-catalogues.mjs";
 import { normalizePath, robeTargets, spriteTargets, targetsFor } from "./pathshapes.mjs";
 import { legacyNameCoverage } from "./coverage.mjs";
 import {
@@ -272,6 +274,157 @@ describe("ITEM_INFO_FILES", () => {
         assert.ok(!ITEM_INFO_TAILS.some((t) => p.endsWith(t)), p);
       }
     }
+  });
+});
+
+describe("poseLadder", () => {
+  const BODY = "job=0&frame=0";
+
+  it("tries the thumbnail pose first", () => {
+    // Almost every item is settled by one request, so the pose the grid uses
+    // has to be the one that request spends.
+    assert.strictEqual(poseLadder(BODY)[0], `${BODY}&gender=male&action=0`);
+  });
+
+  it("covers every action in both genders, and nothing twice", () => {
+    const ladder = poseLadder(BODY);
+    assert.strictEqual(ladder.length, ACTIONS.length * GENDERS.length);
+    assert.strictEqual(new Set(ladder).size, ladder.length);
+  });
+});
+
+describe("firstPoseThatDraws", () => {
+  // A fake gateway. The bare character is whatever a pose query alone returns;
+  // a probe for an item renders `<pose>&item=<id>`. `draws` says which poses a
+  // given item is visible in — everything else comes back byte-identical to
+  // the bare character, which is exactly how /image behaves.
+  const fakeGateway = (draws) => async (url) => {
+    const query = String(url).split("?")[1];
+    const m = /&item=([a-z]+)$/.exec(query);
+    const pose = m ? query.slice(0, m.index) : query;
+    const body = m && (draws[m[1]] ?? []).includes(pose) ? `${m[1]}@${pose}` : `bare@${pose}`;
+    return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(body) };
+  };
+
+  const run = (items, ladder) =>
+    firstPoseThatDraws({
+      items,
+      ladder,
+      base: "http://probe.invalid",
+      width: 1,
+      queryFor: (item, pose) => `${pose}&item=${item}`,
+    });
+
+  /** Swaps in the fake gateway for one call and always puts the real one back. */
+  async function withGateway(fetchImpl, body) {
+    const real = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      return await body();
+    } finally {
+      globalThis.fetch = real;
+    }
+  }
+
+  it("stops at the first pose that draws, and charges nothing extra for it", async () => {
+    const ladder = poseLadder("b");
+    let calls = 0;
+    const gateway = fakeGateway({ hat: [ladder[0]] });
+    const r = await withGateway(
+      async (url) => {
+        calls++;
+        return gateway(url);
+      },
+      () => run(["hat"], ladder),
+    );
+    assert.strictEqual(r.drew.get("hat").pose, ladder[0]);
+    assert.strictEqual(r.extra, 0);
+    // One baseline per pose, then a single probe: an item that draws standing
+    // costs one request, which is what keeps a whole-catalogue sweep affordable.
+    assert.strictEqual(calls, ladder.length + 1);
+  });
+
+  it("finds a sprite that only draws once the character moves", async () => {
+    // The case a single-pose probe gets wrong, and the reason the ladder
+    // exists: iRO's _low_pony_bu is empty standing, sitting and walking.
+    const ladder = poseLadder("b");
+    const late = ladder[3];
+    const r = await withGateway(fakeGateway({ late: [late] }), () => run(["late"], ladder));
+    assert.strictEqual(r.drew.get("late").pose, late);
+    assert.strictEqual(r.extra, 3);
+  });
+
+  it("calls a sprite blank only after every pose, and never on an error", async () => {
+    const ladder = poseLadder("b");
+    const bare = fakeGateway({});
+    const r = await withGateway(
+      async (url) => (String(url).includes("item=boom") ? { ok: false, status: 503 } : bare(url)),
+      () => run(["ghost", "boom"], ladder),
+    );
+    // Nothing drew in any pose: that, and only that, is the blank verdict.
+    assert.strictEqual(r.drew.get("ghost"), null);
+    // A request that could not be made is not a verdict about the sprite. The
+    // blank sweep deletes tiles from the app's catalogue on this answer.
+    assert.notStrictEqual(r.drew.get("boom"), null);
+    assert.ok(r.drew.get("boom").error, "an unreachable probe must report an error");
+    assert.strictEqual(r.errors, 1);
+  });
+});
+
+describe("diffCatalogues", () => {
+  it("skips the header row rather than reading it as a view", () => {
+    // readRows already strips it; the guard is for a hand-made TSV, and for the
+    // app-repo original's habit of splitting every line positionally.
+    const s = indexRows([{ view: "view", sprite: "sprite" }, { view: "7", sprite: "_hat" }]);
+    assert.deepStrictEqual([...s.byView.keys()], [7]);
+  });
+
+  it("takes the Korean sprite name, falling back to the English one", () => {
+    const s = indexRows([
+      { view: "1", sprite: "_kr", spriteEng: "eng" },
+      { view: "2", sprite: "", spriteEng: "only_eng" },
+    ]);
+    assert.strictEqual(s.byView.get(1).sprite, "_kr");
+    assert.strictEqual(s.byView.get(2).sprite, "only_eng");
+  });
+
+  it("separates a real disagreement from a view only one side names", () => {
+    // The app-repo original conflated the two, which is why LATAM against jRO
+    // read as 3 accessory conflicts where this repo has always recorded 2.
+    const a = indexRows([
+      { view: "1", sprite: "_same" },
+      { view: "2", sprite: "_ours" },
+      { view: "3", sprite: "_only_we_name_it" },
+    ]);
+    const b = indexRows([
+      { view: "1", sprite: "_same" },
+      { view: "2", sprite: "_theirs" },
+      { view: "3", sprite: "" },
+    ]);
+    const d = diffCatalogues(a, b);
+    assert.deepStrictEqual(d.viewConflicts, [2]);
+    assert.deepStrictEqual(d.viewUnnamedOneSide, [3]);
+    assert.strictEqual(d.bothNamed.length, 2);
+  });
+
+  it("reports a name that moved view id, and one new to the other side", () => {
+    const a = indexRows([{ view: "10", sprite: "_moved" }, { view: "11", sprite: "_ours" }]);
+    const b = indexRows([{ view: "20", sprite: "_moved" }, { view: "21", sprite: "_theirs" }]);
+    const d = diffCatalogues(a, b);
+    assert.deepStrictEqual(d.movedNames, ["_moved"]);
+    assert.deepStrictEqual(d.onlyA, ["_ours"]);
+    assert.deepStrictEqual(d.onlyB, ["_theirs"]);
+  });
+
+  it("flags a sprite name used by two view ids in one client", () => {
+    // Where that happens, keying by name is itself ambiguous, so it is a
+    // finding to report and not a duplicate to tidy away.
+    const a = indexRows([{ view: "1", sprite: "_twice" }, { view: "2", sprite: "_twice" }]);
+    const d = diffCatalogues(a, indexRows([]));
+    assert.deepStrictEqual(
+      d.dupesA.map(([n, rows]) => [n, rows.map((r) => r.view)]),
+      [["_twice", [1, 2]]],
+    );
   });
 });
 

@@ -14,6 +14,71 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-20
+
+### Added
+- **The render probe lives here now**, as `cli.mjs renderable`. It writes
+  `app/renderable.tsv` — the file stage 3 has always read to decide what LATAM
+  already draws — and until today its *producer* was a script in the app's
+  repository. Re-running it after a resolver rebake is a ragassets maintenance
+  operation, so it needed a checkout of the consumer to perform. Adopted from
+  the app repo's `tools/explore/`, which is being deleted.
+
+  It asks `/image` for a bare `headgear=<view>` with **no sprite name**, because
+  that is the question: a view id the resolver cannot map renders the character
+  with no headgear, byte for byte the same PNG as asking for no headgear at all,
+  so neither the status code nor the content type can be read for an answer.
+
+- **`diff-catalogues.mjs`**, likewise adopted: does a view id mean the same
+  sprite on two servers? Re-measured all seven origins against LATAM, and the
+  answer that shaped the catalogue holds — six agree on every shared accessory
+  view id, and **jRO disagrees on 2** (`_C_L_Knitting_Low_Twin` at 2007,
+  `_C_CLB_DT_TS_Hood` at 2696) plus one garment. Two is enough: a bare view id
+  from another server is not safe, which is why the catalogue publishes
+  `<view>:<sprite>`. It now reads this pipeline's own `catalog/<origin>/*.tsv`
+  through `store.mjs`, so the usual invocation is two origin ids and no paths.
+
+### Fixed
+- **`diff-catalogues` counted a missing sprite name as a disagreement.** jRO
+  read as 3 accessory conflicts where this repo has always recorded 2; the third
+  is view 880, which LATAM calls `_1` and jRO's table leaves blank. Both facts
+  are worth reporting and they are not the same fact, so they are now two
+  separate counts. This reconciles the tool with the number the design notes
+  carry.
+- **The renderable probe inherited a one-pose verdict**, which cannot
+  distinguish "the resolver has never heard of this view id" from "this sprite
+  defines no frames that early" — and only the first means the art is missing.
+  `find-blank-visuals.mjs` had already paid for that lesson in this repo: asking
+  the standing pose alone accused 47 costumes of being blank and five of them
+  draw once the character moves. The probe now escalates through the same ten
+  poses. On 400 LATAM views it changed no verdict (3 blank, all blank in all ten
+  poses) and cost 27 extra renders, so this is insurance rather than a measured
+  fix — but the failure it insures against is documented, in this directory.
+
+### Notes
+- The bare-character comparison, the pose ladder, the retry policy and the
+  concurrency pool are now in **`renderprobe.mjs`**, shared by both probes
+  rather than written twice. The duplication is how the one-pose bug survived in
+  one copy while the other had been fixed.
+- `find-blank-visuals.mjs` no longer defaults its input to the *app's*
+  `public/db/foreign-costumes.json`, a path that does not exist in this
+  repository; it reads the pipeline's own published catalogue, with `--items`
+  for the app's copy. It also now fails on an unreachable probe instead of
+  returning a shorter list, since its output deletes tiles from the consumer's
+  catalogue.
+- `store.mjs` claimed `renderable.tsv` was "the app's and not this pipeline's".
+  It never was: it describes our renderer. `costumes.json` beside it genuinely
+  is the consumer's, and still is.
+- Two other tools from that folder are being deleted rather than adopted, and
+  nothing here replaces them: `grf-remote-list.mjs` is superseded by `grf.mjs`
+  plus `net.mjs`, and `gsf-extract.mjs` was a one-shot whose finding (kRO's
+  `flags=0x80` entries are plain deflate) is already in `grf.mjs`.
+- Still not probed: **garment view ids.** `renderable.tsv` is accessory-only,
+  because the probe drives `headgear=` and stage 3 reads every row as an
+  accessory view. `/image` takes `garment=` too, so this is a column and a
+  reader change, not a new technique — left alone rather than bundled into an
+  adoption commit that changes a format stage 3 depends on.
+
 ## 2026-11-19 (4)
 
 ### Fixed

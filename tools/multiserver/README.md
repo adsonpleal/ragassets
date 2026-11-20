@@ -30,6 +30,8 @@ cache/<origin>/               downloaded archives
 catalog/<origin>/             views.tsv (headgear), robes.tsv (garment),
                               items.tsv, names.tsv, costumes.tsv
 mirror/<origin>/data/...      extracted assets, newest patch wins
+app/renderable.tsv            which view ids our own resolver draws (`renderable`)
+app/costumes.json             what the consumer already lists — copied in, not ours
 shortlist.tsv                 what is missing, and which origins have it
 slots.tsv                     which slot each (kind, view) equips in
 plan.tsv                      which archive each wanted file is read from
@@ -156,25 +158,56 @@ re-finding them:
 node tools/multiserver/cli.mjs seed          # views.tsv only, no item names
 ```
 
+### 2b. `renderable` — which view ids our own resolver can draw
+
+```bash
+node tools/multiserver/cli.mjs renderable                    # all of LATAM's views
+node tools/multiserver/cli.mjs renderable --limit 400 --job 4054
+```
+
+Writes `app/renderable.tsv`, which stage 3 reads. **This is the file that says
+what we already have**, and it cannot be derived from any client's tables: it is
+a fact about our own resolver and mirror, so the only way to get it is to ask
+the gateway to render each view id and look at what came back.
+
+`/image` answers **200 with the bare character** for a view id the resolver does
+not know, byte for byte the same PNG as a request that asked for no headgear at
+all, so neither the status code nor the content type can be read for an answer.
+The probe therefore renders the bare character once per pose up front and
+compares bytes.
+
+It asks with a bare `headgear=<view>` and **no sprite name**, which is the whole
+point: the resolver's own table has to supply the art. (`find-blank-visuals`
+asks the opposite question with the same machinery — see 5c — and passes the
+sprite explicitly.) A view that looks blank is retried through ten poses before
+being called blank, because "the resolver has never heard of this id" and "this
+sprite defines no frames that early" are different facts and only the first
+means the art is missing. Only the blanks pay for the extra nine: 400 views cost
+427 renders.
+
+This lived in the app's repository until 2026-11-20, which meant that re-running
+it after a resolver rebake — a ragassets maintenance operation — needed a
+checkout of the consumer. Shared machinery is in `renderprobe.mjs`.
+
 ### 3. `shortlist` — what is actually missing
 
 ```bash
 node tools/multiserver/cli.mjs shortlist
 ```
 
-Joins every catalogued client against the app's own list
-(`public/db/costumes.json`) and the LATAM render probe
-(`docs/data/renderable.tsv`), and writes one row per view id in the union with a
-`need` column. Nothing is filtered out of the file — a stage that drops rows is
-one you cannot audit.
+Joins every catalogued client against two things that are not any client's
+tables: the consumer's own list (`app/costumes.json`, copied into the state root
+because ragassets does not own the consumer) and the render probe above
+(`app/renderable.tsv`, which we do own). Writes one row per view id in the union
+with a `need` column. Nothing is filtered out of the file — a stage that drops
+rows is one you cannot audit.
 
 Current numbers (5 clients catalogued): 2,934 view ids, of which 1,192 are
 listed in the app, 1,054 render on our mirror already, 613 are named by our
 client but draw nothing, and 75 are not in our client at all.
 
-The render probe matters because `/image` answers **200 with the bare body** for
-a view id the resolver does not know, so "does this exist?" cannot be read off
-the status code.
+Both inputs are optional and both change the answer, so a run without one says
+so rather than reporting that every view in every client is missing.
 
 ### 3b. `slots` — which slot each costume equips in
 
@@ -574,6 +607,41 @@ standing pose alone accused 47, and five of those draw perfectly well once the
 character moves — iRO's `_low_pony_bu` is empty standing, walking and sitting,
 and draws from action type 3 on. Only a costume that fails the first pose pays
 for the other nine: 822 renders for 592 costumes.
+
+The bare-character comparison, the pose ladder and the retry policy live in
+`renderprobe.mjs`, shared with `renderable` (2b). The two tools ask opposite
+questions — "does the resolver know this id?" versus "does this art, whose
+location we already know, draw?" — with one mechanism.
+
+### 5c. `diff-catalogues` — is a view id portable between servers?
+
+```bash
+node tools/multiserver/diff-catalogues.mjs latam jro [--kind robe] [--list]
+node tools/multiserver/diff-catalogues.mjs a.tsv b.tsv --label-a X --label-b Y
+```
+
+The tool behind the decision that the catalogue publishes `<view>:<sprite>` and
+tells the renderer the name. It answers two questions over two clients'
+`catalog/<origin>/{views,robes}.tsv`: how many view ids both define with a
+**different** sprite name, and how many sprite names sit at a different view id.
+
+Measured across all seven origins against LATAM, the accessory namespace agrees
+everywhere except jRO:
+
+| against LATAM | both name a sprite | disagree | only one side names it |
+|---|---|---|---|
+| iRO, twRO, twRO Zero, kRO, kRO Zero, thRO | 2,734–2,859 | **0** | 0 |
+| jRO | 2,799 | **2** | 1 |
+
+Two is enough. `_C_L_Knitting_Low_Twin` and `_C_CLB_DT_TS_Hood` are different
+sprites at the same ids in jRO (2007 and 2696), plus one garment — jRO's view
+136 is `20th_Anniversary_Wing` where LATAM's is `C_20th_Anniversary_Wing`. A
+bare view id from another server is therefore not safe, and the name is.
+
+The third jRO row the app-repo original reported is view 880, which LATAM calls
+`_1` and jRO's table leaves blank. That is not a disagreement about which sprite
+an id is, and this version counts it separately — which is why that tool said 3
+and this repo has always recorded 2.
 
 ### 6. `icons` — the inventory picture of each costume
 

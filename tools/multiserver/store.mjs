@@ -48,11 +48,14 @@ export const paths = {
   slots: () => join(ROOT, "slots.tsv"),
   catalogue: () => join(ROOT, "foreign-costumes.json"),
   iconsDir: () => join(ROOT, "icons"),
-  // The two inputs that are the *app's* and not this pipeline's: what it
-  // already lists, and which LATAM views its probe saw render. They live under
-  // the state root rather than in this repository because they describe the
-  // consumer, and ragassets does not own the consumer — stage 3 says so when
-  // they are missing instead of quietly deciding everything is needed.
+  // Stage 3's two extra inputs, the ones no client's tables can supply.
+  // appCostumes genuinely is the *app's* and not ours: it says what the consumer
+  // already lists, and ragassets does not own the consumer, so it is copied in.
+  // renderProbe sat beside it for the same stated reason until the producer
+  // moved here on 2026-11-20 — it describes **our own renderer**, nothing about
+  // the consumer, and cli.mjs renderable writes it. Both are optional and both
+  // change the answer, so stage 3 says so when one is missing instead of
+  // quietly deciding that everything is needed.
   appDir: () => join(ROOT, "app"),
   appCostumes: () => join(ROOT, "app", "costumes.json"),
   renderProbe: () => join(ROOT, "app", "renderable.tsv"),
