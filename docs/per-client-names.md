@@ -27,10 +27,15 @@ here is what it would actually produce across the 663:
 **So the app would show Japanese on 366 rows and English on 99.** That is not a
 flaw in the ordering — it is that iRO's item table is small and old. It holds
 8,367 names and reaches only 99 of our costumes, the same reason it resolved
-only 100 item ids. Nothing among the six clients has broader English: there is
-no second English source to fall back to. If English coverage is the actual
-goal, this route does not deliver it and the gap is not closeable from these
-clients.
+only 100 item ids. Nothing among **these six** clients has broader English:
+there is no second English source to fall back to here.
+
+> **The conclusion below is superseded; the numbers are not. See "thRO closes
+> the English gap" at the end of this document.** What this section measured
+> over six clients still holds for those six. The sentence that used to stand
+> here — that the gap is not closeable from these clients — was true of the six
+> and wrong about the world: a seventh client, thRO, ships an English table and
+> takes English coverage from 99 to 336 of 663.
 
 Per-client naming power, independent of the order (how many each client *could*
 name, not how many it has art for):
@@ -180,3 +185,96 @@ Publishing it is a copy, not a deploy: `foreign-costumes.json` lives under
 `deploy/deploy-from-ci.sh` never writes, so a merge to `main` does not carry it
 up. See `foreign-icons-on-the-box.md` in the session notes for that trap in
 full.
+
+---
+
+# thRO closes the English gap
+
+Measured 2026-11-19, after the section above was already published. It answers
+the question that section left open, and it reverses that section's conclusion.
+
+## thRO's item table is English, not Thai
+
+I registered thRO expecting a Thai name source. It is not one:
+
+| | count |
+|---|---|
+| names in its table | 18,889 |
+| pure ASCII | **18,843** |
+| containing any Thai script | **28** |
+
+The 28 are local items — corn, lemon, Ayothaya fishing gear. The client is
+Thai; its item table is English. The `windows-874` encoding on the origin entry
+is still required, for those 28.
+
+## What that does to English coverage
+
+| | of 663 |
+|---|---|
+| iRO can name | 99 |
+| thRO can name | 316 |
+| **either of them can name** | **336** |
+
+thRO names **237 costumes iRO cannot**. An English-first picker therefore goes
+from 99 rows to 336, and **19 rows that had no name from any client now have
+one** — `_C_Angler_Dream` → "Costume Angler Dream", `C_B_Ninetail_Tail` →
+"Costume Nine-Tailed Fox of Blazing Crimson Flames", and 17 others.
+
+## It also corrected four rows that were already published
+
+thRO's `iteminfo_new.lub` is the fourth readable one and the only one that knows
+items 19619, 410368, 410508 and 480591 — all four flagged `costume`. The
+costume-over-base tie-break could therefore resolve four rows it had been
+getting wrong:
+
+| sprite | before | after |
+|---|---|---|
+| `_커세어` (iRO) | Corsair, 5019 | **Costume: Corsair, 19619** |
+| `_Perm_Frost_Oblivion` (jRO) | パーマフロストオブリビオン, 410365 | **[衣装] パーマフロストオブリビオン, 410368** |
+| `_Midgard_Integrity` (jRO) | セレスティアルインテグリティ, 410504 | **[衣装] セレスティアルインテグリティ, 410508** |
+| `Glutton_Cerberus` (jRO) | グラットンサーベラス, 480590 | **[衣装] グラットンサーベラス, 480591** |
+
+These are exactly the base-vs-costume confusion the `ids` measurement warned
+about. Adding a client fixed four of them, for free, in two other clients'
+names.
+
+## What it does not add
+
+Almost nothing in view terms, which is worth stating because it is the reason
+*not* to expect much here:
+
+- **2** accessory views LATAM lacks (2885, already a catalogue row; 2935, new)
+- **0** garment views LATAM lacks
+- **236** published rows gain `thro` in `origins` — these are rows whose art
+  thRO's own archives ship, counted from the path index. Its *view* table lists
+  582, which is the global-accessory-table over-report `originsFromPaths`
+  exists to avoid; 236 is the honest number.
+
+Its view numbering agrees with ours **perfectly**: 2,763 shared accessory views
+and all 308 garments, zero disagreements. jRO, by comparison, disagrees on 3.
+
+## Unique art it has and nobody else ships
+
+23 headgear and 26 garment sprites appear in no other origin's archives. After
+discarding the ones already catalogued, **19 headgears and 10 garments** are
+genuinely new and carry a view id in thRO's own table — RWC/RTC tournament
+crowns, `_c_mask_of_ifrit`, `_c_puriku_cap`, the `_rtc2021_reward_*_th` set.
+Nothing has been fetched for them; that is a separate job.
+
+One trap for anyone repeating this: 4,617 of thRO's garment paths repeat their
+folder (`/sprite/로브/c_x/c_x/…`). It is a packaging quirk, not different art,
+and leaving it in makes every such costume look thRO-exclusive. Normalising it
+drops unique paths from 3,552 to 2,868 and removes 9 false "new" garments.
+
+## Published
+
+`thro` keys are live in `/raw/foreign-costumes.json`: 316 names, 316 ids, 236
+`origins` entries, `withNames` 605 → **624**, `withIds` 610 → **628**, 663 rows
+unchanged. Every origin with a name still has an id, 0 exceptions. 376,202
+bytes, sha256
+`1f99197a07ebd4c4b5056e12e87807efb2e6e62eacc5fa0762dab3eafebb4141`.
+
+`name` and `nameOrigin` are untouched — they come from the shortlist, not from
+this join, so the 19 newly-named rows still have `name: null` and a consumer
+that wants best-available reads `names`. Changing that would mean re-running
+stage 3, which re-fetches.

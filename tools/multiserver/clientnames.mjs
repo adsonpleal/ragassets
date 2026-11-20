@@ -15,13 +15,20 @@
 //
 // Measured over the 663 costumes in the 2026-11-19 catalogue:
 //
-//   jro 455   twro 445   twrozero 216   iro 99   latam 76   kro 71   krozero 0
+//   jro 455   twro 445   thro 316   twrozero 216   iro 99   latam 76
+//   kro 71   krozero 0
 //
-// 390 of 663 get a name from more than one client. iRO is the scarce one — its
-// item table is small and old — so an English-first order yields English for 99
-// and Japanese for 366. That is a property of the clients, not of this code.
+// 624 of 663 get a name from at least one client and 390 from more than one.
 // kRO Zero ships no item table and no name table at all, so it can never appear
-// as a key here. See docs/per-client-names.md.
+// as a key here.
+//
+// thRO is the second English source, added 2026-11-19. Its table is English
+// despite the client being Thai — 18,843 of its 18,889 names are pure ASCII and
+// 28 carry any Thai script — and it names 237 costumes iRO cannot, so an
+// English-first order now yields English on 336 of 663 rather than 99. That
+// retires the claim this comment used to make, that the English gap could not
+// be closed from these clients: it could, by adding one.
+// See docs/per-client-names.md.
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
