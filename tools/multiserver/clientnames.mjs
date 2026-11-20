@@ -32,7 +32,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { readItemInfo } from "./iteminfo.mjs";
+import { ITEM_INFO_FILES, readItemInfo } from "./iteminfo.mjs";
 import { ORIGINS } from "./origins.mjs";
 import { paths, readRows } from "./store.mjs";
 
@@ -148,11 +148,17 @@ export function readClientNameTables({ root = null } = {}) {
     if (!existsSync(itemsFile) || !existsSync(namesFile)) continue;
     const items = readRows(itemsFile).map((r) => [Number(r.item), r.resource]);
     const names = new Map(readRows(namesFile).map((r) => [Number(r.item), r.name]));
-    const underscored = existsSync(join(dir, "raw", "data", "idnum2itemdisplaynametable.txt"));
+    // The modern table wins in stage 2, so its presence is what decides this.
+    // A client can ship BOTH, as iRO does, and iRO's .txt is from 2016 while its
+    // `itemInfo.lub` is current; asking only "is the .txt here?" would apply the
+    // underscore transform to names that never had underscores, and would damage
+    // any modern name that legitimately contains one.
+    const info = ITEM_INFO_FILES.map((f) => join(dir, "raw", f)).find((p) => existsSync(p));
+    const underscored =
+      !info && existsSync(join(dir, "raw", "data", "idnum2itemdisplaynametable.txt"));
     tables.push({ origin, items, names, underscored });
 
-    const info = join(dir, "raw", "iteminfo_new.lub");
-    if (existsSync(info)) {
+    if (info) {
       try {
         for (const [id, it] of readItemInfo(info).items) if (it.costume) costumeIds.add(Number(id));
       } catch {
