@@ -84,12 +84,37 @@ function pickName(ids, nameById, isCostume) {
     if (!byName.has(raw)) byName.set(raw, id);
   }
   if (!byName.size) return null;
-  for (const [name, id] of byName) if (isCostume(id)) return name;
-  return [...byName.keys()][0];
+  for (const [name, id] of byName) if (isCostume(id)) return { name, id };
+  const [name, id] = [...byName][0];
+  return { name, id };
 }
 
 /**
- * Build sprite -> { origin: name } from each client's own two tables.
+ * That client's item id for the sprite, by the same tie-break, for a row whose
+ * name is missing or a placeholder.
+ *
+ * Kept separate from `pickName` so that publishing the id cannot move a name:
+ * where a name was chosen, the published id is the id that name came from, and
+ * the two always describe the same item. This fallback only fires where there
+ * is no name to be consistent with.
+ */
+function pickId(ids, isCostume) {
+  const sorted = [...ids].sort((a, b) => a - b);
+  return sorted.find((id) => isCostume(id)) ?? sorted[0] ?? null;
+}
+
+/**
+ * Build sprite -> `{ names: {origin: name}, ids: {origin: itemId} }` from each
+ * client's own two tables.
+ *
+ * The id is published because it is the only thing an item database can be
+ * linked by. A costume's app-side id is synthetic — a base plus the view id —
+ * and exists in nobody's item table, so a link built from it is a guaranteed
+ * 404. The AegisName is not a substitute: searching divine-pride for
+ * `Bird_Nest_Hat` returns both 5183 and 20265, the ordinary hat and the
+ * costume, with nothing in the result saying which was meant.
+ *
+ * `ids` is wider than `names`: a client can know an item without naming it.
  *
  * `tables` is injected so this can be tested without a state root: one entry
  * per client, `items` as [itemId, resourceName] pairs, `names` as a Map of
@@ -98,8 +123,11 @@ function pickName(ids, nameById, isCostume) {
  */
 export function clientNamesBySprite({ tables = [], isCostume = () => false } = {}) {
   const out = new Map();
-  for (const { origin, items = [], names, underscored = false } of tables) {
-    if (!names || !names.size) continue;
+  const at = (sprite) => {
+    if (!out.has(sprite)) out.set(sprite, { names: {}, ids: {} });
+    return out.get(sprite);
+  };
+  for (const { origin, items = [], names = new Map(), underscored = false } of tables) {
     // sprite -> every item id that client gives that resource name
     const idsBySprite = new Map();
     for (const [id, resource] of items) {
@@ -109,12 +137,22 @@ export function clientNamesBySprite({ tables = [], isCostume = () => false } = {
       idsBySprite.get(k).add(Number(id));
     }
     for (const [sprite, ids] of idsBySprite) {
-      const raw = pickName(ids, names, isCostume);
-      if (raw === null) continue;
-      const display = underscored ? spaceOut(raw) : String(raw).trim();
-      if (isPlaceholderName(display)) continue;
-      if (!out.has(sprite)) out.set(sprite, {});
-      out.get(sprite)[origin] = display;
+      const picked = names.size ? pickName(ids, names, isCostume) : null;
+      if (picked) {
+        const display = underscored ? spaceOut(picked.name) : String(picked.name).trim();
+        if (!isPlaceholderName(display)) {
+          const row = at(sprite);
+          row.names[origin] = display;
+          // The id this very name came from, so `names[o]` and `ids[o]` can
+          // never describe two different items.
+          row.ids[origin] = picked.id;
+          continue;
+        }
+      }
+      // No usable name from this client, but it still knows the item. The id is
+      // worth publishing on its own: it is what a database link needs.
+      const id = pickId(ids, isCostume);
+      if (id !== null) at(sprite).ids[origin] = id;
     }
   }
   return out;
