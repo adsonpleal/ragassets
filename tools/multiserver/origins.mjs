@@ -101,6 +101,18 @@ export const ORIGINS = {
     files: "https://rollive-patch.gnjoy.com.tw/patchfile",
     encoding: "big5",
   },
+  thro: {
+    id: "thro",
+    label: "thRO",
+    badge: "thRO",
+    index: "https://ropatch.gnjoy.in.th/patchinfo/patch.txt",
+    files: "https://ropatch.gnjoy.in.th/patchfile",
+    // TIS-620 — `tis-620` and `iso-8859-11` are both labels for `windows-874`
+    // in the WHATWG encoding set, which is what TextDecoder implements, so the
+    // canonical name is the one written here.
+    encoding: "windows-874",
+    note: "v0x102 like twRO; the only origin that names anything in Thai",
+  },
 };
 
 /** Every origin except ours, which is where the new costumes would come from. */
