@@ -332,9 +332,18 @@ export function buildCatalogue({
       //
       // Absent, never empty: a client with no table (kRO Zero has neither) is
       // not a client with no name, and an empty object would claim otherwise.
+      // `ids` is each client's real item id for this costume — the only key an
+      // item database can be linked by, since the app's own id is synthetic and
+      // exists in no client's table. Wider than `names`, because a client can
+      // know an item without naming it, and where both are present they are the
+      // same item: the id published is the one the name was read from.
       ...(() => {
-        const n = clientNames.get(normResource(s.sprite));
-        return n && Object.keys(n).length ? { names: n } : {};
+        const row = clientNames.get(normResource(s.sprite));
+        if (!row) return {};
+        const out = {};
+        if (row.names && Object.keys(row.names).length) out.names = row.names;
+        if (row.ids && Object.keys(row.ids).length) out.ids = row.ids;
+        return out;
       })(),
       // The English identifier, the only English any client ships. It is a
       // translation base, not a display name.
@@ -360,6 +369,10 @@ export function buildCatalogue({
   // How many costumes each client can name, which is not how many it has art
   // for: iRO supplies the art for 231 and names 99.
   const namesPerOrigin = {};
+  let withIds = 0;
+  let idsAgree = 0;
+  let idsDisagree = 0;
+  const idsPerOrigin = {};
   for (const c of costumes) {
     perOrigin[c.origin] = (perOrigin[c.origin] ?? 0) + 1;
     for (const s of c.slots.length ? c.slots : ["?"]) perSlot[s] = (perSlot[s] ?? 0) + 1;
@@ -369,6 +382,18 @@ export function buildCatalogue({
     if (c.names) {
       withNames++;
       for (const o of Object.keys(c.names)) namesPerOrigin[o] = (namesPerOrigin[o] ?? 0) + 1;
+    }
+    if (c.ids) {
+      withIds++;
+      for (const o of Object.keys(c.ids)) idsPerOrigin[o] = (idsPerOrigin[o] ?? 0) + 1;
+      // Whether the clients that know this costume call it the same number.
+      // They descend from one item_db, so they mostly do; where they do not,
+      // a consumer cannot link once per costume and has to pick a server.
+      const distinct = new Set(Object.values(c.ids));
+      if (Object.keys(c.ids).length > 1) {
+        if (distinct.size === 1) idsAgree++;
+        else idsDisagree++;
+      }
     }
   }
 
@@ -380,6 +405,10 @@ export function buildCatalogue({
       withAegis,
       withNames,
       namesPerOrigin,
+      withIds,
+      idsPerOrigin,
+      idsAgree,
+      idsDisagree,
       blank: blankCount,
       perOrigin,
       perSlot,
@@ -407,6 +436,8 @@ export function catalogueDocument({ costumes, stats }, { generatedAt } = {}) {
       withAegis: stats.withAegis,
       withNames: stats.withNames,
       namesPerOrigin: stats.namesPerOrigin,
+      withIds: stats.withIds,
+      idsPerOrigin: stats.idsPerOrigin,
       blank: stats.blank,
       perOrigin: stats.perOrigin,
       perSlot: stats.perSlot,

@@ -66,6 +66,39 @@ and do not describe the system today. Check the date before trusting an entry;
   the box and the deploy does not carry it. sha256
   `1f99197a07ebd4c4b5056e12e87807efb2e6e62eacc5fa0762dab3eafebb4141`.
 
+## 2026-11-19 (2)
+
+### Added
+- **`/raw/foreign-costumes.json` now carries `ids`** — each client's real item
+  id for the costume, keyed by origin like `names`. This is what an item
+  database can be linked by: the consuming app's own id is synthetic (a base
+  plus the view id) and exists in no client's table, so every such link was a
+  guaranteed 404 and the app suppressed it. 610 of the 663 rows have an id,
+  which is wider than `names`' 605 because a client can know an item without
+  naming it.
+
+  Where a client appears in both fields the published id is **the one that very
+  name was read from**, so the two can never describe different items. The
+  AegisName could not do this job: searching divine-pride for `Bird_Nest_Hat`
+  returns 5183 and 20265, the ordinary hat and the costume, with nothing saying
+  which was meant.
+
+  **The clients disagree on 112 of the 407 rows that several of them know, and
+  that is mostly correct rather than a bug.** 55 genuinely diverge — twRO gives
+  `_Low_Pony_BU` the id 31341 where jRO and LATAM use 31218, and both resolve to
+  "Costume: Low Pony (Blue)". The other 57 are the costume-vs-base split: a
+  shared id exists but for 51 of them it is the *base* item, so collapsing to it
+  would link the ordinary hat. Each client's answer is therefore published as
+  its own. A consumer wanting one link should take the highest id in the object,
+  which is the costume item for 479 of the 489 rows where one exists (98.0%).
+
+  Verified by fetching: 15882 → Rhythm Hairband, 20203 → Costume: Bandana,
+  20073 → Costume: Hair Band, 400311 → Costume: Helmet of Light and Darkness,
+  31218 and 31341 → Costume: Low Pony (Blue). All six are the right costume.
+
+  `names` is untouched: regenerating proved zero rows differ outside the new
+  field.
+
 ## 2026-11-19
 
 ### Added
