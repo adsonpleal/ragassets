@@ -334,6 +334,12 @@ async function cmdPublishable() {
   console.error(
     `    ${stats.withNames} com nomes por cliente: ${JSON.stringify(stats.namesPerOrigin)}`,
   );
+  console.error(
+    `    ${stats.withIds} com id real de item: ${JSON.stringify(stats.idsPerOrigin)}`,
+  );
+  console.error(
+    `    ids entre clientes: ${stats.idsAgree} concordam, ${stats.idsDisagree} divergem`,
+  );
   console.error(`    por origem: ${JSON.stringify(stats.perOrigin)}`);
   console.error(`    por slot:   ${JSON.stringify(stats.perSlot)}`);
   // An incomplete costume is left out on purpose: it would be a 404 with a name.

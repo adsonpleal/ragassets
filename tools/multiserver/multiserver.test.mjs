@@ -1160,22 +1160,29 @@ describe("buildCatalogue", () => {
       probe,
       present: (origin, path) => path !== "b.spr",
       // The catalogue's sprite is `bom`; a client's table would hold `_Bom`.
-      clientNames: new Map([["bom", { iro: "Good Hat", jro: "[衣装] 良い帽子" }]]),
+      clientNames: new Map([
+        ["bom", { names: { iro: "Good Hat", jro: "[衣装] 良い帽子" }, ids: { iro: 20073, jro: 20073 } }],
+      ]),
     });
     assert.deepStrictEqual(withNames.costumes[0].names, {
       iro: "Good Hat",
       jro: "[衣装] 良い帽子",
     });
+    assert.deepStrictEqual(withNames.costumes[0].ids, { iro: 20073, jro: 20073 });
     hasFields(withNames.stats, {
       withNames: 1,
       namesPerOrigin: { iro: 1, jro: 1 },
+      withIds: 1,
+      idsPerOrigin: { iro: 1, jro: 1 },
+      idsAgree: 1,
+      idsDisagree: 0,
     });
   });
 
   it("omits `names` rather than publishing an empty object", () => {
     // kRO Zero ships no item table at all, so "no key" is the honest statement
     // and `{}` would claim we looked and found nothing.
-    for (const clientNames of [new Map(), new Map([["bom", {}]])]) {
+    for (const clientNames of [new Map(), new Map([["bom", { names: {}, ids: {} }]])]) {
       const got = buildCatalogue({
         plan,
         shortlist,
@@ -1185,7 +1192,8 @@ describe("buildCatalogue", () => {
         clientNames,
       });
       assert.ok(!("names" in got.costumes[0]));
-      hasFields(got.stats, { withNames: 0, namesPerOrigin: {} });
+      assert.ok(!("ids" in got.costumes[0]));
+      hasFields(got.stats, { withNames: 0, namesPerOrigin: {}, withIds: 0, idsPerOrigin: {} });
     }
   });
 });
@@ -1209,15 +1217,18 @@ describe("clientNamesBySprite", () => {
 
   it("prefers the costume-flagged id when several items share a sprite", () => {
     const got = clientNamesBySprite({ tables, isCostume: (id) => id === 20203 });
-    assert.deepStrictEqual(got.get("두건"), {
+    assert.deepStrictEqual(got.get("두건").names, {
       iro: "Costume: Bandana",
       twro: "(服飾)方頭巾",
     });
+    // The id published is the one that very name was read from.
+    assert.deepStrictEqual(got.get("두건").ids, { iro: 20203, twro: 20203 });
   });
 
   it("falls back to the lowest id when nothing is flagged", () => {
     const got = clientNamesBySprite({ tables });
-    assert.deepStrictEqual(got.get("두건"), { iro: "Bandana", twro: "方頭巾" });
+    assert.deepStrictEqual(got.get("두건").names, { iro: "Bandana", twro: "方頭巾" });
+    assert.deepStrictEqual(got.get("두건").ids, { iro: 2211, twro: 2211 });
   });
 
   it("keys on the normalised sprite, so `_Name` and `name` meet", () => {
@@ -1230,7 +1241,8 @@ describe("clientNamesBySprite", () => {
         },
       ],
     });
-    assert.deepStrictEqual(got.get("c_rhythm_hairband"), { jro: "リズム" });
+    assert.deepStrictEqual(got.get("c_rhythm_hairband").names, { jro: "リズム" });
+    assert.deepStrictEqual(got.get("c_rhythm_hairband").ids, { jro: 1 });
     assert.strictEqual(got.get("_c_rhythm_hairband"), undefined);
   });
 
@@ -1238,14 +1250,16 @@ describe("clientNamesBySprite", () => {
     const got = clientNamesBySprite({ tables, isCostume: (id) => id === 20203 });
     // `(服飾)` is the only thing separating this from the base item of the same
     // name, so it is published as the client writes it.
-    assert.match(got.get("두건").twro, /^[(（]服飾/);
+    assert.match(got.get("두건").names.twro, /^[(（]服飾/);
   });
 
   it("drops a client that has no name table rather than keying it empty", () => {
     const got = clientNamesBySprite({
       tables: [{ origin: "krozero", items: [[1, "두건"]], names: new Map() }, ...tables],
     });
-    assert.ok(!("krozero" in got.get("두건")));
+    // No name table, so no name — but it still knows the item id.
+    assert.ok(!("krozero" in got.get("두건").names));
+    assert.strictEqual(got.get("두건").ids.krozero, 1);
   });
 
   it("skips the placeholders the clients ship for unreleased rows", () => {
@@ -1258,7 +1272,9 @@ describe("clientNamesBySprite", () => {
         },
       ],
     });
-    assert.strictEqual(got.size, 0);
+    // No usable name anywhere, but the ids are still worth publishing.
+    assert.strictEqual([...got.values()].filter((r) => Object.keys(r.names).length).length, 0);
+    assert.deepStrictEqual(got.get("x").ids, { kro: 1 });
   });
 });
 
