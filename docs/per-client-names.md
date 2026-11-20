@@ -278,3 +278,117 @@ bytes, sha256
 this join, so the 19 newly-named rows still have `name: null` and a consumer
 that wants best-available reads `names`. Changing that would mean re-running
 stage 3, which re-fetches.
+
+---
+
+# iRO's table was ten years stale, and that was our bug
+
+Measured 2026-11-19, right after thRO. thRO closed the English gap from the
+outside; this closes it from the inside, and the cause turned out to be in this
+repository rather than in iRO's client.
+
+## What was being read
+
+iRO's `data/idnum2itemdisplaynametable.txt` holds **8,367** names, which looks
+small for a current client. It is not a stale *copy* — the index holds 219
+copies of that file and we were reading the newest, 208,274 bytes. It is a stale
+*file*: iRO's last patch to it was
+
+| | |
+|---|---|
+| newest copy of the .txt table | seq **3009**, `2016-12-01data_gm_desc_r.gpf` |
+| newest sequence in iRO's index | seq **5707** |
+
+Ten years of items were never written to it. iRO kept patching other `.txt`
+tables (`resnametable`, `mapnametable`, `cardprefixnametable`) right up to seq
+5660, so this was specific to item display names.
+
+## Where the current table lives, and why we missed it
+
+`System/itemInfo.lub`, inside a `.rgz` patch — **10,286,541 bytes**, dated
+2026-11-17, 20,046 items, **19,763 display names**, and 2,363 of them flagged
+`costume`.
+
+Every other client calls that file `iteminfo_new.lub`. iRO calls it
+`itemInfo.lub`. Stage 2 looked only for the former, so iRO fell through to the
+2016 `.txt`.
+
+**The evidence had been in our own ledger for two days.**
+`index/iro/rgz.tsv.probe` records what each probed archive contained:
+
+```
+archives probed: 36    bytes downloaded: 96,073,838
+archives whose contents include system/iteminfo.lub: 33
+```
+
+The probe found the file 33 times and discarded it 33 times on a string
+compare. Re-reading it cost **zero new bandwidth** — all 36 archives were still
+in `cache/iro`. The fix is `ITEM_INFO_FILES` in `iteminfo.mjs`: one list of the
+names this file can have, used by the stage-1 wanted table, `findExtracted` and
+`findInRgz`.
+
+A second trap came with it. `clientnames.mjs` decided the underscore transform
+by whether the origin had `idnum2itemdisplaynametable.txt` on disk. iRO has
+**both** that file and the current lub, so the transform would have been applied
+to lub names that never had an underscore, and would have damaged any modern
+name legitimately containing one. It now asks whether a modern table is present,
+which is what stage 2 actually prefers.
+
+## What it gains
+
+| | of 663 |
+|---|---|
+| iRO names, before | 99 |
+| iRO names, after | **420** |
+| rows gaining an iRO name | **321** |
+| rows losing one | **0** |
+| English (iRO or thRO), before | 336 |
+| English (iRO or thRO), after | **464** |
+| rows with no name from any client | 39 → **33** |
+
+iRO ids go from 100 to 421.
+
+## The 29 iRO names that changed, and why none is a regression
+
+| | count | what it is |
+|---|---|---|
+| same item, iRO reworded it | 18 | 14 are only the colon dropped: `Costume: Fillet` → `Costume Fillet` |
+| different item | 11 | the base item replaced by the costume |
+
+The 11 are the point: `Unicorn Horn` (2257) → `Costume Unicorn Horn` (20272),
+`Panda Hat` (5030) → `Costume Panda Hat` (19733), and `Surprised Mask` (5088) →
+`Costume Goblin Mask` (19793) — that last one was not even the same hat.
+
+The colon is iRO's own change of style, not ours: the 2016 `.txt` wrote
+`Costume:_Corsair` and the current lub writes `Costume Corsair`. We publish what
+the client says.
+
+## It improved jRO too
+
+The `costume` flag is pooled across every readable table, so a wider table
+sharpens the tie-break for *other* clients. iRO's added 2,363 flags and moved
+four jRO rows off the wrong item:
+
+| sprite | before | after |
+|---|---|---|
+| `_오크히어로투구` | オークヒーローの兜, 5094 | **[衣装] オークヒーローの兜, 20385** |
+| `_아프로가발` | アフロかつら, 5258 | **[衣装] アフロかつら, 400132** |
+| `_C_Elegant_Wave` | **[レンタル衣装]** エレガントウェーブ, 20476 | **[衣装] エレガントウェーブ, 31944** |
+| `_C_Sakura_Witch_Hat_W` | 桜の白魔女帽子, 400721 | **[衣装] 桜の白魔女帽子, 400898** |
+
+The third was showing jRO's *rental* version of the costume.
+
+## Published
+
+397,706 bytes, sha256
+`6f4785bce0b8039f8ec944767e055d754cfa7d482dfd6049e11185b3903fe5a7`, verified
+byte-identical over the public URL. `withNames` 624 → **630**, `withIds` 628 →
+**634**, 663 rows unchanged, `origins` untouched, 0 invariant violations, and
+every origin with a name still has an id.
+
+## Not done
+
+**Slots.** `slotindex.mjs` also reads `raw/iteminfo_new.lub` by name, so iRO's
+table does not feed it yet and `counts.perSlot` is unchanged. Slots are product
+data the app needs to show a costume at all, so changing them is a separate
+measurement, not a side effect of this one.
