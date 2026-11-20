@@ -214,6 +214,24 @@ describe("ORIGINS", () => {
       assert.ok(o.badge.length <= 5, `${id} badge is ${o.badge.length} chars, max 5`);
     }
   });
+
+  // An encoding here is a WHATWG label, not a charset name of one's own
+  // choosing: TextDecoder throws on anything it does not know, and it throws at
+  // the point a name table is being decoded -- hours into a run, in stage 2,
+  // after the bandwidth has been spent. thRO is the reason this exists: its
+  // client is TIS-620, which the WHATWG set calls `windows-874`, and writing
+  // `tis-620` or `iso-8859-11` would also have worked while `TIS620` would
+  // not. Asserting it here costs nothing and moves the failure to CI.
+  it("labels every encoding with something TextDecoder accepts", () => {
+    for (const [id, o] of Object.entries(ORIGINS)) {
+      assert.doesNotThrow(() => new TextDecoder(o.encoding), `${id}: ${o.encoding}`);
+    }
+  });
+
+  it("registers thRO, the second English name source", () => {
+    assert.ok(ORIGINS.thro, "thro must stay registered");
+    assert.strictEqual(new TextDecoder(ORIGINS.thro.encoding).encoding, "windows-874");
+  });
 });
 
 describe("rgzProbeOrder", () => {

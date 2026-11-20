@@ -70,6 +70,7 @@ node tools/multiserver/cli.mjs index --origin kro,krozero &   # ropatch.gnjoy.co
 node tools/multiserver/cli.mjs index --origin twro,twrozero & # *.gnjoy.com.tw
 node tools/multiserver/cli.mjs index --origin iro        &   # gravityus.com (FTP)
 node tools/multiserver/cli.mjs index --origin latam      &   # gnjoylatam.com
+node tools/multiserver/cli.mjs index --origin thro       &   # gnjoy.in.th
 ```
 
 Each process writes only its own origin's ledger, so there is nothing to
@@ -196,11 +197,17 @@ Chinese joins with `/`, `、`, or nothing at all (`頭上中下`), and sometimes
 into the next field with no separator (`頭上重量: 0`) — so the parser checks for
 上/中/下 inside a 頭-prefixed value rather than matching whole words.
 
-Only three origins ship a readable `iteminfo_new.lub` (LATAM, twRO, twRO Zero);
-jRO's legacy `.txt` pair carries no description, and kRO/kRO Zero/iRO ship no
-reachable modern table. But item ids are global, so those three name **2,753
-(kind, view) pairs** — 1,399 top, 459 mid, 635 low, 260 garment — well beyond
-the costumes they themselves offer.
+Only three of the first seven origins ship a readable `iteminfo_new.lub`
+(LATAM, twRO, twRO Zero); jRO's legacy `.txt` pair carries no description, and
+kRO/kRO Zero/iRO ship no reachable modern table. But item ids are global, so
+those three name **2,753 (kind, view) pairs** — 1,399 top, 459 mid, 635 low,
+260 garment — well beyond the costumes they themselves offer.
+
+thRO ships one too, and it is the widest of the four: it alone knows 19619,
+410368, 410508 and 480591, which is why adding it moved four published rows off
+the *base* item and onto the costume — iRO's "Corsair" 5019 became "Costume:
+Corsair" 19619, and three jRO rows gained their 「衣装」 prefix. The 2,753 figure
+above is the three-source measurement and was not re-run, so it understates.
 
 Where two clients disagree (236 pairs do), the earlier source wins and the
 sources come in origin order, LATAM first: LATAM is the server the app
@@ -467,19 +474,24 @@ The key is **absent**, never empty, for a client that cannot name the costume �
 `krozero` never appears at all, because kRO Zero ships no item table and no name
 table, which is a different fact from "has no name for this one".
 
-605 of the 663 carry `names`; 390 have one from more than one client. The join
+624 of the 663 carry `names`; 390 have one from more than one client. The join
 is by **resource name**, not view id: a client's `items.tsv` maps item id →
 resource name, a costume's resource name is its sprite, and `names.tsv` turns
 the id into that client's display name. `counts.namesPerOrigin` reports what
-each client could name: jRO 455, twRO 445, twRO Zero 216, iRO 99, LATAM 76,
-kRO 71.
+each client could name: jRO 455, twRO 445, thRO 316, twRO Zero 216, iRO 99,
+LATAM 76, kRO 71.
 
-**iRO is the scarce one, and that surprises people.** It supplies the art for
-231 costumes and names 99, because its item table is small and old. An
-English-first picker therefore yields English on 99 rows and Japanese on 366.
-That is a property of the clients, not of this code, and no second English
-source exists among the six. `docs/per-client-names.md` has the full
-measurement.
+**iRO is the scarce English source, and that surprises people.** It supplies the
+art for 231 costumes and names only 99, because its item table is small and old.
+That used to be the end of it, and this file used to say the gap was not
+closeable from these clients.
+
+It was closeable by adding one. **thRO's item table is in English**, not Thai —
+18,843 of its 18,889 names are pure ASCII, 28 carry any Thai script, and those
+28 are local produce and Ayothaya fishing gear. It names 316 of the 663 and 237
+that iRO cannot, so an English-first picker now yields English on **336 of 663
+instead of 99**, and 19 rows that had no name from any client have one.
+`docs/per-client-names.md` has both measurements.
 
 #### `ids` — the real item id, per client
 
@@ -493,7 +505,7 @@ exists in no client's item table, so a link built from it is a guaranteed 404.
 
 Same join and same key as `names`, and where a client appears in both, **the id
 is the one that very name was read from** — they can never describe two
-different items. `ids` is the wider of the two (610 rows against 605), because a
+different items. `ids` is the wider of the two (628 rows against 624), because a
 client can know an item without naming it.
 
 The AegisName is not a substitute. Searching divine-pride for `Bird_Nest_Hat`
@@ -502,8 +514,11 @@ in the result saying which was meant. The number is unambiguous where the name
 is not.
 
 **The clients do not always agree, and the disagreement is usually meaningful.**
-Of the 407 rows that carry an id from more than one client, 295 give the same
-number everywhere. Of the 112 that differ, 55 genuinely diverge — twRO assigned
+Of the 470 rows that carry an id from more than one client, 342 give the same
+number everywhere and 128 differ. The breakdown that follows was classified by
+hand on the 112 that differed **before thRO was added**; the 16 thRO brought
+were counted but not classified, so read the three numbers below as a reading of
+that earlier set, not of all 128. 55 genuinely diverge — twRO assigned
 `_Low_Pony_BU` the id 31341 where jRO and LATAM use 31218, and both resolve to
 "Costume: Low Pony (Blue)" on divine-pride, so both are right. The other 57 are
 the tie-break showing through: a shared id exists, but for 51 of them it is the
@@ -514,7 +529,8 @@ per-client pick is kept and each client's answer published as its own.
 
 A consumer that wants one link per costume rather than one per server should
 take **the highest id in the object**: that lands on the costume item rather
-than the base for 479 of the 489 rows where a costume id exists at all (98.0%).
+than the base for 479 of the 489 rows where a costume id exists at all (98.0%),
+measured before thRO and re-checked only in aggregate since.
 
 ### 5b. `find-blank-visuals` — the ones that draw nothing
 

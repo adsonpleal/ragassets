@@ -14,6 +14,58 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-19 (3)
+
+### Added
+- **thRO is a seventh origin**, and it turned out to be the English name source
+  this pipeline has been missing. `thro` keys are live in
+  `/raw/foreign-costumes.json`: **316 names, 316 ids**, and `thro` in `origins`
+  on 236 rows. `withNames` went 605 → **624**, `withIds` 610 → **628**, the row
+  count stays 663, and the file grew from 350,589 to 376,202 bytes.
+
+  **Its item table is English, not Thai.** 18,843 of its 18,889 names are pure
+  ASCII and 28 carry any Thai script (local produce, Ayothaya fishing gear). It
+  names 237 costumes iRO cannot, so an English-first consumer goes from **99 to
+  336 of 663**, and 19 rows that had no name from any client now have one. The
+  `windows-874` encoding on the origin entry stays — those 28 names need it.
+
+  `docs/per-client-names.md` said the English gap was "not closeable from these
+  clients". That was true of the six it measured and wrong about the world; the
+  document now carries both measurements and the correction.
+
+### Fixed
+- **Four already-published rows were naming the base item, not the costume.**
+  thRO ships the fourth readable `iteminfo_new.lub` and the only one that knows
+  items 19619, 410368, 410508 and 480591, all flagged `costume`, so the
+  costume-over-base tie-break could finally resolve them: iRO's `_커세어` went
+  from "Corsair" (5019) to **"Costume: Corsair" (19619)**, and three jRO rows
+  gained their 「衣装」 prefix and the matching id. This is the base-vs-costume
+  confusion the `ids` work warned about, fixed in two *other* clients' names by
+  adding a third.
+
+### Notes
+- **It adds almost no views, and that is the point of recording it.** 2
+  accessory views LATAM lacks (one already a catalogue row), 0 garments. Its
+  view numbering agrees with ours perfectly — 2,763 shared accessory views and
+  all 308 garments, zero disagreements, where jRO disagrees on 3. Index cost:
+  1,997 live archives, 1,022 listed, 934 `.rgz`, **0 blocked** (no v0x300),
+  27.2 MB read, 336,489 paths. 41 archives failed on transient network errors
+  and are in the ledger, so a re-run retries only those.
+- `origins` gains `thro` on 236 rows, not the 582 its *view* table would
+  suggest: 236 is counted from the path index, which is what
+  `originsFromPaths` exists for.
+- **19 headgear and 10 garment sprites that no other origin ships** have a view
+  id in thRO's table and are not in the catalogue — RWC/RTC tournament crowns,
+  `_c_mask_of_ifrit`, the `_rtc2021_reward_*_th` set. Nothing was fetched for
+  them; adding them is a separate job (stage 3/4 plus icons).
+- `name` and `nameOrigin` are untouched. They come from the shortlist, not from
+  this join, so the 19 newly-named rows still read `name: null`; a consumer
+  that wants best-available reads `names`. Changing that means re-running stage
+  3, which re-fetches from seven CDNs.
+- The published file went up by `scp`, as before — `resources/` is gitignored on
+  the box and the deploy does not carry it. sha256
+  `1f99197a07ebd4c4b5056e12e87807efb2e6e62eacc5fa0762dab3eafebb4141`.
+
 ## 2026-11-19 (2)
 
 ### Added

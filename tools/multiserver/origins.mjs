@@ -101,6 +101,24 @@ export const ORIGINS = {
     files: "https://rollive-patch.gnjoy.com.tw/patchfile",
     encoding: "big5",
   },
+  thro: {
+    id: "thro",
+    label: "thRO",
+    badge: "thRO",
+    index: "https://ropatch.gnjoy.in.th/patchinfo/patch.txt",
+    files: "https://ropatch.gnjoy.in.th/patchfile",
+    // TIS-620 — `tis-620` and `iso-8859-11` are both labels for `windows-874`
+    // in the WHATWG encoding set, which is what TextDecoder implements, so the
+    // canonical name is the one written here.
+    encoding: "windows-874",
+    // Its names are NOT Thai, measured 2026-11-19: 18,843 of its 18,889 item
+    // names are pure ASCII English and only 28 carry any Thai script (local
+    // produce and Ayothaya fishing items). It is a second English name source,
+    // which is the scarce one here — iRO names 99 of our 663 costumes and thRO
+    // names 316, 234 of them ones iRO cannot. The encoding still matters for
+    // those 28. See docs/per-client-names.md.
+    note: "v0x102 like twRO; a second English name table, not a Thai one",
+  },
 };
 
 /** Every origin except ours, which is where the new costumes would come from. */
