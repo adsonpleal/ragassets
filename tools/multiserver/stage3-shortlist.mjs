@@ -76,15 +76,30 @@ function readCatalogue(originId) {
   return { views, names, items, aegis };
 }
 
-function readRenderProbe(file) {
+/**
+ * The render probe's verdicts, keyed the way everything else here is keyed.
+ *
+ * The file gained a leading `kind` column on 2026-11-20, when the probe learnt
+ * to drive `garment=` as well. Before that every row was an accessory view by
+ * construction, and this read them as such — which is exactly the bug: a
+ * garment view could never be reported as drawing, because none was ever
+ * asked about. A file written by the old tool is still readable (its header
+ * starts at `view`), and it still means what it meant: accessories only.
+ */
+export function readRenderProbe(file) {
   const out = new Map();
   if (!file || !existsSync(file)) return out;
-  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+  const lines = readFileSync(file, "utf8").split(/\r?\n/);
+  const header = (lines[0] ?? "").split("\t");
+  const hasKind = header[0] === "kind";
+  for (const line of lines) {
     if (!line.trim()) continue;
-    const [view, , result] = line.split("\t");
+    const cols = line.split("\t");
+    const [kind, view, , result] = hasKind ? cols : ["acc", ...cols];
     const v = Number(view);
-    // The probe drove /image?headgear=<view>, so every row is an accessory view.
-    if (Number.isInteger(v) && result) out.set(keyOf("acc", v), result);
+    if (!Number.isInteger(v) || !result) continue;
+    if (kind !== "acc" && kind !== "robe") continue;
+    out.set(keyOf(kind, v), result);
   }
   return out;
 }

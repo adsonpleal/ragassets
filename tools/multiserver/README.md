@@ -161,7 +161,8 @@ node tools/multiserver/cli.mjs seed          # views.tsv only, no item names
 ### 2b. `renderable` — which view ids our own resolver can draw
 
 ```bash
-node tools/multiserver/cli.mjs renderable                    # all of LATAM's views
+node tools/multiserver/cli.mjs renderable                    # both tables, all of LATAM's views
+node tools/multiserver/cli.mjs renderable --kind robe        # garments only
 node tools/multiserver/cli.mjs renderable --limit 400 --job 4054
 ```
 
@@ -176,14 +177,39 @@ all, so neither the status code nor the content type can be read for an answer.
 The probe therefore renders the bare character once per pose up front and
 compares bytes.
 
-It asks with a bare `headgear=<view>` and **no sprite name**, which is the whole
-point: the resolver's own table has to supply the art. (`find-blank-visuals`
-asks the opposite question with the same machinery — see 5c — and passes the
-sprite explicitly.) A view that looks blank is retried through ten poses before
-being called blank, because "the resolver has never heard of this id" and "this
-sprite defines no frames that early" are different facts and only the first
-means the art is missing. Only the blanks pay for the extra nine: 400 views cost
-427 renders.
+It asks with a bare `headgear=<view>` / `garment=<view>` and **no sprite name**,
+which is the whole point: the resolver's own table has to supply the art.
+(`find-blank-visuals` asks the opposite question with the same machinery — see
+5c — and passes the sprite explicitly.) A view that looks blank is retried
+through ten poses before being called blank, because "the resolver has never
+heard of this id" and "this sprite defines no frames that early" are different
+facts and only the first means the art is missing. Only the blanks pay for the
+extra nine: 400 views cost 427 renders.
+
+**Both namespaces, and until 2026-11-20 only one of them was asked.** The probe
+drove `headgear=` alone and the file carried no `kind` column, so stage 3 read
+every row as an accessory view. No garment view was ever probed, which is not
+the same as "no garment draws" but reads identically off the shortlist: all 338
+of its `robe` rows said `listed`, `unprobed` or `absent`, never `draws` or
+`blank`. Anyone counting "views our mirror draws that no catalogue lists" off
+that column got **zero garments by construction** — and an audit did, before the
+numbers below were measured by driving `garment=` by hand.
+
+What the two tables actually say, over LATAM's 2,859 accessory and 330 garment
+views: the garment half is **223 drawing, 107 blank**, and 76 of the drawing
+ones are views `costumes.json` does not list. The row now leads with `kind`, and
+a file written by the old tool is still read — as accessories, which is what
+those rows meant.
+
+The ladder is the same for both. Walking extra classes before calling a garment
+blank looks obviously right — a garment is a folder with one sprite pair per
+class and sex, so partial art is invisible on the wrong body — and was measured
+away: every one of the 223 is settled on the asked-for class, and two more
+classes changed no verdict while tripling what each blank costs. That case
+belongs to `find-blank-visuals.mjs`, which renders a foreign mirror; this probe
+asks our own resolver, whose tree is complete. The *pose* half does earn its
+keep: 11 of the 223 draw nothing standing and appear only from action type 1 or
+3 on, the school bags and the Poring bag among them.
 
 This lived in the app's repository until 2026-11-20, which meant that re-running
 it after a resolver rebake — a ragassets maintenance operation — needed a
@@ -202,9 +228,23 @@ because ragassets does not own the consumer) and the render probe above
 with a `need` column. Nothing is filtered out of the file — a stage that drops
 rows is one you cannot audit.
 
-Current numbers (5 clients catalogued): 2,934 view ids, of which 1,192 are
-listed in the app, 1,054 render on our mirror already, 613 are named by our
-client but draw nothing, and 75 are not in our client at all.
+The probe's verdicts are keyed `<kind>:<view>` like everything else here. They
+were keyed `acc:<view>` unconditionally until 2026-11-20, which was correct for
+what the probe then produced and wrong the moment it learnt to ask about
+garments — see 2b for what that cost.
+
+Current numbers (8 clients catalogued, both namespaces probed): **3,272 view
+ids** — 2,934 headgear and 338 garment — of which 1,237 are listed in the app,
+**1,251 render on our mirror already** (1,174 headgear, 77 garment), 701 are
+named by our client but draw nothing, and 83 are not in our client at all.
+`need` is **784**: 669 headgear and 115 garment.
+
+Probing the garment table moved that `need` by itself. It was 981, and **197 of
+those views the plan wanted to fetch and did not need to** — 77 garments it
+turns out we already draw, plus 120 headgears the probe had never reached
+because the file on disk was a 400-view slice. Nothing moved the other way. On
+this README's own per-garment average (~629 files, ~27 MB) those 77 are roughly
+2 GB of planned download that was never needed.
 
 Both inputs are optional and both change the answer, so a run without one says
 so rather than reporting that every view in every client is missing.
