@@ -233,11 +233,24 @@ were keyed `acc:<view>` unconditionally until 2026-11-20, which was correct for
 what the probe then produced and wrong the moment it learnt to ask about
 garments — see 2b for what that cost.
 
+**The consumer's rows need the same care.** A slot normally says which namespace
+a view id lives in, and reading it is right for 1,236 of the app's 1,239 items.
+For the other three it is backwards, and the app says so with a `viewKind`
+field — which it publishes *only* where it disagrees with the slot, so every row
+that carries one was read wrong: "Buquê Gigantesco" equips in Baixo and its 128
+is a robe, two shields equip in Capa and their 2827/2828 are accessory ids. Each
+one marked a view listed that is a different costume in the other table, and
+left the real one reading unlisted. `acc:128` is a worked example: it is the
+Opera Phantom Mask, which we draw and do not list, and it read `listed` because
+a bouquet cape borrowed its key.
+
 Current numbers (8 clients catalogued, both namespaces probed): **3,272 view
-ids** — 2,934 headgear and 338 garment — of which 1,237 are listed in the app,
-**1,251 render on our mirror already** (1,174 headgear, 77 garment), 701 are
-named by our client but draw nothing, and 83 are not in our client at all.
-`need` is **784**: 669 headgear and 115 garment.
+ids** — 2,934 headgear and 338 garment — of which 1,239 are listed in the app,
+**1,249 render on our mirror already**, 701 are named by our client but draw
+nothing, and 83 are not in our client at all. `need` is **784**: 669 headgear
+and 115 garment. The `viewKind` fix moved no row into or out of `need` — all
+four misread views draw either way — so it corrects what the file says about our
+own instance, not what the plan would fetch.
 
 Probing the garment table moved that `need` by itself. It was 981, and **197 of
 those views the plan wanted to fetch and did not need to** — 77 garments it

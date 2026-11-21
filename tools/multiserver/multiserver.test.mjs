@@ -43,7 +43,7 @@ import {
   poseLadder,
   probeRenderable,
 } from "./renderprobe.mjs";
-import { readRenderProbe } from "./stage3-shortlist.mjs";
+import { readAppViews, readRenderProbe } from "./stage3-shortlist.mjs";
 import { diffCatalogues, indexRows } from "./diff-catalogues.mjs";
 import { normalizePath, robeTargets, spriteTargets, targetsFor } from "./pathshapes.mjs";
 import { legacyNameCoverage } from "./coverage.mjs";
@@ -504,6 +504,50 @@ describe("readRenderProbe", () => {
   it("is empty for a file that is not there, rather than throwing", () => {
     // Both of stage 3's inputs are optional; a run without one says so.
     assert.strictEqual(readRenderProbe(join(tmpdir(), "no-such-renderable.tsv")).size, 0);
+  });
+});
+
+describe("readAppViews", () => {
+  const write = (doc) => {
+    const f = join(mkdtempSync(join(tmpdir(), "appviews-")), "costumes.json");
+    writeFileSync(f, JSON.stringify(doc), "utf8");
+    return f;
+  };
+
+  it("takes the namespace from the slot when the app says nothing else", () => {
+    const got = readAppViews(
+      write({
+        items: [
+          { id: 1, name: "hat", slots: ["top"], view: 11 },
+          { id: 2, name: "cape", slots: ["garment"], view: 11 },
+        ],
+      }),
+    );
+    assert.deepStrictEqual([...got].sort(), ["acc:11", "robe:11"]);
+  });
+
+  it("obeys viewKind, which the app publishes only when the slot is wrong", () => {
+    // "Buquê Gigantesco" equips in Baixo and its 128 is the C_Clutch_Bouquet
+    // robe; two shields equip in Capa and their ids are accessory ids. Reading
+    // the slot alone got all three backwards — it marked a view listed that is
+    // a different costume in the other table, and left the real one unlisted.
+    const got = readAppViews(
+      write({
+        items: [
+          { id: 480177, name: "Buquê Gigantesco", slots: ["low"], viewKind: "garment", view: 128 },
+          { id: 480807, name: "Escudo Petulante", slots: ["garment"], viewKind: "headgear", view: 2828 },
+        ],
+      }),
+    );
+    assert.deepStrictEqual([...got].sort(), ["acc:2828", "robe:128"]);
+  });
+
+  it("skips a row with no usable view id", () => {
+    // View 0 is the invisible costumes; a missing one is an effect-only row.
+    const got = readAppViews(
+      write({ items: [{ id: 1, slots: ["top"], view: 0 }, { id: 2, slots: ["top"] }] }),
+    );
+    assert.strictEqual(got.size, 0);
   });
 });
 

@@ -104,15 +104,28 @@ export function readRenderProbe(file) {
   return out;
 }
 
-function readAppViews(file) {
+/**
+ * Which (kind, view) pairs the consumer already lists.
+ *
+ * The slot normally says which namespace the view id lives in — a garment slot
+ * means the robe table, a head slot means the accessory table. Where it does
+ * not, the app publishes `viewKind` to say so, and it publishes it **only on
+ * disagreement**, so reading the slot and ignoring that field gets every row
+ * that carries one exactly backwards. All three of today's do: "Buquê
+ * Gigantesco" equips in Baixo while its 128 is the C_Clutch_Bouquet robe, and
+ * two shields equip in Capa while their 2827/2828 are accessory ids. Each one
+ * marked a view listed that is a different costume in the other table, and left
+ * the real one reading unlisted.
+ */
+export function readAppViews(file) {
   const out = new Set();
   if (!file || !existsSync(file)) return out;
   const json = JSON.parse(readFileSync(file, "utf8"));
   const items = Array.isArray(json) ? json : (json.items ?? []);
   for (const it of items) {
     if (!Number.isInteger(it.view) || !it.view) continue;
-    // The app's own slots say which namespace the item's view id belongs to.
-    out.add(keyOf((it.slots ?? []).includes("garment") ? "robe" : "acc", it.view));
+    const slotKind = (it.slots ?? []).includes("garment") ? "garment" : "headgear";
+    out.add(keyOf((it.viewKind ?? slotKind) === "garment" ? "robe" : "acc", it.view));
   }
   return out;
 }
