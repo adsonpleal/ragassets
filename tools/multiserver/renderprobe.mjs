@@ -10,11 +10,21 @@
 // Two tools in this directory need that, asking different questions:
 //
 //   * `probeRenderable` — does the resolver know this view id? Drives
-//     `/image?headgear=<view>` with **no sprite override**, so the resolver's
-//     own table has to supply the art. Produces renderable.tsv, which stage 3
-//     reads to decide what LATAM already draws.
+//     `/image?headgear=<view>` or `/image?garment=<view>` with **no sprite
+//     override**, so the resolver's own table has to supply the art. Produces
+//     renderable.tsv, which stage 3 reads to decide what LATAM already draws.
 //   * `find-blank-visuals.mjs` — does this costume draw, given that we already
 //     know where its art is? Passes the sprite explicitly.
+//
+// **Both namespaces, or the answer is silently half an answer.** Until
+// 2026-11-20 this probe drove `headgear=` only and renderable.tsv had no `kind`
+// column, so stage 3 read every row as an accessory view and no garment view
+// was ever asked about. The shortlist could therefore never say `draws` or
+// `blank` for a garment — all 338 of its `robe` rows read `listed`, `unprobed`
+// or `absent` — and anyone counting "views we already draw and do not list"
+// off that column got zero garments by construction. Asking `garment=` for
+// LATAM's 330 garment views: 223 draw, and 76 of those are views the consumer
+// does not list.
 //
 // **One pose is not enough, and that is the whole reason this module exists.**
 // The first version of the blank sweep asked for the standing pose alone and
@@ -146,38 +156,95 @@ export async function firstPoseThatDraws({
  *  resolver's accessory table and a class that owns a head sprite exercises it. */
 export const renderableBody = (job) => `job=${job}&frame=0`;
 
+/** The two sprite tables `/image` can be asked about, and the parameter that
+ *  drives each. They are separate numberings — LATAM's 8 is a surgical mask as
+ *  a headgear and Rudra's wings as a garment — so a key is `<kind>:<view>`
+ *  everywhere downstream and a row without its kind is unreadable. */
+export const VIEW_PARAM = { acc: "headgear", robe: "garment" };
+export const KINDS = Object.keys(VIEW_PARAM);
+
+/** The ladder is the same for both namespaces, and that was worth checking.
+ *
+ *  A garment is a *folder* — one sprite pair per class and sex, ~624 files —
+ *  so a costume whose client shipped only some classes is invisible on the
+ *  wrong body, a way of looking blank that a headgear (two files, worn by every
+ *  class) cannot have. That argues for walking several classes before calling a
+ *  garment blank. Measured over all 330 of LATAM's garment views: **every one
+ *  of the 223 that draws is settled on the asked-for class**, and adding two
+ *  more changed no verdict while tripling what each blank costs. It does not
+ *  apply here because this probe asks our *own* resolver, whose tree is
+ *  complete; the partial-art case belongs to find-blank-visuals.mjs, which
+ *  renders a foreign mirror.
+ *
+ *  The *pose* half of the ladder does earn its keep: 11 of those 223 draw
+ *  nothing standing and only appear from action type 1 or 3 on — the school
+ *  bags and the Poring bag among them. */
+export const ladderFor = (kind, job) => poseLadder(renderableBody(job));
+
 /**
  * Which of these view ids does the resolver actually know?
  *
- * Deliberately asks with a bare `headgear=<view>` and no sprite name: that is
- * the question. A view id the resolver cannot map renders the character with no
- * headgear, byte for byte the same as asking for no headgear at all.
+ * Deliberately asks with a bare `headgear=<view>` / `garment=<view>` and no
+ * sprite name: that is the question. A view id the resolver cannot map renders
+ * the character with nothing equipped, byte for byte the same as asking for
+ * nothing at all.
  *
- * @param views [{view, sprite}] — sprite is carried through to the output only
- * @returns rows [{view, sprite, result, pose, bytes}] where result is
+ * One sweep per namespace. The two tables are unrelated numberings and each
+ * gets its own ladder from `ladderFor` — which happens to return the same one
+ * today, for the reason recorded there.
+ *
+ * @param views [{kind, view, sprite}] — kind defaults to "acc"; sprite is
+ *   carried through to the output only
+ * @returns rows [{kind, view, sprite, result, pose, bytes}] where result is
  *   `drew` | `blank` | `error:<message>`
  */
 export async function probeRenderable(views, { base = DEFAULT_BASE, job = 4054, width = 4, log } = {}) {
-  const ladder = poseLadder(renderableBody(job));
-  const { drew, extra, errors } = await firstPoseThatDraws({
-    items: views,
-    ladder,
-    base,
-    width,
-    log,
-    queryFor: (v, pose) => `${pose}&headgear=${v.view}`,
-  });
+  const withKind = views.map((v) => ({ ...v, kind: v.kind ?? "acc" }));
+  const results = new Map();
+  let extra = 0;
+  let errors = 0;
+  let poses = 0;
+  for (const kind of KINDS) {
+    const items = withKind.filter((v) => v.kind === kind);
+    if (!items.length) continue;
+    const ladder = ladderFor(kind, job);
+    poses = Math.max(poses, ladder.length);
+    log?.(`${items.length} ${kind} view(s), up to ${ladder.length} poses each`);
+    const r = await firstPoseThatDraws({
+      items,
+      ladder,
+      base,
+      width,
+      log,
+      queryFor: (v, pose) => `${pose}&${VIEW_PARAM[v.kind]}=${v.view}`,
+    });
+    for (const [item, d] of r.drew) results.set(item, d);
+    extra += r.extra;
+    errors += r.errors;
+  }
 
-  const rows = views.map((v) => {
-    const d = drew.get(v);
+  const rows = withKind.map((v) => {
+    const d = results.get(v);
     if (d?.error) return { ...v, result: `error:${d.error}`, pose: "", bytes: 0 };
     if (!d) return { ...v, result: "blank", pose: "", bytes: 0 };
     // Which pose settled it is worth keeping: a view that only draws from
     // action type 3 on is a different fact from one that draws standing, and
-    // without the column the next person re-learns it by re-probing.
-    return { ...v, result: "drew", pose: d.pose.split("&").slice(-2).join("&"), bytes: d.bytes };
+    // without the column the next person re-probes to re-learn it. The class
+    // stays in too — it is what `--job` was set to, and a verdict is only ever
+    // about the body it was measured on. Only `frame=`, which never varies,
+    // comes out.
+    const pose = d.pose
+      .split("&")
+      .filter((p) => !p.startsWith("frame="))
+      .join("&");
+    return { ...v, result: "drew", pose, bytes: d.bytes };
   });
   const counts = { drew: 0, blank: 0, error: 0 };
-  for (const r of rows) counts[r.result.startsWith("error") ? "error" : r.result]++;
-  return { rows, counts, extra, errors, poses: ladder.length };
+  const byKind = Object.fromEntries(KINDS.map((k) => [k, { drew: 0, blank: 0, error: 0 }]));
+  for (const r of rows) {
+    const bucket = r.result.startsWith("error") ? "error" : r.result;
+    counts[bucket]++;
+    byKind[r.kind][bucket]++;
+  }
+  return { rows, counts, byKind, extra, errors, poses };
 }

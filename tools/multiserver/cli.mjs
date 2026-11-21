@@ -4,7 +4,7 @@
 //   node tools/multiserver/cli.mjs status
 //   node tools/multiserver/cli.mjs index       [--origin all] [--limit N]
 //   node tools/multiserver/cli.mjs catalogue   [--origin all] [--no-rgz-probe]
-//   node tools/multiserver/cli.mjs renderable  [--origin latam] [--job N] [--limit N]
+//   node tools/multiserver/cli.mjs renderable  [--origin latam] [--job N] [--limit N] [--kind acc|robe|both]
 //   node tools/multiserver/cli.mjs shortlist   [--renderable <tsv>] [--app <json>]
 //   node tools/multiserver/cli.mjs plan        [--origin all] [--tiers core]
 //   node tools/multiserver/cli.mjs fetch       [--origin <id>] [--limit N]
@@ -61,6 +61,8 @@ function usage(code = 2) {
       "  --oldest-first                 walk the index forward instead of newest-first",
       "  --include-pulled               also read patches the index marks // pulled",
       "  --job N                        renderable: class to render on (default 4054)",
+      "  --kind acc|robe|both           renderable: which sprite table to probe (default both)",
+      "                                 (--limit applies per table, so a sample covers both)",
       "  --base <url>                   renderable: which gateway to probe",
       "  --renderable <tsv>             stage 3: the LATAM render probe output",
       "  --app <json>                   stage 3: the app's own costume catalogue",
@@ -225,30 +227,48 @@ async function cmdSeed() {
 // ragassets maintenance operation -- needed a checkout of the consumer.
 async function cmdRenderable() {
   const originId = flag("--origin", "latam");
-  const file = join(paths.catalogDir(originId), "views.tsv");
-  if (!existsSync(file)) {
-    throw new Error(
-      `no views.tsv for ${originId} at ${file} — run: cli.mjs catalogue --origin ${originId}`,
-    );
+  // Both namespaces, because they are both things the resolver either knows or
+  // does not. Driving only `headgear=` left every garment view unprobed and
+  // stage 3 with no opinion about any of them — see renderprobe.mjs.
+  const want = flag("--kind", "both");
+  const TABLES = { acc: "views.tsv", robe: "robes.tsv" };
+  const kinds = want === "both" ? Object.keys(TABLES) : [want];
+  for (const k of kinds) {
+    if (!TABLES[k]) throw new Error(`unknown --kind ${k} — one of acc, robe, both`);
   }
   const limit = Number(flag("--limit", 0)) || Infinity;
-  const views = readRows(file)
-    .filter((r) => Number.isInteger(Number(r.view)))
-    .slice(0, limit)
-    .map((r) => ({ view: Number(r.view), sprite: r.sprite }));
+  const views = [];
+  for (const kind of kinds) {
+    const file = join(paths.catalogDir(originId), TABLES[kind]);
+    if (!existsSync(file)) {
+      throw new Error(
+        `no ${TABLES[kind]} for ${originId} at ${file} — run: cli.mjs catalogue --origin ${originId}`,
+      );
+    }
+    views.push(
+      ...readRows(file)
+        .filter((r) => Number.isInteger(Number(r.view)))
+        .slice(0, limit)
+        .map((r) => ({ kind, view: Number(r.view), sprite: r.sprite })),
+    );
+  }
   const base = flag("--base", DEFAULT_BASE);
   const job = Number(flag("--job", 4054));
-  console.error(`${views.length} view(s) de ${originId} contra ${base}, job ${job}`);
+  console.error(`${views.length} view(s) de ${originId} (${kinds.join(", ")}) contra ${base}, job ${job}`);
   const r = await probeRenderable(views, { base, job, log: (m) => console.error(m) });
   writeRows(
     paths.renderProbe(),
-    ["view", "sprite", "result", "pose", "bytes"],
-    r.rows.map((x) => [x.view, x.sprite, x.result, x.pose, x.bytes]),
+    ["kind", "view", "sprite", "result", "pose", "bytes"],
+    r.rows.map((x) => [x.kind, x.view, x.sprite, x.result, x.pose, x.bytes]),
   );
   console.error(
     `${r.counts.drew} desenham, ${r.counts.blank} em branco, ${r.counts.error} com erro ` +
       `(${views.length + r.extra} renderizações, até ${r.poses} poses por view)`,
   );
+  for (const kind of kinds) {
+    const k = r.byKind[kind];
+    console.error(`    ${kind}: ${k.drew} desenham, ${k.blank} em branco, ${k.error} com erro`);
+  }
   // The share is what is worth watching across resolver rebakes: it only moves
   // when the resolver's own table changes.
   const decided = r.counts.drew + r.counts.blank;

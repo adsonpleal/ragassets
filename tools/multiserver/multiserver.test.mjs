@@ -22,7 +22,9 @@ const hasFields = (got, want) => {
   for (const k of Object.keys(want)) picked[k] = got[k];
   assert.deepStrictEqual(picked, want);
 };
-import { sep } from "node:path";
+import { join, sep } from "node:path";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 // The sex marks that prefix every headgear sprite file name.
 const SEX_M = "남";
@@ -32,7 +34,16 @@ const accPath = (sex, key = "chapeu") =>
   `data/sprite/악세사리/${sex}/${sex}${key}.spr`;
 import { ORIGINS, parsePatchList, rgzProbeOrder, selectOrigins, GRF_EXT, RGZ_EXT } from "./origins.mjs";
 import { ITEM_INFO_FILES, ITEM_INFO_TAILS } from "./iteminfo.mjs";
-import { ACTIONS, GENDERS, firstPoseThatDraws, poseLadder } from "./renderprobe.mjs";
+import {
+  ACTIONS,
+  GENDERS,
+  VIEW_PARAM,
+  firstPoseThatDraws,
+  ladderFor,
+  poseLadder,
+  probeRenderable,
+} from "./renderprobe.mjs";
+import { readAppViews, readRenderProbe } from "./stage3-shortlist.mjs";
 import { diffCatalogues, indexRows } from "./diff-catalogues.mjs";
 import { normalizePath, robeTargets, spriteTargets, targetsFor } from "./pathshapes.mjs";
 import { legacyNameCoverage } from "./coverage.mjs";
@@ -368,6 +379,175 @@ describe("firstPoseThatDraws", () => {
     assert.notStrictEqual(r.drew.get("boom"), null);
     assert.ok(r.drew.get("boom").error, "an unreachable probe must report an error");
     assert.strictEqual(r.errors, 1);
+  });
+});
+
+describe("probeRenderable across both sprite tables", () => {
+  // The regression this directory paid for in a wrong audit: the probe drove
+  // `headgear=` only, renderable.tsv carried no kind column, and stage 3 read
+  // every row as an accessory — so no garment view was ever asked about and
+  // the shortlist could not say `draws` for one. See renderprobe.mjs.
+  const asked = [];
+  const gateway = async (url) => {
+    const query = String(url).split("?")[1];
+    asked.push(query);
+    // Only `garment=7` draws anything; everything else is the bare character.
+    const body = /&garment=7$/.test(query) ? "cape" : "bare";
+    return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(body) };
+  };
+  async function withGateway(body) {
+    const real = globalThis.fetch;
+    globalThis.fetch = gateway;
+    try {
+      return await body();
+    } finally {
+      globalThis.fetch = real;
+    }
+  }
+
+  it("drives garment= for a robe view and headgear= for an accessory", async () => {
+    asked.length = 0;
+    const r = await withGateway(() =>
+      probeRenderable(
+        [
+          { kind: "acc", view: 7, sprite: "_hat" },
+          { kind: "robe", view: 7, sprite: "wing" },
+        ],
+        { base: "http://probe.invalid", width: 1 },
+      ),
+    );
+    // Same number in two tables, two different answers — which is the whole
+    // reason the key is (kind, view) and not view.
+    assert.deepStrictEqual(
+      r.rows.map((x) => [x.kind, x.view, x.result]),
+      [
+        ["acc", 7, "blank"],
+        ["robe", 7, "drew"],
+      ],
+    );
+    assert.ok(asked.some((q) => q.endsWith("&headgear=7")), "the accessory view must be asked as headgear=");
+    assert.ok(asked.some((q) => q.endsWith("&garment=7")), "the garment view must be asked as garment=");
+    assert.deepStrictEqual(r.byKind.acc, { drew: 0, blank: 1, error: 0 });
+    assert.deepStrictEqual(r.byKind.robe, { drew: 1, blank: 0, error: 0 });
+  });
+
+  it("defaults a view with no kind to the accessory table", async () => {
+    // Keeps every caller that predates the split reading the same way.
+    const r = await withGateway(() =>
+      probeRenderable([{ view: 7, sprite: "_hat" }], { base: "http://probe.invalid", width: 1 }),
+    );
+    assert.strictEqual(r.rows[0].kind, "acc");
+  });
+
+  it("keeps the class in the pose it recorded, because the garment ladder varies it", async () => {
+    const r = await withGateway(() =>
+      probeRenderable([{ kind: "robe", view: 7, sprite: "wing" }], {
+        base: "http://probe.invalid",
+        job: 4054,
+        width: 1,
+      }),
+    );
+    // A garment that draws only on one class is a fact worth not re-probing for.
+    assert.match(r.rows[0].pose, /^job=4054&gender=male&action=0$/);
+  });
+});
+
+describe("ladderFor", () => {
+  it("spends the same poses on a garment as on a headgear", () => {
+    // Walking extra classes for garments was tried and measured away: over all
+    // 330 of LATAM's garment views, every one of the 223 that draws is settled
+    // on the asked-for class. See the note in renderprobe.mjs.
+    const acc = ladderFor("acc", 4054);
+    const robe = ladderFor("robe", 4054);
+    assert.deepStrictEqual(robe, acc);
+    assert.strictEqual(acc.length, ACTIONS.length * GENDERS.length);
+  });
+
+  it("names a parameter for every kind it can probe", () => {
+    // A kind with no parameter would build `undefined=<view>` and read blank
+    // for every view in that table — the failure this whole change is about.
+    assert.deepStrictEqual(Object.keys(VIEW_PARAM).sort(), ["acc", "robe"]);
+  });
+});
+
+describe("readRenderProbe", () => {
+  const write = (text) => {
+    const f = join(mkdtempSync(join(tmpdir(), "renderprobe-")), "renderable.tsv");
+    writeFileSync(f, text, "utf8");
+    return f;
+  };
+
+  it("keys a kinded file by both namespaces", () => {
+    const got = readRenderProbe(
+      write(
+        [
+          "kind\tview\tsprite\tresult\tpose\tbytes",
+          "acc\t8\t_mask\tdrew\tjob=4054&gender=male&action=0\t900",
+          "robe\t8\twing\tblank\t\t0",
+        ].join("\n"),
+      ),
+    );
+    // LATAM's 8 is a surgical mask as a headgear and Rudra's wings as a
+    // garment. One of them draws here and the other does not.
+    assert.strictEqual(got.get("acc:8"), "drew");
+    assert.strictEqual(got.get("robe:8"), "blank");
+  });
+
+  it("still reads a file written before the kind column, as accessories", () => {
+    // That is what those rows meant: the old probe only ever drove headgear=.
+    const got = readRenderProbe(
+      write(["view\tsprite\tresult\tpose\tbytes", "8\t_mask\tdrew\tgender=male&action=0\t900"].join("\n")),
+    );
+    assert.deepStrictEqual([...got], [["acc:8", "drew"]]);
+  });
+
+  it("is empty for a file that is not there, rather than throwing", () => {
+    // Both of stage 3's inputs are optional; a run without one says so.
+    assert.strictEqual(readRenderProbe(join(tmpdir(), "no-such-renderable.tsv")).size, 0);
+  });
+});
+
+describe("readAppViews", () => {
+  const write = (doc) => {
+    const f = join(mkdtempSync(join(tmpdir(), "appviews-")), "costumes.json");
+    writeFileSync(f, JSON.stringify(doc), "utf8");
+    return f;
+  };
+
+  it("takes the namespace from the slot when the app says nothing else", () => {
+    const got = readAppViews(
+      write({
+        items: [
+          { id: 1, name: "hat", slots: ["top"], view: 11 },
+          { id: 2, name: "cape", slots: ["garment"], view: 11 },
+        ],
+      }),
+    );
+    assert.deepStrictEqual([...got].sort(), ["acc:11", "robe:11"]);
+  });
+
+  it("obeys viewKind, which the app publishes only when the slot is wrong", () => {
+    // "Buquê Gigantesco" equips in Baixo and its 128 is the C_Clutch_Bouquet
+    // robe; two shields equip in Capa and their ids are accessory ids. Reading
+    // the slot alone got all three backwards — it marked a view listed that is
+    // a different costume in the other table, and left the real one unlisted.
+    const got = readAppViews(
+      write({
+        items: [
+          { id: 480177, name: "Buquê Gigantesco", slots: ["low"], viewKind: "garment", view: 128 },
+          { id: 480807, name: "Escudo Petulante", slots: ["garment"], viewKind: "headgear", view: 2828 },
+        ],
+      }),
+    );
+    assert.deepStrictEqual([...got].sort(), ["acc:2828", "robe:128"]);
+  });
+
+  it("skips a row with no usable view id", () => {
+    // View 0 is the invisible costumes; a missing one is an effect-only row.
+    const got = readAppViews(
+      write({ items: [{ id: 1, slots: ["top"], view: 0 }, { id: 2, slots: ["top"] }] }),
+    );
+    assert.strictEqual(got.size, 0);
   });
 });
 
