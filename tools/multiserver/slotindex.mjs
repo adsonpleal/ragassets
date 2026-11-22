@@ -1,24 +1,84 @@
 // Build `slots.tsv` — which slot each (kind, view) occupies.
 //
-// Reads only the raw `iteminfo_new.lub` already saved under
-// `catalog/<origin>/raw/` by stage 2, so this costs no network. Three origins
-// ship a readable one (LATAM, twRO, twRO Zero); jRO's item data is the legacy
-// `.txt` pair, which carries no description, and kRO/kRO Zero/iRO ship no
+// Reads only the raw item table already saved under `catalog/<origin>/raw/` by
+// stage 2, so this costs no network. Five origins ship a readable one: LATAM,
+// twRO, twRO Zero and thRO as `iteminfo_new.lub`, and **iRO as plain
+// `itemInfo.lub`** — the filename difference `iteminfo.mjs` records, and which
+// this stage spent its first life ignoring, because it asked for one name
+// instead of asking that module which names exist. jRO's item data is the
+// legacy `.txt` pair, which carries no description, and kRO/kRO Zero ship no
 // reachable modern table at all. So a view's slot is known when any of those
-// three names it — which, because item ids are global, covers plenty of
-// costumes those three do not themselves offer.
+// five names it — which, because item ids are global, covers plenty of
+// costumes those five do not themselves offer.
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { readItemInfo } from "./iteminfo.mjs";
+import { ITEM_INFO_FILES, readItemInfo } from "./iteminfo.mjs";
 import { bestSlot, kindFromSlots, slotRank } from "./slots.mjs";
 import { paths, readRows, writeRows } from "./store.mjs";
 
 /** Origins whose raw item table stage 2 left on disk, in order of trust. */
 export function slotSources(originIds) {
   return originIds
-    .map((id) => ({ id, path: join(paths.catalogDir(id), "raw", "iteminfo_new.lub") }))
-    .filter((s) => existsSync(s.path));
+    .map((id) => {
+      const dir = join(paths.catalogDir(id), "raw");
+      const path = ITEM_INFO_FILES.map((f) => join(dir, f)).find((p) => existsSync(p));
+      return path ? { id, path } : null;
+    })
+    .filter(Boolean);
+}
+
+/**
+ * Which view ids each sprite table actually defines, pooled over every client
+ * catalogued on disk.
+ *
+ * This is the evidence for `tableFor`, and it is pooled on purpose: the two
+ * numberings are Gravity's, identical across servers, so a view defined in
+ * *any* client's accessory table is an accessory view. Pooling also keeps the
+ * answer stable while the set of clients on disk grows.
+ */
+export function viewTables(originIds) {
+  const tables = { acc: new Set(), robe: new Set() };
+  for (const id of originIds) {
+    for (const [file, kind] of [
+      ["views.tsv", "acc"],
+      ["robes.tsv", "robe"],
+    ]) {
+      const path = join(paths.catalogDir(id), file);
+      if (!existsSync(path)) continue;
+      for (const r of readRows(path)) {
+        const view = Number(r.view);
+        if (Number.isInteger(view) && view) tables[kind].add(view);
+      }
+    }
+  }
+  return tables;
+}
+
+/**
+ * The sprite table this item's art lives in, which is **not** the same question
+ * as the slot it equips in.
+ *
+ * `kindFromSlots` answers from the slot alone, and for a few costumes the two
+ * disagree: the "Costume Whisper Candy Pouch" equips in the garment position,
+ * so the slot says the robe table, but its `_C_Halloween_Candypouch` is in the
+ * accessory table of all eight clients and in no robe table at all. Keyed by
+ * the slot it became `robe:2579`, a key no client defines and the app can never
+ * join against, so a costume whose position *was* read still read as having
+ * none. The app models the same disagreement, from the other side, with its
+ * `viewKind` field.
+ *
+ * The rule is deliberately narrow: only a candidate namespace that defines the
+ * view **nowhere** gives way, and only to one that does. A view both tables
+ * define is two different costumes and the slot is the only thing that can tell
+ * them apart, so it is left alone.
+ */
+export function tableFor(view, slots, tables) {
+  const kind = kindFromSlots(slots);
+  if (!kind || !tables) return kind;
+  const other = kind === "acc" ? "robe" : "acc";
+  if (!tables[kind]?.has(view) && tables[other]?.has(view)) return other;
+  return kind;
 }
 
 /**
@@ -42,9 +102,9 @@ export function slotSources(originIds) {
  *      the oldest one describes the art rather than the event that handed it
  *      out.
  */
-export function mergeSlots(sources) {
+export function mergeSlots(sources, tables = null) {
   const out = new Map(); // "kind:view" -> {kind, view, slots, origin, item, costume, rank}
-  const stats = { sources: 0, items: 0, withEquip: 0, views: 0, conflicts: 0 };
+  const stats = { sources: 0, items: 0, withEquip: 0, views: 0, conflicts: 0, retabled: 0 };
   for (const [rank, src] of sources.entries()) {
     stats.sources++;
     const { items } = readItemInfo(src.path);
@@ -52,8 +112,9 @@ export function mergeSlots(sources) {
       stats.items++;
       if (!it.view || !it.equip.length) continue;
       stats.withEquip++;
-      const kind = kindFromSlots(it.equip);
+      const kind = tableFor(it.view, it.equip, tables);
       if (!kind) continue;
+      if (kind !== kindFromSlots(it.equip)) stats.retabled++;
       const key = `${kind}:${it.view}`;
       const prev = out.get(key);
       if (prev && prev.slots.join(",") !== it.equip.join(",")) stats.conflicts++;
@@ -84,10 +145,10 @@ export function buildSlotIndex(originIds) {
   const sources = slotSources(originIds);
   if (!sources.length) {
     throw new Error(
-      "no raw iteminfo_new.lub under any catalog/<origin>/raw — run stage 2 first",
+      `no raw ${ITEM_INFO_FILES.join(" or ")} under any catalog/<origin>/raw — run stage 2 first`,
     );
   }
-  const { slots, stats } = mergeSlots(sources);
+  const { slots, stats } = mergeSlots(sources, viewTables(originIds));
   const rows = [...slots.values()]
     .sort(
       (a, b) =>

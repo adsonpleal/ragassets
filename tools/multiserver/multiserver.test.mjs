@@ -44,6 +44,7 @@ import {
   probeRenderable,
 } from "./renderprobe.mjs";
 import { readAppViews, readRenderProbe } from "./stage3-shortlist.mjs";
+import { tableFor } from "./slotindex.mjs";
 import { diffCatalogues, indexRows } from "./diff-catalogues.mjs";
 import { normalizePath, robeTargets, spriteTargets, targetsFor } from "./pathshapes.mjs";
 import { legacyNameCoverage } from "./coverage.mjs";
@@ -1064,6 +1065,35 @@ describe("parseSlotValue", () => {
     assert.deepStrictEqual(parseSlotValue("Superior"), ["top"]);
   });
 
+  it("reads the English forms iRO and thRO write", () => {
+    assert.deepStrictEqual(parseSlotValue("Upper"), ["top"]);
+    assert.deepStrictEqual(parseSlotValue("Middle"), ["mid"]);
+    assert.deepStrictEqual(parseSlotValue("Lower"), ["low"]);
+    assert.deepStrictEqual(parseSlotValue("Garment"), ["garment"]);
+    assert.deepStrictEqual(parseSlotValue("Upper, Middle, Lower"), ["top", "mid", "low"]);
+    assert.deepStrictEqual(parseSlotValue("Upper & Middle"), ["top", "mid"]);
+    assert.deepStrictEqual(parseSlotValue("Upper.Mid"), ["top", "mid"]);
+    // iRO's abbreviations, and its one hyphenated value.
+    assert.deepStrictEqual(parseSlotValue("Low"), ["low"]);
+    assert.deepStrictEqual(parseSlotValue("mid-low"), ["mid", "low"]);
+    // thRO: a Thai label, then an English value and a Thai weight field.
+    assert.deepStrictEqual(parseSlotValue("Garment น้ำหนัก : 0"), ["garment"]);
+  });
+
+  it("does not take an English word that is only part of another", () => {
+    // The pt branch matches substrings, which is safe for Topo/Meio/Baixo and
+    // would not be for low/mid: these are the values that pay for the \b.
+    assert.deepStrictEqual(parseSlotValue("Yellow"), []);
+    assert.deepStrictEqual(parseSlotValue("Midgard"), []);
+    assert.deepStrictEqual(parseSlotValue("Supper"), []);
+  });
+
+  it("still names no slot for the equipment positions we do not model", () => {
+    for (const v of ["Weapon", "Armor", "Shoes", "Shield", "Pendant", "Earring", "Headgear"]) {
+      assert.deepStrictEqual(parseSlotValue(v), [], v);
+    }
+  });
+
   it("returns the slots in priority order however they were written", () => {
     assert.deepStrictEqual(parseSlotValue("Baixo e Meio"), ["mid", "low"]);
     assert.deepStrictEqual(parseSlotValue("頭下/上"), ["top", "low"]);
@@ -1107,6 +1137,74 @@ describe("parseSlotsFromLines", () => {
 
   it("returns nothing when no line carries the label", () => {
     assert.deepStrictEqual(parseSlotsFromLines(["uma descrição qualquer", "系列 : 服飾裝備"]), []);
+  });
+
+  it("accepts the labels iRO writes, including the prefixed ones", () => {
+    assert.deepStrictEqual(parseSlotsFromLines(["Position : Upper"]), ["top"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["Location : Garment"]), ["garment"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["Head Location : Lower"]), ["low"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["Item Position : Upper  Weight : 80"]), ["top"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["location : lower  weight : 5"]), ["low"]);
+  });
+
+  it("does not read iRO's list of towns as a position", () => {
+    // "Locations" is where an item teleports you. It is excluded by the colon
+    // the label has to be followed by, and this is the line that proves it.
+    assert.deepStrictEqual(
+      parseSlotsFromLines(['Locations : "Juno", "Lighthalzen", "Einbroch"']),
+      [],
+    );
+  });
+
+  it("accepts thRO's Thai label with its English value", () => {
+    assert.deepStrictEqual(parseSlotsFromLines(["ตำแหน่ง : Lower น้ำหนัก : 10"]), ["low"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["ตำแหน่งที่สวมใส่ : Garment  น้ำหนัก : 0"]), [
+      "garment",
+    ]);
+  });
+
+  it("accepts the two older LATAM labels as well", () => {
+    assert.deepStrictEqual(parseSlotsFromLines(["Equipado em : Topo"]), ["top"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["Equipar em : Topo, Meio e Baixo"]), [
+      "top",
+      "mid",
+      "low",
+    ]);
+  });
+});
+
+describe("tableFor", () => {
+  // The accessory table defines 2579 (the candy pouch) and the robe table does
+  // not; both define 8, which is a surgical mask and Rudra's wings.
+  const tables = { acc: new Set([8, 2579]), robe: new Set([8, 128]) };
+
+  it("keys a costume by the table its art is in, not by the slot it equips in", () => {
+    // Item 480494: "Position : Garment", art in the accessory table. Keyed by
+    // the slot it became robe:2579, which no client defines and the app can
+    // never join against.
+    assert.strictEqual(tableFor(2579, ["garment"], tables), "acc");
+    // And the mirror case, which is the app's own `viewKind` row: a bouquet
+    // that equips in Baixo whose 128 is a robe.
+    assert.strictEqual(tableFor(128, ["low"], tables), "robe");
+  });
+
+  it("leaves a view both tables define to the slot", () => {
+    assert.strictEqual(tableFor(8, ["garment"], tables), "robe");
+    assert.strictEqual(tableFor(8, ["top"], tables), "acc");
+  });
+
+  it("leaves a view neither table defines where the slot put it", () => {
+    assert.strictEqual(tableFor(9999, ["garment"], tables), "robe");
+    assert.strictEqual(tableFor(9999, ["top"], tables), "acc");
+  });
+
+  it("falls back to the slot alone when no tables were read", () => {
+    assert.strictEqual(tableFor(2579, ["garment"], null), "robe");
+    assert.strictEqual(tableFor(2579, [], null), null);
+  });
+
+  it("gives no namespace when no slot is known, tables or not", () => {
+    assert.strictEqual(tableFor(2579, [], tables), null);
   });
 });
 

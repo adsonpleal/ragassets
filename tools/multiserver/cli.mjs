@@ -318,6 +318,9 @@ async function cmdSlots() {
   // A view named by two clients that disagree on its slot is worth seeing, not
   // resolving quietly: it means one of the two tables is stale.
   if (r.conflicts) console.error(`    ${r.conflicts} discordância(s) entre itens`);
+  // Items whose position names one sprite table while the art sits in the
+  // other — the `viewKind` case, from this side of the join. See `tableFor`.
+  if (r.retabled) console.error(`    ${r.retabled} item(ns) com arte na outra tabela`);
   console.error(`    índice: ${paths.slots()}`);
 }
 

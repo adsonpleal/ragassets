@@ -269,30 +269,43 @@ node tools/multiserver/cli.mjs slots --origin all
 ```
 
 The client's item table has **no equip-position field**. The position is written
-in the item's *description text*, as a labelled line in that server's language,
-and ragassets reads only the Portuguese form — so every foreign costume came
-back with no slot at all. The labels and values below were collected from the
-tables on disk, not guessed:
+in the item's *description text*, as a labelled line in that server's language.
+The labels and values below were collected from the tables on disk, not guessed:
 
 | | label | values |
 |---|---|---|
 | pt | `Posição :` / `Equipa em :` | `Topo` `Meio` `Baixo` `Capa`, joined by "e" or "," |
 | zh | `位置 :` | `頭上` `頭中` `頭下` (head upper/middle/lower), `披肩` (shoulder cape) |
+| en | `Position :` / `Location :` | `Upper` `Middle` `Lower` `Garment`, joined by ",", "&" or "." |
+| th | `ตำแหน่ง :` | **English values**, with a Thai weight field after them |
 
 Chinese joins with `/`, `、`, or nothing at all (`頭上中下`), and sometimes runs
 into the next field with no separator (`頭上重量: 0`) — so the parser checks for
-上/中/下 inside a 頭-prefixed value rather than matching whole words.
+上/中/下 inside a 頭-prefixed value rather than matching whole words. English is
+the opposite: `lower` contains `low` and `middle` contains `mid`, so those two
+match on word boundaries, and `Locations :` — iRO's list of *towns* — is kept
+out by the colon the label has to be followed by.
 
-Only three of the first seven origins ship a readable `iteminfo_new.lub`
-(LATAM, twRO, twRO Zero); jRO's legacy `.txt` pair carries no description, and
-kRO/kRO Zero/iRO ship no reachable modern table. But item ids are global, so
-those three name **2,753 (kind, view) pairs** — 1,399 top, 459 mid, 635 low,
-260 garment — well beyond the costumes they themselves offer.
+The last two rows of that table were missing until 2026-11-22, and reading pt
+and zh only did not cost a handful of odd items. It cost **two whole clients**,
+one of them the English one: iRO writes 1,906 + 2,457 position lines under its
+two labels and thRO writes 3,169, and none of them was read. thRO is the sharper
+lesson — a Thai label with an English value, so matching the label alone would
+still have come back with nothing.
 
-thRO ships one too, and **iRO ships one under a name of its own**,
-`System/itemInfo.lub` — see `ITEM_INFO_FILES` in `iteminfo.mjs` for how long
-that cost us. So there are five, and the 2,753 figure above is the three-source
-measurement and was not re-run, so it understates.
+Five of the eight origins ship a readable item table: LATAM, twRO, twRO Zero and
+thRO as `iteminfo_new.lub`, and **iRO under a name of its own**,
+`System/itemInfo.lub`. jRO's legacy `.txt` pair carries no description and
+kRO/kRO Zero ship no reachable modern table. This stage spent its first life
+reading four of the five, because it asked for one filename instead of asking
+`ITEM_INFO_FILES` in `iteminfo.mjs` which names exist — the same mistake that
+module was written to record, made one directory away.
+
+Item ids are global, so those five name **2,928 (kind, view) pairs** — 1,479
+top, 458 mid, 698 low, 293 garment — well beyond the costumes they themselves
+offer. Against the four-source index that preceded them: **+178 keys** (145 from
+iRO, 31 from thRO, 2 from LATAM's two older labels), 55 keys whose slot changed,
+and 3 keys retired by the rule below.
 
 Each new one improves the *other* clients, because the `costume` flag is pooled
 across every readable table and the name/id tie-break prefers a flagged id.
@@ -302,15 +315,43 @@ four more jRO rows, one of them off a 「レンタル衣装」 *rental* costume 
 permanent one. That is the strongest argument for adding an origin that brings
 no artwork at all.
 
-Where two clients disagree (236 pairs do), the earlier source wins and the
+Where two clients disagree (459 pairs do), the earlier source wins and the
 sources come in origin order, LATAM first: LATAM is the server the app
 simulates, so where it defines a view it is the authority on that view. That
 ordering takes agreement with the app's own database from 1,227/1,239 to
-**1,231/1,239**; the 5 that still differ are views where the app and this index
-pick a different *item*, and the two items genuinely carry different slot sets.
+**1,231/1,239**; the ones that still differ are views where the app and this
+index pick a different *item*, and the two items genuinely carry different slot
+sets.
+
+Adding iRO at rank 1 puts it above twRO on every view LATAM does not define,
+which is what moved those 55 slots, so it was checked against a source outside
+this pipeline: Divine-Pride's `equipLocation` bit field. Of the 1,805 index views
+Divine-Pride is unanimous about, the two agree on 1,690, the **new value is right
+on 82 and the old one on 4**, and 29 are wrong either way. On the 55 that moved
+it is 29 to 4. The four where twRO was right and iRO is not — `acc:1082`
+Deviruchi Balloon, `acc:1816` Dancing Butterfly, `acc:1694` Darkness Veil and
+`acc:1725` Straight Long (Black) — are left as they are rather than special-cased:
+the ordering is a rule about which client to believe, and it is 20:1 ahead.
+
+**A slot names a position, not a sprite table.** `kindFromSlots` answers "which
+table" from the slot alone, and for a few costumes the two disagree: the Costume
+Whisper Candy Pouch equips in the garment position, so the slot said the robe
+table, but its `_C_Halloween_Candypouch` is in the **accessory** table of all
+eight clients and in no robe table at all. Keyed `robe:2579` it was a key no
+client defines and the consumer can never join against, so a costume whose
+position *had* been read still reached the app with none. `tableFor` gives way
+only when the slot's table defines the view **nowhere** and the other one does —
+14 items, 3 keys, all three the same ones the app marks with `viewKind`
+(2579, 2827, 2828). A view both tables define is two different costumes and the
+slot is the only thing that can tell them apart, so it is left alone.
 
 This is product data, not just fetch order: the app needs a costume's slot to
-show it at all.
+show it at all. Measured on the 517 foreign rows the app publishes today, the
+index knew the position of 337 and now knows 422; 375 confirm what the app shows,
+**47 move it** (17 top→low, 16 mid→low, 13 top→mid, 1 top→garment), and 95 are
+still named by no readable table — jRO exclusives, mostly, since jRO ships no
+descriptions at all. Of the 47, Divine-Pride is unanimous about 16 and agrees
+with the new value **16 times out of 16**.
 
 ### 4a. `plan` — decide what to fetch, and from where
 
