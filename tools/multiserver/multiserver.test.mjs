@@ -46,7 +46,14 @@ import {
 import { readAppViews, readRenderProbe } from "./stage3-shortlist.mjs";
 import { tableFor } from "./slotindex.mjs";
 import { diffCatalogues, indexRows } from "./diff-catalogues.mjs";
-import { normalizePath, robeTargets, spriteTargets, targetsFor } from "./pathshapes.mjs";
+import {
+  effectTargets,
+  isEffectTarget,
+  normalizePath,
+  robeTargets,
+  spriteTargets,
+  targetsFor,
+} from "./pathshapes.mjs";
 import { legacyNameCoverage } from "./coverage.mjs";
 import {
   bestSlotOfStep,
@@ -213,8 +220,70 @@ describe("robeTargets", () => {
 
 describe("targetsFor", () => {
   it("dispatches on the namespace, so a view id is never looked up in the wrong tree", () => {
-    assert.deepStrictEqual(targetsFor("acc", "_C_Chained_Bear"), spriteTargets("_C_Chained_Bear"));
-    assert.deepStrictEqual(targetsFor("robe", "기린의날개"), robeTargets("기린의날개"));
+    assert.deepStrictEqual(targetsFor("acc", "_C_Chained_Bear"), [
+      ...spriteTargets("_C_Chained_Bear"),
+      ...effectTargets("_C_Chained_Bear"),
+    ]);
+    assert.deepStrictEqual(targetsFor("robe", "기린의날개"), [
+      ...robeTargets("기린의날개"),
+      ...effectTargets("기린의날개"),
+    ]);
+  });
+
+  it("asks for the .str folder in both namespaces", () => {
+    for (const kind of ["acc", "robe"]) {
+      assert.ok(
+        targetsFor(kind, "_C_CLB_SS_LL").includes("/texture/effect/efst_c_clb_ss_ll/"),
+        kind,
+      );
+    }
+  });
+});
+
+describe("effectTargets", () => {
+  it("names the folder after the sprite, and after the sprite without its c_", () => {
+    // Both forms exist in the clients' patches: the costume's own
+    // `efst_C_CLB_SS_LL`, and `efst_flutterbutterfly_bl` for a costume whose
+    // sprite is `_C_FlutterButterfly_BL`.
+    assert.deepStrictEqual(effectTargets("_C_CLB_SS_LL"), [
+      "/texture/effect/efst_c_clb_ss_ll/",
+      "/texture/effect/efst_clb_ss_ll/",
+    ]);
+    assert.deepStrictEqual(effectTargets("_C_FlutterButterfly_BL"), [
+      "/texture/effect/efst_c_flutterbutterfly_bl/",
+      "/texture/effect/efst_flutterbutterfly_bl/",
+    ]);
+  });
+
+  it("asks once when the sprite has no c_ to strip", () => {
+    assert.deepStrictEqual(effectTargets("_Jirant_Circlet"), [
+      "/texture/effect/efst_jirant_circlet/",
+    ]);
+    assert.deepStrictEqual(effectTargets("_붉은고양이귀케이프"), [
+      "/texture/effect/efst_붉은고양이귀케이프/",
+    ]);
+  });
+
+  it("matches the real .str path a patch table carries", () => {
+    const targets = effectTargets("_C_CLB_SS_LL");
+    for (const p of [
+      String.raw`data\texture\effect\efst_C_CLB_SS_LL\bbcat.str`,
+      String.raw`data\texture\effect\efst_C_CLB_SS_LL\catan01.TGA`,
+    ]) {
+      const norm = normalizePath(p);
+      assert.strictEqual(targets.some((t) => norm.includes(t)), true, p);
+    }
+  });
+
+  it("skips a name the table does not have", () => {
+    assert.deepStrictEqual(effectTargets(null, "", undefined), []);
+  });
+
+  it("counts both effect trees as the effect tier", () => {
+    assert.strictEqual(isEffectTarget("/sprite/이팩트/c_chained_bear/"), true);
+    assert.strictEqual(isEffectTarget("/texture/effect/efst_c_clb_ss_ll/"), true);
+    assert.strictEqual(isEffectTarget("/sprite/악세사리/남/남_c_chained_bear."), false);
+    assert.strictEqual(isEffectTarget("/sprite/로브/기린의날개/"), false);
   });
 });
 
@@ -725,8 +794,11 @@ describe("targetsOf", () => {
       "/sprite/악세사리/남/남_c_chained_bear.",
       "/sprite/악세사리/여/여_c_chained_bear.",
     ]);
+    // Both effect trees: the sprite-shaped aura and the `.str` folder.
     assert.deepStrictEqual(got.filter((t) => t.tier === "effect").map((t) => t.prefix), [
       "/sprite/이팩트/c_chained_bear/",
+      "/texture/effect/efst_c_chained_bear/",
+      "/texture/effect/efst_chained_bear/",
     ]);
     // Every target carries the row's key, so a hit can be credited to a view.
     assert.deepStrictEqual(new Set(got.map((t) => t.key)), new Set(["acc:8"]));
@@ -737,7 +809,11 @@ describe("targetsOf", () => {
     assert.deepStrictEqual(got.filter((t) => t.tier === "core").map((t) => t.prefix), [
       "/sprite/로브/c_s_thanatos_wing/",
     ]);
-    assert.strictEqual((got.filter((t) => t.tier === "effect")).length, 1);
+    assert.deepStrictEqual(got.filter((t) => t.tier === "effect").map((t) => t.prefix), [
+      "/sprite/이팩트/c_s_thanatos_wing/",
+      "/texture/effect/efst_c_s_thanatos_wing/",
+      "/texture/effect/efst_s_thanatos_wing/",
+    ]);
   });
 });
 
@@ -1559,6 +1635,85 @@ describe("buildCatalogue", () => {
 
   it("counts the two reasons a costume is left out separately", () => {
     assert.deepStrictEqual(built.stats.skipped, { incomplete: 1, unknownToShortlist: 1 });
+  });
+
+  it("publishes a view our own instance draws, which no plan ever fetched", () => {
+    // `latam=draws` is the render probe's verdict, so there is nothing on disk
+    // to check and nothing to download: the art is already in our resources.
+    const b = buildCatalogue({
+      plan: [],
+      shortlist: [
+        { kind: "acc", view: "845", sprite: "_토끼리본모자", name: "Chapéu do Coelho", nameOrigin: "latam", aegis: "", latam: "draws", costume: "yes" },
+      ],
+      slots: [{ kind: "acc", view: "845", slots: "top" }],
+      probe: { headgearPair: () => false, robeHasSprite: () => false },
+      present: () => false,
+    });
+    assert.strictEqual(b.costumes.length, 1);
+    hasFields(b.costumes[0], {
+      kind: "acc",
+      view: 845,
+      origin: "latam",
+      local: true,
+      costume: true,
+      slots: ["top"],
+      // It planned nothing, so there is nothing on disk to count.
+      files: 0,
+    });
+    hasFields(b.stats, { total: 1, local: 1, localPublishable: 1, skipped: { incomplete: 0, unknownToShortlist: 0 } });
+  });
+
+  it("leaves the local source out when asked, so a run can be compared", () => {
+    const b = buildCatalogue({
+      plan: [],
+      shortlist: [{ kind: "acc", view: "845", sprite: "x", latam: "draws", costume: "yes" }],
+      slots: [],
+      includeLocal: false,
+    });
+    assert.deepStrictEqual(b.costumes, []);
+    assert.strictEqual(b.stats.local, 0);
+  });
+
+  it("lets a planned row win over a local one for the same view", () => {
+    // Normally disjoint — stage 4 does not plan what we already draw — but the
+    // LATAM tree is a source too, and that row describes real files.
+    const b = buildCatalogue({
+      plan: [{ kind: "acc", view: "1", origin: "latam", path: "a.spr" }],
+      shortlist: [{ kind: "acc", view: "1", sprite: "bom", name: "Chapéu Bom", latam: "draws" }],
+      slots: [],
+      probe,
+      present: () => true,
+    });
+    assert.strictEqual(b.costumes.length, 1);
+    assert.strictEqual(b.costumes[0].local, undefined);
+    assert.strictEqual(b.costumes[0].files, 1);
+  });
+
+  it("does not publish a local row with no sprite name to key an icon by", () => {
+    const b = buildCatalogue({
+      plan: [],
+      shortlist: [{ kind: "acc", view: "7", sprite: "", latam: "draws" }],
+      slots: [],
+    });
+    assert.deepStrictEqual(b.costumes, []);
+  });
+
+  it("publishes the costume flag, so a consumer can tell a hat from a costume", () => {
+    // `acc:11` is the Biretta: a view our client defines, drawn perfectly well,
+    // and ordinary equipment. Showing it as a costume would be wrong, and the
+    // flag is the only thing that says so.
+    const b = buildCatalogue({
+      plan: [],
+      shortlist: [
+        { kind: "acc", view: "11", sprite: "_비레타", name: "Solidéu", latam: "draws", costume: "no" },
+        { kind: "acc", view: "12", sprite: "_x", name: "X", latam: "draws", costume: "" },
+      ],
+      slots: [],
+    });
+    assert.strictEqual(b.costumes.find((c) => c.view === 11).costume, false);
+    // No client shipping a flag is not a client saying no.
+    assert.strictEqual("costume" in b.costumes.find((c) => c.view === 12), false);
+    assert.strictEqual(b.stats.localPublishable, 0);
   });
 
   it("totals by origin and by slot, with an unknown slot as ?", () => {

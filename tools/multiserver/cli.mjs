@@ -383,7 +383,10 @@ ${r.written} arquivo(s) escrito(s) de ${r.archives} patch(es) em ` +
 }
 
 async function cmdPublishable() {
-  const { doc, stats } = catalogueFromDisk();
+  // --no-local drops the costumes our own instance already draws, which need no
+  // mirror. It is for auditing the difference against an older catalogue, not
+  // for a normal run.
+  const { doc, stats } = catalogueFromDisk({ includeLocal: !has("--no-local") });
   const written = [paths.catalogue()];
   // --out is how the catalogue gets published: point it at the gateway's raw
   // store (RAW_DIR, resources/raw on the box) and it is served at
@@ -393,8 +396,14 @@ async function cmdPublishable() {
   if (out) written.push(join(out, "foreign-costumes.json"));
   for (const file of written) writeFileSync(file, JSON.stringify(doc, null, 2) + "\n", "utf8");
   console.error(
-    `${stats.total} fantasia(s) complet(as) no espelho, ${stats.named} nomeada(s), ` +
+    `${stats.total} fantasia(s) no catálogo, ${stats.named} nomeada(s), ` +
       `${stats.withAegis} com identificador inglês`,
+  );
+  // The two sources, said apart: what the mirror holds, and what our own
+  // instance already draws and nobody had published.
+  console.error(
+    `    ${stats.total - stats.local} do espelho, ${stats.local} da nossa própria árvore ` +
+      `(${stats.localPublishable} dessas com flag de fantasia, nome e posição)`,
   );
   console.error(
     `    ${stats.withNames} com nomes por cliente: ${JSON.stringify(stats.namesPerOrigin)}`,

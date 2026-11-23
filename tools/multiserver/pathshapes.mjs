@@ -17,6 +17,20 @@ export const ACC_DIR = "/sprite/악세사리/";
 export const ROBE_DIR = "/sprite/로브/";
 export const EFFECT_DIR = "/sprite/이팩트/";
 
+// The other effect tree, and the one that matters for a costume whose whole
+// visual is a `.str` animation. `/sprite/이팩트/` holds sprite-shaped effects
+// (a `.spr`/`.act` pair); a `.str` and the textures it plays live here instead,
+// one folder per effect, named `efst_` + the costume's sprite name:
+//
+//     data\texture\effect\efst_C_CLB_SS_LL\bbcat.str      9,592 bytes
+//     data\texture\effect\efst_C_CLB_SS_LL\catan01.TGA  180,844 bytes  (×54)
+//
+// The `.str` file's own name is arbitrary and names nothing we can predict
+// (`bbcat.str`, `flutter_butterfly.str`), so the folder is the target, exactly
+// as a garment's folder is.
+export const EFFECT_TEX_DIR = "/texture/effect/";
+export const EFFECT_TEX_PREFIX = "efst_";
+
 // Male and female sprite prefixes.
 export const SEX_PREFIX = ["남", "여"];
 
@@ -59,7 +73,61 @@ export function robeTargets(...names) {
   return out;
 }
 
+/**
+ * The `.str` effect folder for a sprite name, with the one name variant the
+ * tables justify.
+ *
+ * Nine of the costumes Divine-Pride lists and we do not show draw nothing at
+ * all: their `.spr` is a placeholder and the visual is a `.str` effect hung off
+ * the item. The pipeline could not fetch one — `spriteTargets` reaches
+ * `/sprite/이팩트/`, where a sprite-shaped effect lives, and nothing reached
+ * `/texture/effect/`, so a plan over all eight clients came out with **4 effect
+ * rows**, which are two costumes' `.spr`/`.act` pairs, and not one `.str`.
+ *
+ * This reaches **2 of those 9** — `_C_CLB_SS_LL` (56 files, 9.3 MB, in five
+ * clients) and `_C_FlutterButterfly_BL` (9 files, in four). The other 7 have no
+ * folder under either name in any of the eight clients, because their effect is
+ * filed under a name the sprite does not give: `resources/effects/` already
+ * holds a `gold_shower` and a `time_accessory` that look like two of them, and
+ * our own costumes are mapped to those names **by hand** in
+ * `resources/effects/index.json`. A folder name derived from the sprite is as
+ * far as a path shape can go; the rest is a mapping, not a target.
+ *
+ * Two forms are tried, because a costume and the ordinary hat it copies share
+ * one effect folder and the folder is named after whichever came first:
+ * `_C_FlutterButterfly_BL`'s effect is `efst_flutterbutterfly_bl`, with no
+ * `c_`. Measured over the 3,242 sprite names in the shortlist: the exact form
+ * finds 40 folders, the stripped form takes it to 46. The variant does not
+ * steal another costume's effect — 39 folders are claimed by more than one
+ * sprite name, 5 of those by an exact claimant and a stripped one, and all 5
+ * are the base/costume pair of the same hat (`_Jirant_Circlet` and
+ * `_C_Jirant_Circlet`), which is the same artwork and so the same effect.
+ */
+export function effectTargets(...names) {
+  const out = [];
+  for (const name of names) {
+    if (!name) continue;
+    const bare = name.toLowerCase().replace(/^_+/, "");
+    if (!bare) continue;
+    out.push(`${EFFECT_TEX_DIR}${EFFECT_TEX_PREFIX}${bare}/`);
+    const stripped = bare.replace(/^c_?/, "");
+    if (stripped && stripped !== bare) {
+      out.push(`${EFFECT_TEX_DIR}${EFFECT_TEX_PREFIX}${stripped}/`);
+    }
+  }
+  return out;
+}
+
+/** Is this target an effect rather than the costume's own artwork? Both effect
+ *  trees count, so the plan's `effect` tier means the same thing for a `.str`
+ *  as it always has for a sprite-shaped aura. */
+export const isEffectTarget = (prefix) =>
+  prefix.startsWith(EFFECT_DIR) || prefix.startsWith(EFFECT_TEX_DIR);
+
 /** Dispatch on the namespace a shortlist row belongs to. */
 export function targetsFor(kind, ...names) {
-  return kind === "robe" ? robeTargets(...names) : spriteTargets(names[0]);
+  const own = kind === "robe" ? robeTargets(...names) : spriteTargets(names[0]);
+  // The `.str` folder is keyed by the sprite name in both namespaces, so it is
+  // the same question for a garment as for a headgear.
+  return [...own, ...effectTargets(...names)];
 }

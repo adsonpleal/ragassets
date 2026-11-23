@@ -427,8 +427,31 @@ per class and sex, ~624 files per view, and one view alone is 710 files and
 468 MB. Headgear is two files. By slot, the same 4,261 MB splits as: top 94 MB,
 mid 16 MB, low 30 MB, garment 3,216 MB, and 904 MB for views no client names a
 slot for (the ones only iRO, kRO or jRO define). `--tiers` splits the costume's own files
-(`core`) from the aura folder some hats carry (`effect`, only 1.2 MB in
-practice), so a fetch can start with the cheap half.
+(`core`) from the effect files some hats carry (`effect`), so a fetch can start
+with the cheap half.
+
+**The effect tier could not see a `.str` at all**, and that took two fixes
+rather than one. A costume whose whole visual is a `.str` animation — nine of
+the ones Divine-Pride lists and we do not show — keeps it under
+`/texture/effect/efst_<sprite>/`, while `spriteTargets` only ever reached
+`/sprite/이팩트/`, where a *sprite-shaped* effect lives. Adding `effectTargets`
+changed nothing on its own, because `resolveOrigin`'s cheap gate was `/sprite/`
+and dropped the new target before it was ever matched. Both together, a plan
+over all eight clients goes from **4 effect files, 1.2 MB, no `.str` at all** to
+**407 files, 55.6 MB, 18 `.str` across 19 views**, for 2 more patches (198 →
+200). The second gate is narrow on purpose — `/texture/effect/` is 26,501 rows
+in iRO's index and 30,817 in twRO's, while `/texture/effect/efst_` is 1,798 and
+2,014.
+
+Two name forms are tried, because a costume and the ordinary hat it copies share
+one effect folder, named after whichever came first: `_C_FlutterButterfly_BL`'s
+is `efst_flutterbutterfly_bl`, with no `c_`. Over the shortlist's 3,242 sprite
+names the exact form finds 40 folders and the variant takes it to 46, 120 MB.
+The variant steals nothing: of the 39 folders claimed by more than one sprite
+name, the 5 claimed by an exact and a stripped name are all the base/costume
+pair of the same hat. It reaches **2 of the 9** — the other 7 are filed under a
+name their sprite does not give, which is a mapping (`resources/effects/index.json`
+does ours by hand) and not a path shape.
 
 The 162 unreachable views include the oldest hats in the game — `_두건` (hood),
 `_머리띠` (headband), `_햇` (hat). They have sat in the installer's `data.grf`
@@ -540,11 +563,38 @@ may be absent from that table or map to a different name there (views 2007 and
 consumer resolves by name — never by replaying a foreign view id through the
 LATAM table.
 
-What it says today: **663 costumes, none skipped** — the plan and the catalogue
-agree exactly, which is the invariant `originCanDraw` buys. 600 are named, 188
-carry an English identifier. By origin: iRO 231, jRO 119, kRO Zero 113, LATAM
-71, twRO 64, twRO Zero 38, kRO 27. By slot: top 163, low 132, garment 111, mid
-87, and 200 whose slot no client states.
+**Two sources, and the second one is bigger than the first.** Everything above
+describes a costume whose art this pipeline downloaded into a mirror. There is a
+second kind, and until 2026-11-22 this stage could not see it at all: a view id
+**our own instance already draws**, which the consumer simply does not list.
+Stage 3 finds them — its `latam=draws` rows — and stage 4 then deliberately
+leaves them out of the plan, because there is nothing to fetch. Having nothing
+to fetch meant having no plan row, and this stage read the plan, so the one
+costume it could never publish was the one that costs no download.
+
+Those rows carry `local: true` and `origin: "latam"`. A consumer renders them
+by view id through the ordinary route, with **no `origin`/`sprite` override**,
+because the view id means the right thing in our own table — that is exactly
+what the render probe measured. `--no-local` leaves them out, for comparing a
+run against an older catalogue.
+
+They also need the `costume` flag, now published on every row, because the two
+sources sweep up different things: the mirror only ever held what stage 4 chose
+to fetch, while a `latam=draws` row can be ordinary equipment our own client
+happens to define. `acc:11` is the Biretta — it draws, it is named, and calling
+it a costume would be wrong. The flag is absent, rather than false, when no
+client that has the view ships one at all.
+
+What it says today: **1,762 costumes, none skipped** — 663 from the mirror (the
+plan and the catalogue agree exactly, which is the invariant `originCanDraw`
+buys) and **1,099 from our own tree**, of which 788 have the costume flag, a name
+and a slot. 1,696 are named, 1,135 carry an English identifier. By origin: LATAM
+1,170, iRO 231, jRO 119, kRO Zero 113, twRO 64, twRO Zero 38, kRO 27. By slot:
+top 751, low 492, mid 298, garment 144, and 176 whose slot no client states.
+
+Of the 1,249 views stage 3 says we draw and the app does not list, 1,099 reach
+the catalogue; the other 150 have no sprite name in any client's table, and the
+sprite name is what the icon route is keyed by.
 
 **Where it comes from and who has it are different questions.** `origin` is the
 one tree whose files render it — whichever client the extraction found it

@@ -14,6 +14,70 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-22
+
+### Added
+- **The multi-server catalogue publishes the costumes we already draw.** Stage 5
+  listed a costume only when its art was in a mirror, and stage 4 deliberately
+  never fetches a view our own instance draws — there is nothing to download.
+  Having nothing to download meant having no plan row, and stage 5 reads the
+  plan, so the costumes that cost nothing were the ones it could never publish.
+  `foreign-costumes.json` goes from **663 to 1,762**: 663 from the mirror and
+  **1,099 from our own tree**, 788 of them with a costume flag, a name and a
+  slot. They carry `local: true` and render by view id with no `origin`/`sprite`
+  override, because the view id means the right thing in our own table — which
+  is what the render probe measures. `--no-local` leaves them out.
+
+- **Every catalogue row now carries the `costume` flag** a client ships, because
+  the second source needs it: a view we draw can be ordinary equipment our own
+  client happens to define (`acc:11` is the Biretta), and only the flag says so.
+  Absent, not false, where no client that has the view ships one.
+
+- **The plan can reach a `.str` effect folder**, which took two fixes rather
+  than one. A costume whose whole visual is a `.str` animation was unfetchable:
+  `spriteTargets` reaches `/sprite/이팩트/`, where sprite-shaped effects live,
+  and nothing reached `/texture/effect/efst_<sprite>/`, where a `.str` and its
+  textures do — and `resolveOrigin`'s cheap gate was `/sprite/`, so adding the
+  target alone changed nothing. A plan over all eight clients had **4 effect
+  files, 1.2 MB, not one `.str`**; it now has **407 files, 55.6 MB, 18 `.str`
+  across 19 views**, for 2 more patches. The new gate is narrow on purpose:
+  `/texture/effect/` is 26,501 rows in iRO's index, `/texture/effect/efst_` is
+  1,798. `effectTargets` adds the folder in both namespaces, under the sprite's
+  name and under the same name without its `c_` prefix — a costume and the hat
+  it copies share one effect folder, named after whichever came first. Measured
+  over the shortlist's
+  3,242 sprite names: 40 folders by the exact name, 46 with the variant, 120 MB.
+  The variant steals nothing: of the 39 folders claimed by more than one sprite
+  name, the 5 claimed by an exact and a stripped name are all the base/costume
+  pair of the same hat.
+
+  It reaches **2 of the 9** effect costumes the Divine-Pride audit found. The
+  other 7 are filed under a name their sprite does not give — `resources/effects/`
+  already holds a `gold_shower` and a `time_accessory` that look like two of
+  them — and our own are mapped to those names by hand in
+  `resources/effects/index.json`. That is a mapping, not a path shape, and
+  nothing here reads the client's own effect table yet.
+
+### Fixed
+- **The slot index read Portuguese and Chinese only.** iRO writes `Position :` /
+  `Location :` and thRO writes `ตำแหน่ง :`, and **both put the value in
+  English** — so this did not miss a few odd items, it missed two whole clients,
+  1,906 + 2,457 position lines in iRO and 3,169 in thRO. On top of that
+  `slotindex.mjs` asked for `iteminfo_new.lub` by filename, so iRO's table
+  (`itemInfo.lub`) was never a slot source at all. The index goes from 2,753 to
+  **2,928** (kind, view) pairs with a position. Checked against Divine-Pride's
+  `equipLocation`: of the 1,805 views it is unanimous about, the new value is
+  right on 82 and the old one on 4.
+
+- **A slot names a position, not a sprite table.** The Costume Whisper Candy
+  Pouch equips in the garment position while its sprite is in the accessory
+  table of all eight clients, so keying its slot row by the slot made
+  `robe:2579` — a key no client defines and no consumer can join against, which
+  left a costume whose position *had* been read arriving with none. `tableFor`
+  gives way only when the slot's table defines the view nowhere and the other
+  one does: 14 items, 3 keys, the same three the app marks with `viewKind`.
+  Reported by a player, who counted 19 costumes shown in the wrong slot.
+
 ## 2026-11-20
 
 ### Added
