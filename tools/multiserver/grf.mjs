@@ -18,7 +18,11 @@
 //   v0x300  "Event Horizon": 4-byte gap before the compressed table, 21-byte
 //         trailer with a 64-bit data offset. Lists fine; its payloads carry
 //         flags = 0x80 and do NOT extract, so the indexer records these
-//         archives as `blocked` rather than silently skipping them.
+//         archives as `blocked` rather than silently skipping them. What a
+//         payload actually looks like — the 4-byte method header, the entropy,
+//         and every codec and DES pass ruled out on a real kRO .gsf — is
+//         written down above `parseFileTableV2` in extract-grf.mjs, which owns
+//         the format.
 
 import {
   decodeClientString,

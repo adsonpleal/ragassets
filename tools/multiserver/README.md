@@ -143,6 +143,30 @@ carried a `ClassNum` and belonged to neither, and the result reproduces 1,148 of
 the app's own 1,239 named pairs. Names the client itself has not filled in
 are dropped rather than shipped: twRO carries a literal `(null)` for 94 items.
 
+**And sometimes only the item table knows the view exists.** jRO's `AccessoryId`
+declares `acc:881`, `acc:883` and `acc:1074`, and **no client's `AccName` names
+them** — not jRO's own. A view with no sprite name is a view the planner cannot
+build a target for, so those three sat in the shortlist as needed, nameless and
+unfetchable, while five item tables carried the whole answer: item 18742,
+`ClassNum` 881, resource `달과별의장식`, equip position mid, "Luar de Cristal" in
+our own client, and the costume flag set on twRO and thRO. The art is in iRO's
+and jRO's patches under `악세사리/남/남_달과별의장식.spr`.
+
+So `viewsFromItems` closes the loop the other way: an item with a `ClassNum`
+whose resource name is in neither sprite table still identifies its view, and
+the **equip position** decides the namespace — garment is a robe, top/mid/low is
+a headgear, and a weapon has neither (its `ClassNum` is that third space) and
+stays out. The view id has to be one the sprite table does not already carry:
+where both speak, the sprite table is the authority on its own namespace. Those
+rows are written into `views.tsv`/`robes.tsv` with `source=item`.
+
+It is a narrow rule, and the measurement is the reason to trust it: across the
+five clients that ship an item table it places 78 headgear and 7 garment views,
+of which **4 are views no sprite table named** — `acc:881`, `acc:883`,
+`acc:1074` and thRO's `acc:2830 _Primordial_Weapons` — and the other ~2,000
+items with a `ClassNum` and an unplaceable resource have no equip position
+either.
+
 Watch the encodings: display names are in the server's language (Shift-JIS,
 Big5, EUC-KR), but **resource names are Korean in every client** because they are
 GRF paths. Decoding the resource table as Shift-JIS looks like it works and
@@ -161,7 +185,8 @@ node tools/multiserver/cli.mjs seed          # views.tsv only, no item names
 ### 2b. `renderable` — which view ids our own resolver can draw
 
 ```bash
-node tools/multiserver/cli.mjs renderable                    # all of LATAM's views
+node tools/multiserver/cli.mjs renderable                    # both tables, all of LATAM's views
+node tools/multiserver/cli.mjs renderable --kind robe        # garments only
 node tools/multiserver/cli.mjs renderable --limit 400 --job 4054
 ```
 
@@ -176,14 +201,39 @@ all, so neither the status code nor the content type can be read for an answer.
 The probe therefore renders the bare character once per pose up front and
 compares bytes.
 
-It asks with a bare `headgear=<view>` and **no sprite name**, which is the whole
-point: the resolver's own table has to supply the art. (`find-blank-visuals`
-asks the opposite question with the same machinery — see 5c — and passes the
-sprite explicitly.) A view that looks blank is retried through ten poses before
-being called blank, because "the resolver has never heard of this id" and "this
-sprite defines no frames that early" are different facts and only the first
-means the art is missing. Only the blanks pay for the extra nine: 400 views cost
-427 renders.
+It asks with a bare `headgear=<view>` / `garment=<view>` and **no sprite name**,
+which is the whole point: the resolver's own table has to supply the art.
+(`find-blank-visuals` asks the opposite question with the same machinery — see
+5c — and passes the sprite explicitly.) A view that looks blank is retried
+through ten poses before being called blank, because "the resolver has never
+heard of this id" and "this sprite defines no frames that early" are different
+facts and only the first means the art is missing. Only the blanks pay for the
+extra nine: 400 views cost 427 renders.
+
+**Both namespaces, and until 2026-11-20 only one of them was asked.** The probe
+drove `headgear=` alone and the file carried no `kind` column, so stage 3 read
+every row as an accessory view. No garment view was ever probed, which is not
+the same as "no garment draws" but reads identically off the shortlist: all 338
+of its `robe` rows said `listed`, `unprobed` or `absent`, never `draws` or
+`blank`. Anyone counting "views our mirror draws that no catalogue lists" off
+that column got **zero garments by construction** — and an audit did, before the
+numbers below were measured by driving `garment=` by hand.
+
+What the two tables actually say, over LATAM's 2,859 accessory and 330 garment
+views: the garment half is **223 drawing, 107 blank**, and 76 of the drawing
+ones are views `costumes.json` does not list. The row now leads with `kind`, and
+a file written by the old tool is still read — as accessories, which is what
+those rows meant.
+
+The ladder is the same for both. Walking extra classes before calling a garment
+blank looks obviously right — a garment is a folder with one sprite pair per
+class and sex, so partial art is invisible on the wrong body — and was measured
+away: every one of the 223 is settled on the asked-for class, and two more
+classes changed no verdict while tripling what each blank costs. That case
+belongs to `find-blank-visuals.mjs`, which renders a foreign mirror; this probe
+asks our own resolver, whose tree is complete. The *pose* half does earn its
+keep: 11 of the 223 draw nothing standing and appear only from action type 1 or
+3 on, the school bags and the Poring bag among them.
 
 This lived in the app's repository until 2026-11-20, which meant that re-running
 it after a resolver rebake — a ragassets maintenance operation — needed a
@@ -202,9 +252,36 @@ because ragassets does not own the consumer) and the render probe above
 with a `need` column. Nothing is filtered out of the file — a stage that drops
 rows is one you cannot audit.
 
-Current numbers (5 clients catalogued): 2,934 view ids, of which 1,192 are
-listed in the app, 1,054 render on our mirror already, 613 are named by our
-client but draw nothing, and 75 are not in our client at all.
+The probe's verdicts are keyed `<kind>:<view>` like everything else here. They
+were keyed `acc:<view>` unconditionally until 2026-11-20, which was correct for
+what the probe then produced and wrong the moment it learnt to ask about
+garments — see 2b for what that cost.
+
+**The consumer's rows need the same care.** A slot normally says which namespace
+a view id lives in, and reading it is right for 1,236 of the app's 1,239 items.
+For the other three it is backwards, and the app says so with a `viewKind`
+field — which it publishes *only* where it disagrees with the slot, so every row
+that carries one was read wrong: "Buquê Gigantesco" equips in Baixo and its 128
+is a robe, two shields equip in Capa and their 2827/2828 are accessory ids. Each
+one marked a view listed that is a different costume in the other table, and
+left the real one reading unlisted. `acc:128` is a worked example: it is the
+Opera Phantom Mask, which we draw and do not list, and it read `listed` because
+a bouquet cape borrowed its key.
+
+Current numbers (8 clients catalogued, both namespaces probed): **3,272 view
+ids** — 2,934 headgear and 338 garment — of which 1,239 are listed in the app,
+**1,249 render on our mirror already**, 701 are named by our client but draw
+nothing, and 83 are not in our client at all. `need` is **784**: 669 headgear
+and 115 garment. The `viewKind` fix moved no row into or out of `need` — all
+four misread views draw either way — so it corrects what the file says about our
+own instance, not what the plan would fetch.
+
+Probing the garment table moved that `need` by itself. It was 981, and **197 of
+those views the plan wanted to fetch and did not need to** — 77 garments it
+turns out we already draw, plus 120 headgears the probe had never reached
+because the file on disk was a 400-view slice. Nothing moved the other way. On
+this README's own per-garment average (~629 files, ~27 MB) those 77 are roughly
+2 GB of planned download that was never needed.
 
 Both inputs are optional and both change the answer, so a run without one says
 so rather than reporting that every view in every client is missing.
@@ -216,30 +293,43 @@ node tools/multiserver/cli.mjs slots --origin all
 ```
 
 The client's item table has **no equip-position field**. The position is written
-in the item's *description text*, as a labelled line in that server's language,
-and ragassets reads only the Portuguese form — so every foreign costume came
-back with no slot at all. The labels and values below were collected from the
-tables on disk, not guessed:
+in the item's *description text*, as a labelled line in that server's language.
+The labels and values below were collected from the tables on disk, not guessed:
 
 | | label | values |
 |---|---|---|
 | pt | `Posição :` / `Equipa em :` | `Topo` `Meio` `Baixo` `Capa`, joined by "e" or "," |
 | zh | `位置 :` | `頭上` `頭中` `頭下` (head upper/middle/lower), `披肩` (shoulder cape) |
+| en | `Position :` / `Location :` | `Upper` `Middle` `Lower` `Garment`, joined by ",", "&" or "." |
+| th | `ตำแหน่ง :` | **English values**, with a Thai weight field after them |
 
 Chinese joins with `/`, `、`, or nothing at all (`頭上中下`), and sometimes runs
 into the next field with no separator (`頭上重量: 0`) — so the parser checks for
-上/中/下 inside a 頭-prefixed value rather than matching whole words.
+上/中/下 inside a 頭-prefixed value rather than matching whole words. English is
+the opposite: `lower` contains `low` and `middle` contains `mid`, so those two
+match on word boundaries, and `Locations :` — iRO's list of *towns* — is kept
+out by the colon the label has to be followed by.
 
-Only three of the first seven origins ship a readable `iteminfo_new.lub`
-(LATAM, twRO, twRO Zero); jRO's legacy `.txt` pair carries no description, and
-kRO/kRO Zero/iRO ship no reachable modern table. But item ids are global, so
-those three name **2,753 (kind, view) pairs** — 1,399 top, 459 mid, 635 low,
-260 garment — well beyond the costumes they themselves offer.
+The last two rows of that table were missing until 2026-11-22, and reading pt
+and zh only did not cost a handful of odd items. It cost **two whole clients**,
+one of them the English one: iRO writes 1,906 + 2,457 position lines under its
+two labels and thRO writes 3,169, and none of them was read. thRO is the sharper
+lesson — a Thai label with an English value, so matching the label alone would
+still have come back with nothing.
 
-thRO ships one too, and **iRO ships one under a name of its own**,
-`System/itemInfo.lub` — see `ITEM_INFO_FILES` in `iteminfo.mjs` for how long
-that cost us. So there are five, and the 2,753 figure above is the three-source
-measurement and was not re-run, so it understates.
+Five of the eight origins ship a readable item table: LATAM, twRO, twRO Zero and
+thRO as `iteminfo_new.lub`, and **iRO under a name of its own**,
+`System/itemInfo.lub`. jRO's legacy `.txt` pair carries no description and
+kRO/kRO Zero ship no reachable modern table. This stage spent its first life
+reading four of the five, because it asked for one filename instead of asking
+`ITEM_INFO_FILES` in `iteminfo.mjs` which names exist — the same mistake that
+module was written to record, made one directory away.
+
+Item ids are global, so those five name **2,928 (kind, view) pairs** — 1,479
+top, 458 mid, 698 low, 293 garment — well beyond the costumes they themselves
+offer. Against the four-source index that preceded them: **+178 keys** (145 from
+iRO, 31 from thRO, 2 from LATAM's two older labels), 55 keys whose slot changed,
+and 3 keys retired by the rule below.
 
 Each new one improves the *other* clients, because the `costume` flag is pooled
 across every readable table and the name/id tie-break prefers a flagged id.
@@ -249,15 +339,43 @@ four more jRO rows, one of them off a 「レンタル衣装」 *rental* costume 
 permanent one. That is the strongest argument for adding an origin that brings
 no artwork at all.
 
-Where two clients disagree (236 pairs do), the earlier source wins and the
+Where two clients disagree (459 pairs do), the earlier source wins and the
 sources come in origin order, LATAM first: LATAM is the server the app
 simulates, so where it defines a view it is the authority on that view. That
 ordering takes agreement with the app's own database from 1,227/1,239 to
-**1,231/1,239**; the 5 that still differ are views where the app and this index
-pick a different *item*, and the two items genuinely carry different slot sets.
+**1,231/1,239**; the ones that still differ are views where the app and this
+index pick a different *item*, and the two items genuinely carry different slot
+sets.
+
+Adding iRO at rank 1 puts it above twRO on every view LATAM does not define,
+which is what moved those 55 slots, so it was checked against a source outside
+this pipeline: Divine-Pride's `equipLocation` bit field. Of the 1,805 index views
+Divine-Pride is unanimous about, the two agree on 1,690, the **new value is right
+on 82 and the old one on 4**, and 29 are wrong either way. On the 55 that moved
+it is 29 to 4. The four where twRO was right and iRO is not — `acc:1082`
+Deviruchi Balloon, `acc:1816` Dancing Butterfly, `acc:1694` Darkness Veil and
+`acc:1725` Straight Long (Black) — are left as they are rather than special-cased:
+the ordering is a rule about which client to believe, and it is 20:1 ahead.
+
+**A slot names a position, not a sprite table.** `kindFromSlots` answers "which
+table" from the slot alone, and for a few costumes the two disagree: the Costume
+Whisper Candy Pouch equips in the garment position, so the slot said the robe
+table, but its `_C_Halloween_Candypouch` is in the **accessory** table of all
+eight clients and in no robe table at all. Keyed `robe:2579` it was a key no
+client defines and the consumer can never join against, so a costume whose
+position *had* been read still reached the app with none. `tableFor` gives way
+only when the slot's table defines the view **nowhere** and the other one does —
+14 items, 3 keys, all three the same ones the app marks with `viewKind`
+(2579, 2827, 2828). A view both tables define is two different costumes and the
+slot is the only thing that can tell them apart, so it is left alone.
 
 This is product data, not just fetch order: the app needs a costume's slot to
-show it at all.
+show it at all. Measured on the 517 foreign rows the app publishes today, the
+index knew the position of 337 and now knows 422; 375 confirm what the app shows,
+**47 move it** (17 top→low, 16 mid→low, 13 top→mid, 1 top→garment), and 95 are
+still named by no readable table — jRO exclusives, mostly, since jRO ships no
+descriptions at all. Of the 47, Divine-Pride is unanimous about 16 and agrees
+with the new value **16 times out of 16**.
 
 ### 4a. `plan` — decide what to fetch, and from where
 
@@ -298,9 +416,18 @@ has 343; `acc:1931 _C_Dullahan_Mask` went to kRO Zero, which has one sex, while
 twRO has both. Both would have been fetched, stored, and found undrawable one
 stage later. `originCanDraw` applies exactly the test stage 5 applies to the
 tree — both sex `.spr` files for a headgear, one `.spr` anywhere in the folder
-for a garment — so a view that no origin can render is reported as unreachable
-*before* the bytes are spent, instead of becoming a costume the catalogue
-throws away.
+for a garment, **or an effect folder with a `.str` in it, in either namespace** —
+so a view that no origin can render is reported as unreachable *before* the
+bytes are spent, instead of becoming a costume the catalogue throws away.
+
+That last clause is the whole reason `.str` support took three passes to land.
+An effect costume IS its animation: a `.str` and the textures it plays, with at
+most a placeholder sprite. Demanding a `.spr` dropped the **candidate group**,
+so the effect files the new targets had just found went with it and the plan
+reported the view as carried by no archive at all — which is why the first
+measurement said the effect tier reached only 2 of the 9. The test lives in two
+places by necessity (here and `costumeDraws` in stage 5) and the two have to say
+the same thing, or the plan promises what the catalogue rejects.
 
 **A patch is not a sprite.** twRO's client patches run 2–292 MB (median 2.8,
 mean 60 in the sample on disk), and the sprites inside are a few hundred KB.
@@ -333,8 +460,54 @@ per class and sex, ~624 files per view, and one view alone is 710 files and
 468 MB. Headgear is two files. By slot, the same 4,261 MB splits as: top 94 MB,
 mid 16 MB, low 30 MB, garment 3,216 MB, and 904 MB for views no client names a
 slot for (the ones only iRO, kRO or jRO define). `--tiers` splits the costume's own files
-(`core`) from the aura folder some hats carry (`effect`, only 1.2 MB in
-practice), so a fetch can start with the cheap half.
+(`core`) from the effect files some hats carry (`effect`), so a fetch can start
+with the cheap half.
+
+**The effect tier could not see a `.str` at all**, and that took three fixes,
+each of which looked like the whole answer on its own. A costume whose whole
+visual is a `.str` animation — nine of the ones Divine-Pride lists and we do not
+show — keeps it under `/texture/effect/efst_<sprite>/`, while `spriteTargets`
+only ever reached `/sprite/이팩트/`, where a *sprite-shaped* effect lives.
+
+1. `effectTargets` asks for the `.str` folder. On its own it changed **nothing**:
+   `resolveOrigin`'s cheap gate was `/sprite/`, which dropped the new target
+   before it was ever matched.
+2. The gate takes `/texture/effect/` as well. Now the files are found — and the
+   plan still came out with the same 513 covered views, because
+   `originCanDraw` threw away every candidate group with no `.spr` in it, which
+   is exactly what an effect costume is. See 4a above.
+3. The folder name is not always prefixed. `robe:94 C_Rotating_Gears` ("Capa de
+   Engrenagens") keeps its animation in `/texture/effect/C_Rotating_Gears/`,
+   with no `efst_` at all, in four clients — and a second copy in
+   `/sprite/로브/C_Rotating_Gears/`, which the ordinary garment target was
+   already matching and `originCanDraw` was already rejecting.
+
+The gate was `/texture/effect/efst_` — 1,798 rows in iRO's index and 2,014 in
+twRO's, against 26,501 and 30,817 for the whole effect tree — and widening it to
+the whole tree is what step 3 costs: one `includes` per row on ~57k extra rows
+across eight clients, where the gate is the cheap test and the targets decide.
+
+Two name forms are tried, because a costume and the ordinary hat it copies share
+one effect folder, named after whichever came first: `_C_FlutterButterfly_BL`'s
+is `efst_flutterbutterfly_bl`, with no `c_`. Over the shortlist's 3,242 sprite
+names the exact form finds 40 folders and the variant takes it to 46, 120 MB.
+The variant steals nothing: of the 39 folders claimed by more than one sprite
+name, the 5 claimed by an exact and a stripped name are all the base/costume
+pair of the same hat.
+
+The stripped form is only ever asked for **with** the prefix. `efst_` keeps a
+guess inside the costume-effect tree; `/texture/effect/` is the game's whole
+effect library, where `rotating_gears` or `fire` is somebody else's folder with
+hundreds of textures in it. So three names per sprite: `efst_<sprite>`,
+`efst_<sprite minus c_>`, and `<sprite>`.
+
+The first measurement of this said the folder name was usually wrong and the
+nine costumes needed a hand mapping. That was wrong: `efst_C_Astra_Blessing`
+(with `astra.str`) and `efst_C_Fluttering_Haze` are exactly `efst_` + the sprite
+name, in six clients each, and both matched from the day the target was added.
+What a path shape genuinely cannot reach is a costume whose effect our own
+client maps by hand — `resources/effects/index.json` holds a `gold_shower` and a
+`time_accessory` that look like two of the nine, under names no sprite gives.
 
 The 162 unreachable views include the oldest hats in the game — `_두건` (hood),
 `_머리띠` (headband), `_햇` (hat). They have sat in the installer's `data.grf`
@@ -446,11 +619,38 @@ may be absent from that table or map to a different name there (views 2007 and
 consumer resolves by name — never by replaying a foreign view id through the
 LATAM table.
 
-What it says today: **663 costumes, none skipped** — the plan and the catalogue
-agree exactly, which is the invariant `originCanDraw` buys. 600 are named, 188
-carry an English identifier. By origin: iRO 231, jRO 119, kRO Zero 113, LATAM
-71, twRO 64, twRO Zero 38, kRO 27. By slot: top 163, low 132, garment 111, mid
-87, and 200 whose slot no client states.
+**Two sources, and the second one is bigger than the first.** Everything above
+describes a costume whose art this pipeline downloaded into a mirror. There is a
+second kind, and until 2026-11-22 this stage could not see it at all: a view id
+**our own instance already draws**, which the consumer simply does not list.
+Stage 3 finds them — its `latam=draws` rows — and stage 4 then deliberately
+leaves them out of the plan, because there is nothing to fetch. Having nothing
+to fetch meant having no plan row, and this stage read the plan, so the one
+costume it could never publish was the one that costs no download.
+
+Those rows carry `local: true` and `origin: "latam"`. A consumer renders them
+by view id through the ordinary route, with **no `origin`/`sprite` override**,
+because the view id means the right thing in our own table — that is exactly
+what the render probe measured. `--no-local` leaves them out, for comparing a
+run against an older catalogue.
+
+They also need the `costume` flag, now published on every row, because the two
+sources sweep up different things: the mirror only ever held what stage 4 chose
+to fetch, while a `latam=draws` row can be ordinary equipment our own client
+happens to define. `acc:11` is the Biretta — it draws, it is named, and calling
+it a costume would be wrong. The flag is absent, rather than false, when no
+client that has the view ships one at all.
+
+What it says today: **1,762 costumes, none skipped** — 663 from the mirror (the
+plan and the catalogue agree exactly, which is the invariant `originCanDraw`
+buys) and **1,099 from our own tree**, of which 788 have the costume flag, a name
+and a slot. 1,696 are named, 1,135 carry an English identifier. By origin: LATAM
+1,170, iRO 231, jRO 119, kRO Zero 113, twRO 64, twRO Zero 38, kRO 27. By slot:
+top 751, low 492, mid 298, garment 144, and 176 whose slot no client states.
+
+Of the 1,249 views stage 3 says we draw and the app does not list, 1,099 reach
+the catalogue; the other 150 have no sprite name in any client's table, and the
+sprite name is what the icon route is keyed by.
 
 **Where it comes from and who has it are different questions.** `origin` is the
 one tree whose files render it — whichever client the extraction found it

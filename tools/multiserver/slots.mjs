@@ -6,17 +6,32 @@
 // Portuguese, though, so every foreign costume came back with no slot at all.
 //
 // The labels and values below were collected from the tables on disk, not
-// guessed. Across LATAM, twRO and twRO Zero (the three origins that ship a
-// readable `iteminfo_new.lub`), the position line reads:
+// guessed. Across the five origins that ship a readable item table, the
+// position line reads:
 //
 //   pt   "Posição : Topo"            Topo / Meio / Baixo / Capa
 //        "Equipa em : Topo e Meio"   joined with "e" or ","
 //   zh   "位置 : 頭上"                頭上 / 頭中 / 頭下 (head upper/middle/lower)
 //        "位置 : 披肩"                披肩 — the shoulder cape, i.e. a garment
 //        "位置 : 頭上/中/下"          joined with "/", "、" or run together
+//   en   "Position : Upper"          Upper / Middle / Lower / Garment
+//        "Location : Upper, Middle"  joined with ",", "&" or "."
+//   th   "ตำแหน่ง : Garment ..."       a **Thai label with English values**
 //
-// Coverage on those three: twRO 2,160 of 2,185 costumes, twRO Zero 2,275 of
-// 2,286, LATAM 1,137 of 1,493. The Portuguese gap is real — 356 LATAM costumes
+// The last two are the lesson. iRO and thRO describe positions as plainly as
+// LATAM does — 1,906 + 2,457 lines under iRO's two labels, 3,169 under thRO's —
+// so reading pt and zh only did not come back with "no slot" for a handful of
+// odd items: it came back with no slot for **two whole clients**, one of them
+// the English one. And thRO pairs a Thai label with an English value, so
+// matching the label alone would still have missed every value it names.
+//
+// Two near-misses in the tables are deliberately not special-cased: iRO's one
+// "Head position : Upper.Mid" line, and thRO's two lines where the colon after
+// the label is missing, which leaves the value reading "0".
+//
+// Coverage on the three origins measured when this was pt+zh only: twRO 2,160
+// of 2,185 costumes, twRO Zero 2,275 of 2,286, LATAM 1,137 of 1,493. The
+// Portuguese gap is real — 356 LATAM costumes
 // write no position line at all — which is itself worth knowing, since the app
 // derives the slot the same way.
 //
@@ -34,7 +49,13 @@ export function slotRank(slot) {
 
 // "<label> : <value>", where the value runs until the next "<word> :" field.
 // Both ASCII and fullwidth colons appear, sometimes in the same table.
-const LABEL = /(?:Equipa em|Posi[çc][ãa]o|位置|装備位置)\s*[:：]\s*(.+)/i;
+//
+// Unanchored on purpose, which is what keeps the English half short: iRO's
+// "Head Location", "Head Position" and "Item Position" all end in a label this
+// already matches. "Locations" — iRO's list of *towns* an item sends you to —
+// is excluded by the colon that has to follow, not by a rule of its own.
+const LABEL =
+  /(?:Equipa(?:do|r)? em|Posi[çc][ãa]o|Position|Location|位置|装備位置|ตำแหน่ง[^:：]{0,24})\s*[:：]\s*(.+)/i;
 
 /**
  * The slots named by one position *value* (the text after the label).
@@ -63,6 +84,13 @@ export function parseSlotValue(value) {
   if (t.includes("meio")) slots.push("mid");
   if (t.includes("baixo") || /(^|\s)ixo\b/.test(t)) slots.push("low");
   if (t.includes("capa")) slots.push("garment");
+  // English, from iRO's own label and from thRO's Thai one. Word boundaries
+  // matter here in a way they do not for pt: "lower" contains "low", "middle"
+  // contains "mid", and iRO's one "mid-low" names two slots across a hyphen.
+  if (/\bupper\b/.test(t)) slots.push("top");
+  if (/\bmid(dle)?\b/.test(t)) slots.push("mid");
+  if (/\blow(er)?\b/.test(t)) slots.push("low");
+  if (/\bgarment\b/.test(t)) slots.push("garment");
   return [...new Set(slots)].sort((a, b) => slotRank(a) - slotRank(b));
 }
 

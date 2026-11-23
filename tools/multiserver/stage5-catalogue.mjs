@@ -33,13 +33,40 @@
 // A costume is listed only when every file the plan assigned to it exists. A
 // headgear missing one sex, or a garment missing its root sprite, does not draw,
 // and a catalogue that promises it would be a catalogue of 404s.
+//
+// **Two sources, not one.** Everything above is about a costume whose art this
+// pipeline downloaded into a mirror. There is a second kind, and for a long time
+// this stage could not see it at all: a view id **our own instance already
+// draws**, which the consumer simply does not list. Stage 3 finds them — they
+// are its `latam=draws` rows — and then stage 4 deliberately leaves them out of
+// the plan, because there is nothing to fetch: the artwork is in our own
+// resources already. Having nothing to fetch meant having no plan row, and this
+// stage reads the plan, so a costume that needs no download was the one costume
+// it could never publish.
+//
+// That is 1,249 views, against 663 in the mirror. 1,099 of them reach this
+// catalogue — the other 150 have no sprite name in any client's table, and the
+// sprite name is what the icon route is keyed by — and 788 of those carry a
+// costume flag, a name and a slot. They carry `local: true` and
+// `origin: "latam"`: the consumer renders them by view id through the ordinary
+// route, with no `origin`/`sprite` override, because the view id means the right
+// thing in our own table — that is what "our instance draws it" measured. A
+// consumer that does not want them can filter on the flag, and a consumer that
+// already parks `origin: "latam"` rows (the app does) keeps working untouched.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sanitizePath } from "../../extract-grf.mjs";
 import { clientNamesFromDisk, normResource } from "./clientnames.mjs";
 import { ORIGINS } from "./origins.mjs";
-import { ACC_DIR, ROBE_DIR, SEX_PREFIX, normalizePath, robeTargets } from "./pathshapes.mjs";
+import {
+  ACC_DIR,
+  ROBE_DIR,
+  SEX_PREFIX,
+  effectFolders,
+  normalizePath,
+  robeTargets,
+} from "./pathshapes.mjs";
 import { paths, readRows } from "./store.mjs";
 
 /**
@@ -65,9 +92,19 @@ import { paths, readRows } from "./store.mjs";
 export function originsFromPaths(costumes, pathsByOrigin) {
   const accWant = new Map(); // normalized .spr path -> "kind:view|sex"
   const robeWant = new Map(); // normalized folder prefix -> Set of "kind:view"
+  const effectWant = new Map(); // effect folder name -> Set of "kind:view"
   for (const c of costumes) {
     const key = `${c.kind}:${c.view}`;
     if (!c.sprite) continue;
+    // An effect costume is "had" by any server carrying its `.str`, in either
+    // namespace: the animation is the artwork. Same question `costumeDraws`
+    // asks of the tree, asked of an index. Keyed by the folder's own name so a
+    // `.str` costs one lookup — `/sprite/로브/c_rotating_gears/gearwheel.str`
+    // and `/texture/effect/c_rotating_gears/gearwheel.str` are the same answer.
+    for (const folder of effectFolders(c.sprite)) {
+      if (!effectWant.has(folder)) effectWant.set(folder, new Set());
+      effectWant.get(folder).add(key);
+    }
     if (c.kind === "robe") {
       for (const prefix of robeTargets(c.sprite)) {
         if (!robeWant.has(prefix)) robeWant.set(prefix, new Set());
@@ -80,10 +117,17 @@ export function originsFromPaths(costumes, pathsByOrigin) {
   }
 
   const found = new Map(); // origin -> Set of "kind:view|sex" and "kind:view"
+  const foundEffect = new Map(); // origin -> Set of "kind:view"
   for (const [origin, paths] of pathsByOrigin) {
     const hits = new Set();
+    const effects = new Set();
     for (const raw of paths) {
       const path = normalizePath(raw);
+      if (path.endsWith(".str")) {
+        const parts = path.split("/");
+        for (const key of effectWant.get(parts[parts.length - 2]) ?? []) effects.add(key);
+        continue;
+      }
       if (!path.endsWith(".spr")) continue;
       // The asset tree is rooted differently in different archives (`data\...`
       // in most, deeper in a few), so both lookups are keyed from the folder
@@ -103,6 +147,7 @@ export function originsFromPaths(costumes, pathsByOrigin) {
       for (const key of robeWant.get(path.slice(at, end + 1)) ?? []) hits.add(key);
     }
     found.set(origin, hits);
+    foundEffect.set(origin, effects);
   }
 
   const out = new Map();
@@ -111,9 +156,10 @@ export function originsFromPaths(costumes, pathsByOrigin) {
     const origins = [];
     for (const [origin, hits] of found) {
       const has =
-        c.kind === "robe"
+        foundEffect.get(origin)?.has(key) ||
+        (c.kind === "robe"
           ? hits.has(key)
-          : SEX_PREFIX.every((sex) => hits.has(`${key}|${sex}`));
+          : SEX_PREFIX.every((sex) => hits.has(`${key}|${sex}`)));
       if (has) origins.push(origin);
     }
     out.set(key, origins);
@@ -159,6 +205,45 @@ export function planByCostume(rows) {
       out.set(key, { kind: r.kind, view: Number(r.view), origin: r.origin, files: [] });
     }
     out.get(key).files.push(r.path);
+  }
+  return out;
+}
+
+/**
+ * The origin a costume carries when its art is ours rather than a mirror's.
+ *
+ * It is a real origin id and not a sentinel on purpose: these views come from
+ * the LATAM client, which is the server the app simulates, and `origins` /
+ * `ORIGINS` already know how to label it. The `local` flag is what says the
+ * bytes come from our own resources and not from `mirror/latam`.
+ */
+export const LOCAL_ORIGIN = "latam";
+
+/**
+ * The costumes our own instance already draws, keyed like the plan's.
+ *
+ * `latam=draws` is stage 3's verdict from the render probe: asked with a bare
+ * `headgear=<view>` and no sprite override, our gateway drew something other
+ * than a naked character. So the art is in our resources and the view id
+ * resolves there — the two things a consumer needs, and neither of them a
+ * download.
+ *
+ * A row with no sprite name is skipped: the name is what the icon route is
+ * keyed by, and a costume nothing can name a file for is not publishable.
+ */
+export function localDraws(shortlist) {
+  const out = new Map();
+  for (const r of shortlist) {
+    if (r.latam !== "draws" || !r.sprite) continue;
+    const view = Number(r.view);
+    if (!Number.isInteger(view) || !view) continue;
+    out.set(`${r.kind}:${view}`, {
+      kind: r.kind,
+      view,
+      origin: LOCAL_ORIGIN,
+      files: [],
+      local: true,
+    });
   }
   return out;
 }
@@ -214,16 +299,24 @@ export function slotsByCostume(rows) {
  *          all — which is exactly what ragassets says about the two it empties
  *          here (`c_snow_powder`, `모험가배낭`): their real visual is a `.str`
  *          world effect, handled by `--effects`, not a sprite.
+ *
+ *   either an effect folder holding a `.str`. A costume whose whole visual is a
+ *          `.str` animation has no sprite to find, in either namespace, and
+ *          asking for one threw away every costume the plan's own new effect
+ *          tier had just fetched. This mirrors `originCanDraw` in
+ *          stage4-plan.mjs on purpose: the two have to agree or the plan
+ *          promises what the catalogue rejects.
  */
 export function costumeDraws(costume, sprite, probe) {
   if (!sprite) return false;
+  if (probe.effectStr?.(costume.origin, sprite)) return true;
   if (costume.kind === "robe") return probe.robeHasSprite(costume.origin, sprite);
   return probe.headgearPair(costume.origin, sprite);
 }
 
 /** The filesystem questions `costumeDraws` asks, isolated so tests can fake them. */
 export function treeProbe({ readdirSync, existsSync: exists }) {
-  const anySpr = (dir) => {
+  const anyFile = (dir, re) => {
     let found = false;
     const walk = (d) => {
       if (found) return;
@@ -236,12 +329,13 @@ export function treeProbe({ readdirSync, existsSync: exists }) {
       for (const e of entries) {
         if (found) return;
         if (e.isDirectory()) walk(join(d, e.name));
-        else if (/[.]spr$/i.test(e.name)) found = true;
+        else if (re.test(e.name)) found = true;
       }
     };
     walk(dir);
     return found;
   };
+  const anySpr = (dir) => anyFile(dir, /[.]spr$/i);
   return {
     robeHasSprite(origin, sprite) {
       const bare = sprite.replace(/^_/, "");
@@ -252,6 +346,13 @@ export function treeProbe({ readdirSync, existsSync: exists }) {
       return ["남", "여"].every((sex) =>
         exists(join(root, sex, `${sex}${sprite.toLowerCase()}.spr`)),
       );
+    },
+    // A `.str` under any of the folder names this sprite could own. The fetcher
+    // lowercases everything under `data/`, so the lowercased names
+    // `effectFolders` returns are the names on disk.
+    effectStr(origin, sprite) {
+      const root = join(paths.mirrorDir(origin), "data", "texture", "effect");
+      return effectFolders(sprite).some((folder) => anyFile(join(root, folder), /[.]str$/i));
     },
   };
 }
@@ -277,9 +378,21 @@ export function buildCatalogue({
   // Empty by default so a caller that does not want the join — or a test —
   // builds the catalogue it always built.
   clientNames = new Map(),
+  // The second source described at the top of this file. On by default: a view
+  // our own instance draws is a costume we can publish, and leaving it out was
+  // the gap, not a policy. `--no-local` on the CLI is for auditing the
+  // difference, not for normal runs.
+  includeLocal = true,
 } = {}) {
-  const byCostume = planByCostume(plan);
+  const planned = planByCostume(plan);
   const short = shortlistByCostume(shortlist);
+  // A planned costume wins over a local one for the same key. They are normally
+  // disjoint — stage 4 does not plan what we already draw — but the LATAM tree
+  // is itself a source, so a view our gateway cannot draw can still be fetched
+  // from LATAM's own patches, and that row describes real files on disk.
+  const local = includeLocal ? localDraws(shortlist) : new Map();
+  for (const key of planned.keys()) local.delete(key);
+  const byCostume = new Map([...planned, ...local]);
   // Which servers ship each costume. Asked once for the whole catalogue,
   // because it costs one pass over every origin's path index.
   const holders = originsFromPaths(
@@ -305,8 +418,10 @@ export function buildCatalogue({
       skipped.unknownToShortlist++;
       continue;
     }
-    // The sprite name comes from the shortlist, so this check needs it.
-    if (!costumeDraws(c, s.sprite, probe)) {
+    // The sprite name comes from the shortlist, so this check needs it. A local
+    // row skips it: there is no mirror tree to ask, and the question it answers
+    // — does this draw? — is what the render probe already measured.
+    if (!c.local && !costumeDraws(c, s.sprite, probe)) {
       skipped.incomplete++;
       continue;
     }
@@ -349,9 +464,21 @@ export function buildCatalogue({
       // translation base, not a display name.
       aegis: s.aegis || null,
       slots: slotOf.get(key) ?? [],
+      // Does any client flag this as a costume? Published because the two
+      // sources differ in what they sweep up: the mirror only ever held what
+      // stage 4 chose to fetch, while a `latam=draws` row can be an ordinary
+      // headgear our own client happens to define — `acc:11` is the Biretta,
+      // and a consumer showing it as a costume would be wrong. Absent when no
+      // client that has the view ships the flag at all, which is not the same
+      // as a client saying no.
+      ...(s.costume === "yes" ? { costume: true } : s.costume === "no" ? { costume: false } : {}),
       // Present only when true, so the ordinary row stays small.
       ...(isBlank.has(blankKey(c)) ? { blank: true } : {}),
-      // What is on disk, which after pruning is not what the plan listed.
+      // The art is in our own resources, not under `mirror/<origin>`: render it
+      // by view id, with no origin or sprite override. See the file header.
+      ...(c.local ? { local: true } : {}),
+      // What is on disk, which after pruning is not what the plan listed. A
+      // local row planned nothing, so it is 0 and `local` is what to read.
       files: c.files.filter((p) => present(c.origin, p)).length,
     });
   }
@@ -365,6 +492,11 @@ export function buildCatalogue({
   let named = 0;
   let withAegis = 0;
   let blankCount = 0;
+  // The second source, counted apart: it is the difference between "costumes we
+  // extracted" and "costumes we can show", and conflating the two is how the
+  // 1,249 stayed invisible for so long.
+  let localCount = 0;
+  let localPublishable = 0;
   let withNames = 0;
   // How many costumes each client can name, which is not how many it has art
   // for: iRO supplies the art for 231 and names 99.
@@ -379,6 +511,12 @@ export function buildCatalogue({
     if (c.name) named++;
     if (c.aegis) withAegis++;
     if (c.blank) blankCount++;
+    if (c.local) {
+      localCount++;
+      // What a consumer can actually put in a grid: flagged a costume by some
+      // client, named, and placed somewhere on the character.
+      if (c.costume && c.name && c.slots.length) localPublishable++;
+    }
     if (c.names) {
       withNames++;
       for (const o of Object.keys(c.names)) namesPerOrigin[o] = (namesPerOrigin[o] ?? 0) + 1;
@@ -410,6 +548,8 @@ export function buildCatalogue({
       idsAgree,
       idsDisagree,
       blank: blankCount,
+      local: localCount,
+      localPublishable,
       perOrigin,
       perSlot,
       skipped,
@@ -426,7 +566,11 @@ export function catalogueDocument({ costumes, stats }, { generatedAt } = {}) {
   return {
     version: 1,
     generatedAt: generatedAt ?? new Date().toISOString().slice(0, 10),
-    // Spelled out so a consumer can label a badge without knowing this pipeline.
+    // Spelled out so a consumer can label a badge without knowing this
+    // pipeline. `assets` is where that origin's *mirror* is, and it stays true
+    // for LATAM — 71 costumes were fetched from LATAM's own patches. A row with
+    // `local: true` is the exception and says so on the row: its bytes are in
+    // our own resources, so it is rendered by view id and reads no mirror.
     origins: Object.fromEntries(
       used.map((id) => [id, { label: ORIGINS[id]?.label ?? id, assets: `mirror/${id}` }]),
     ),
@@ -439,6 +583,9 @@ export function catalogueDocument({ costumes, stats }, { generatedAt } = {}) {
       withIds: stats.withIds,
       idsPerOrigin: stats.idsPerOrigin,
       blank: stats.blank,
+      // How many of these need no mirror at all. A consumer deciding whether to
+      // show them wants the number before it reads 1,099 rows to find out.
+      local: stats.local,
       perOrigin: stats.perOrigin,
       perSlot: stats.perSlot,
     },

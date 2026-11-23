@@ -14,6 +14,140 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-23
+
+### Added
+- **The item table can name a view the sprite tables never did.** jRO's
+  `AccessoryId` declares `acc:881`, `acc:883` and `acc:1074`, and no client's
+  `AccName` names them — not jRO's own — so the shortlist carried three needed
+  views with no sprite name, which is a view the planner cannot build a target
+  for. Five item tables carried the whole answer: item 18742, `ClassNum` 881,
+  resource `달과별의장식`, equip position mid, "Luar de Cristal" in our own
+  client, the costume flag set on twRO and thRO, and the art sitting in iRO's
+  and jRO's patches under `악세사리/남/남_달과별의장식.spr`. Stage 2 now places
+  an item with a `ClassNum` whose resource is in neither sprite table by its
+  **equip position** — garment is a robe, top/mid/low a headgear, a weapon has
+  neither and stays out — and writes the row with `source=item`, as long as the
+  sprite table does not already carry that view id. Across the five clients
+  with an item table that places 78 headgear and 7 garment views, of which 4 are
+  views nothing else named (the three above and thRO's `acc:2830
+  _Primordial_Weapons`).
+
+### Fixed
+- **An effect costume is no longer thrown away for having no sprite.** The
+  `.str` work shipped yesterday found the files and the plan still came out
+  unchanged, because `originCanDraw` — the test that stops the planner fetching
+  a costume the catalogue would reject — required a `.spr`, and a costume whose
+  whole visual is a `.str` animation has none. It dropped the whole candidate
+  group, effect files included, so the plan reported those views as carried by
+  no archive at all. A `.str` now counts as artwork in both namespaces, in the
+  planner and in `costumeDraws`/`treeProbe`/`originsFromPaths` on the catalogue
+  side, which have to agree or the plan promises what the catalogue rejects.
+
+- **An effect folder is not always prefixed.** `robe:94 C_Rotating_Gears` ("Capa
+  de Engrenagens") keeps its animation in `/texture/effect/C_Rotating_Gears/`,
+  with no `efst_`, in four clients. `effectFolders` asks for three names per
+  sprite — `efst_<sprite>`, `efst_<sprite minus c_>` and `<sprite>` — and the
+  stripped form is deliberately never tried unprefixed, because
+  `/texture/effect/` is the game's whole effect library where a name like
+  `fire` is somebody else's folder. The planner's cheap gate widens from
+  `/texture/effect/efst_` to `/texture/effect/` to let the unprefixed form
+  through: ~57k more rows past the gate across eight clients, where the gate is
+  the cheap test and the targets decide.
+
+- Yesterday's note that seven of the nine effect costumes are "filed under a
+  name their sprite does not give" was wrong. `efst_C_Astra_Blessing` (with
+  `astra.str`) and `efst_C_Fluttering_Haze` are exactly `efst_` + the sprite
+  name, in six clients each, and matched from the day the target was added; what
+  kept them out was the `.spr` requirement above. Corrected in the code and in
+  the README.
+
+### Measured
+- **What a kRO `.gsf` payload looks like, and why it still does not extract.**
+  Nine of the costumes the Divine-Pride audit wants exist in no readable archive
+  — the kROM Guerrero / Hanom / Tatsi / Sirena / Diosa / Bluehole set, all of it
+  inside `2026-07-29_live_data_3258_3264_*.gsf`, a GRF **0x300** "Event Horizon"
+  archive that lists fine and is recorded `blocked`. Measured on that archive
+  (13.5 MB, 1,515 entries): every entry carries flags `0x80` and no `FILE` bit;
+  `compSize == compSizeAligned` throughout; spans are contiguous from offset 0,
+  so the data base is `0x2e` as in v0x200; and every payload opens with a 4-byte
+  header, `01 01 00 00` or `01 02 00 00`. What follows is 7.83 bits/byte and is
+  not zlib, raw deflate, gzip, brotli, zstd or an LZMA2 chunk, with or without
+  those 4 bytes, at either base, and neither GRF DES pass followed by inflate
+  produces anything. The method byte is the thing to attack next, against the
+  client binary rather than by guessing. Written down above `parseFileTableV2`
+  in `extract-grf.mjs`.
+
+- **`acc:732` "Bone Hat" stays out on purpose.** Divine-Pride lists it as a
+  costume (item 19820); all five item tables we can read say `costume=false`,
+  iRO names it "C Bone Hat", and the item carries no equip position at all. The
+  shortlist follows the clients, so the view counts as ordinary equipment and
+  `--include-equipment` is the way to fetch it.
+
+## 2026-11-22
+
+### Added
+- **The multi-server catalogue publishes the costumes we already draw.** Stage 5
+  listed a costume only when its art was in a mirror, and stage 4 deliberately
+  never fetches a view our own instance draws — there is nothing to download.
+  Having nothing to download meant having no plan row, and stage 5 reads the
+  plan, so the costumes that cost nothing were the ones it could never publish.
+  `foreign-costumes.json` goes from **663 to 1,762**: 663 from the mirror and
+  **1,099 from our own tree**, 788 of them with a costume flag, a name and a
+  slot. They carry `local: true` and render by view id with no `origin`/`sprite`
+  override, because the view id means the right thing in our own table — which
+  is what the render probe measures. `--no-local` leaves them out.
+
+- **Every catalogue row now carries the `costume` flag** a client ships, because
+  the second source needs it: a view we draw can be ordinary equipment our own
+  client happens to define (`acc:11` is the Biretta), and only the flag says so.
+  Absent, not false, where no client that has the view ships one.
+
+- **The plan can reach a `.str` effect folder**, which took two fixes rather
+  than one. A costume whose whole visual is a `.str` animation was unfetchable:
+  `spriteTargets` reaches `/sprite/이팩트/`, where sprite-shaped effects live,
+  and nothing reached `/texture/effect/efst_<sprite>/`, where a `.str` and its
+  textures do — and `resolveOrigin`'s cheap gate was `/sprite/`, so adding the
+  target alone changed nothing. A plan over all eight clients had **4 effect
+  files, 1.2 MB, not one `.str`**; it now has **407 files, 55.6 MB, 18 `.str`
+  across 19 views**, for 2 more patches. The new gate is narrow on purpose:
+  `/texture/effect/` is 26,501 rows in iRO's index, `/texture/effect/efst_` is
+  1,798. `effectTargets` adds the folder in both namespaces, under the sprite's
+  name and under the same name without its `c_` prefix — a costume and the hat
+  it copies share one effect folder, named after whichever came first. Measured
+  over the shortlist's
+  3,242 sprite names: 40 folders by the exact name, 46 with the variant, 120 MB.
+  The variant steals nothing: of the 39 folders claimed by more than one sprite
+  name, the 5 claimed by an exact and a stripped name are all the base/costume
+  pair of the same hat.
+
+  It reaches **2 of the 9** effect costumes the Divine-Pride audit found. The
+  other 7 are filed under a name their sprite does not give — `resources/effects/`
+  already holds a `gold_shower` and a `time_accessory` that look like two of
+  them — and our own are mapped to those names by hand in
+  `resources/effects/index.json`. That is a mapping, not a path shape, and
+  nothing here reads the client's own effect table yet.
+
+### Fixed
+- **The slot index read Portuguese and Chinese only.** iRO writes `Position :` /
+  `Location :` and thRO writes `ตำแหน่ง :`, and **both put the value in
+  English** — so this did not miss a few odd items, it missed two whole clients,
+  1,906 + 2,457 position lines in iRO and 3,169 in thRO. On top of that
+  `slotindex.mjs` asked for `iteminfo_new.lub` by filename, so iRO's table
+  (`itemInfo.lub`) was never a slot source at all. The index goes from 2,753 to
+  **2,928** (kind, view) pairs with a position. Checked against Divine-Pride's
+  `equipLocation`: of the 1,805 views it is unanimous about, the new value is
+  right on 82 and the old one on 4.
+
+- **A slot names a position, not a sprite table.** The Costume Whisper Candy
+  Pouch equips in the garment position while its sprite is in the accessory
+  table of all eight clients, so keying its slot row by the slot made
+  `robe:2579` — a key no client defines and no consumer can join against, which
+  left a costume whose position *had* been read arriving with none. `tableFor`
+  gives way only when the slot's table defines the view nowhere and the other
+  one does: 14 items, 3 keys, the same three the app marks with `viewKind`.
+  Reported by a player, who counted 19 costumes shown in the wrong slot.
+
 ## 2026-11-20
 
 ### Added

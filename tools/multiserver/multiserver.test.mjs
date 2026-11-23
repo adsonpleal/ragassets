@@ -22,7 +22,9 @@ const hasFields = (got, want) => {
   for (const k of Object.keys(want)) picked[k] = got[k];
   assert.deepStrictEqual(picked, want);
 };
-import { sep } from "node:path";
+import { join, sep } from "node:path";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 // The sex marks that prefix every headgear sprite file name.
 const SEX_M = "남";
@@ -32,10 +34,29 @@ const accPath = (sex, key = "chapeu") =>
   `data/sprite/악세사리/${sex}/${sex}${key}.spr`;
 import { ORIGINS, parsePatchList, rgzProbeOrder, selectOrigins, GRF_EXT, RGZ_EXT } from "./origins.mjs";
 import { ITEM_INFO_FILES, ITEM_INFO_TAILS } from "./iteminfo.mjs";
-import { ACTIONS, GENDERS, firstPoseThatDraws, poseLadder } from "./renderprobe.mjs";
+import {
+  ACTIONS,
+  GENDERS,
+  VIEW_PARAM,
+  firstPoseThatDraws,
+  ladderFor,
+  poseLadder,
+  probeRenderable,
+} from "./renderprobe.mjs";
+import { readAppViews, readRenderProbe } from "./stage3-shortlist.mjs";
+import { tableFor } from "./slotindex.mjs";
 import { diffCatalogues, indexRows } from "./diff-catalogues.mjs";
-import { normalizePath, robeTargets, spriteTargets, targetsFor } from "./pathshapes.mjs";
+import {
+  effectFolders,
+  effectTargets,
+  isEffectTarget,
+  normalizePath,
+  robeTargets,
+  spriteTargets,
+  targetsFor,
+} from "./pathshapes.mjs";
 import { legacyNameCoverage } from "./coverage.mjs";
+import { viewsFromItems } from "./stage2-catalogue.mjs";
 import {
   bestSlotOfStep,
   blockedFrom,
@@ -201,8 +222,106 @@ describe("robeTargets", () => {
 
 describe("targetsFor", () => {
   it("dispatches on the namespace, so a view id is never looked up in the wrong tree", () => {
-    assert.deepStrictEqual(targetsFor("acc", "_C_Chained_Bear"), spriteTargets("_C_Chained_Bear"));
-    assert.deepStrictEqual(targetsFor("robe", "기린의날개"), robeTargets("기린의날개"));
+    assert.deepStrictEqual(targetsFor("acc", "_C_Chained_Bear"), [
+      ...spriteTargets("_C_Chained_Bear"),
+      ...effectTargets("_C_Chained_Bear"),
+    ]);
+    assert.deepStrictEqual(targetsFor("robe", "기린의날개"), [
+      ...robeTargets("기린의날개"),
+      ...effectTargets("기린의날개"),
+    ]);
+  });
+
+  it("asks for the .str folder in both namespaces", () => {
+    for (const kind of ["acc", "robe"]) {
+      assert.ok(
+        targetsFor(kind, "_C_CLB_SS_LL").includes("/texture/effect/efst_c_clb_ss_ll/"),
+        kind,
+      );
+    }
+  });
+});
+
+describe("effectTargets", () => {
+  it("names the folder after the sprite, and after the sprite without its c_", () => {
+    // Both forms exist in the clients' patches: the costume's own
+    // `efst_C_CLB_SS_LL`, and `efst_flutterbutterfly_bl` for a costume whose
+    // sprite is `_C_FlutterButterfly_BL`.
+    assert.deepStrictEqual(effectTargets("_C_CLB_SS_LL"), [
+      "/texture/effect/efst_c_clb_ss_ll/",
+      "/texture/effect/efst_clb_ss_ll/",
+      "/texture/effect/c_clb_ss_ll/",
+    ]);
+    assert.deepStrictEqual(effectTargets("_C_FlutterButterfly_BL"), [
+      "/texture/effect/efst_c_flutterbutterfly_bl/",
+      "/texture/effect/efst_flutterbutterfly_bl/",
+      "/texture/effect/c_flutterbutterfly_bl/",
+    ]);
+  });
+
+  it("asks for the unprefixed folder too, but never for a stripped name", () => {
+    // `robe:94 C_Rotating_Gears` keeps its animation in
+    // `/texture/effect/C_Rotating_Gears/gearwheel.str`, with no `efst_`. The
+    // stripped form is only ever asked for WITH the prefix: `/texture/effect/`
+    // is the game's whole effect library, and `rotating_gears` there could be
+    // anybody's folder.
+    assert.deepStrictEqual(effectTargets("C_Rotating_Gears"), [
+      "/texture/effect/efst_c_rotating_gears/",
+      "/texture/effect/efst_rotating_gears/",
+      "/texture/effect/c_rotating_gears/",
+    ]);
+    assert.strictEqual(
+      effectTargets("C_Rotating_Gears").includes("/texture/effect/rotating_gears/"),
+      false,
+    );
+  });
+
+  it("asks once per form when the sprite has no c_ to strip", () => {
+    assert.deepStrictEqual(effectTargets("_Jirant_Circlet"), [
+      "/texture/effect/efst_jirant_circlet/",
+      "/texture/effect/jirant_circlet/",
+    ]);
+    assert.deepStrictEqual(effectTargets("_붉은고양이귀케이프"), [
+      "/texture/effect/efst_붉은고양이귀케이프/",
+      "/texture/effect/붉은고양이귀케이프/",
+    ]);
+  });
+
+  it("names the folders the mirror would hold, for stage 5 to look inside", () => {
+    // Same list as the targets, minus the directory, because the two must not
+    // disagree: the planner fetches by prefix and the catalogue looks for a
+    // `.str` by folder name.
+    assert.deepStrictEqual(effectFolders("_C_CLB_SS_LL"), [
+      "efst_c_clb_ss_ll",
+      "efst_clb_ss_ll",
+      "c_clb_ss_ll",
+    ]);
+    assert.deepStrictEqual(
+      effectTargets("_C_CLB_SS_LL"),
+      effectFolders("_C_CLB_SS_LL").map((f) => `/texture/effect/${f}/`),
+    );
+  });
+
+  it("matches the real .str path a patch table carries", () => {
+    const targets = effectTargets("_C_CLB_SS_LL");
+    for (const p of [
+      String.raw`data\texture\effect\efst_C_CLB_SS_LL\bbcat.str`,
+      String.raw`data\texture\effect\efst_C_CLB_SS_LL\catan01.TGA`,
+    ]) {
+      const norm = normalizePath(p);
+      assert.strictEqual(targets.some((t) => norm.includes(t)), true, p);
+    }
+  });
+
+  it("skips a name the table does not have", () => {
+    assert.deepStrictEqual(effectTargets(null, "", undefined), []);
+  });
+
+  it("counts both effect trees as the effect tier", () => {
+    assert.strictEqual(isEffectTarget("/sprite/이팩트/c_chained_bear/"), true);
+    assert.strictEqual(isEffectTarget("/texture/effect/efst_c_clb_ss_ll/"), true);
+    assert.strictEqual(isEffectTarget("/sprite/악세사리/남/남_c_chained_bear."), false);
+    assert.strictEqual(isEffectTarget("/sprite/로브/기린의날개/"), false);
   });
 });
 
@@ -371,6 +490,175 @@ describe("firstPoseThatDraws", () => {
   });
 });
 
+describe("probeRenderable across both sprite tables", () => {
+  // The regression this directory paid for in a wrong audit: the probe drove
+  // `headgear=` only, renderable.tsv carried no kind column, and stage 3 read
+  // every row as an accessory — so no garment view was ever asked about and
+  // the shortlist could not say `draws` for one. See renderprobe.mjs.
+  const asked = [];
+  const gateway = async (url) => {
+    const query = String(url).split("?")[1];
+    asked.push(query);
+    // Only `garment=7` draws anything; everything else is the bare character.
+    const body = /&garment=7$/.test(query) ? "cape" : "bare";
+    return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(body) };
+  };
+  async function withGateway(body) {
+    const real = globalThis.fetch;
+    globalThis.fetch = gateway;
+    try {
+      return await body();
+    } finally {
+      globalThis.fetch = real;
+    }
+  }
+
+  it("drives garment= for a robe view and headgear= for an accessory", async () => {
+    asked.length = 0;
+    const r = await withGateway(() =>
+      probeRenderable(
+        [
+          { kind: "acc", view: 7, sprite: "_hat" },
+          { kind: "robe", view: 7, sprite: "wing" },
+        ],
+        { base: "http://probe.invalid", width: 1 },
+      ),
+    );
+    // Same number in two tables, two different answers — which is the whole
+    // reason the key is (kind, view) and not view.
+    assert.deepStrictEqual(
+      r.rows.map((x) => [x.kind, x.view, x.result]),
+      [
+        ["acc", 7, "blank"],
+        ["robe", 7, "drew"],
+      ],
+    );
+    assert.ok(asked.some((q) => q.endsWith("&headgear=7")), "the accessory view must be asked as headgear=");
+    assert.ok(asked.some((q) => q.endsWith("&garment=7")), "the garment view must be asked as garment=");
+    assert.deepStrictEqual(r.byKind.acc, { drew: 0, blank: 1, error: 0 });
+    assert.deepStrictEqual(r.byKind.robe, { drew: 1, blank: 0, error: 0 });
+  });
+
+  it("defaults a view with no kind to the accessory table", async () => {
+    // Keeps every caller that predates the split reading the same way.
+    const r = await withGateway(() =>
+      probeRenderable([{ view: 7, sprite: "_hat" }], { base: "http://probe.invalid", width: 1 }),
+    );
+    assert.strictEqual(r.rows[0].kind, "acc");
+  });
+
+  it("keeps the class in the pose it recorded, because the garment ladder varies it", async () => {
+    const r = await withGateway(() =>
+      probeRenderable([{ kind: "robe", view: 7, sprite: "wing" }], {
+        base: "http://probe.invalid",
+        job: 4054,
+        width: 1,
+      }),
+    );
+    // A garment that draws only on one class is a fact worth not re-probing for.
+    assert.match(r.rows[0].pose, /^job=4054&gender=male&action=0$/);
+  });
+});
+
+describe("ladderFor", () => {
+  it("spends the same poses on a garment as on a headgear", () => {
+    // Walking extra classes for garments was tried and measured away: over all
+    // 330 of LATAM's garment views, every one of the 223 that draws is settled
+    // on the asked-for class. See the note in renderprobe.mjs.
+    const acc = ladderFor("acc", 4054);
+    const robe = ladderFor("robe", 4054);
+    assert.deepStrictEqual(robe, acc);
+    assert.strictEqual(acc.length, ACTIONS.length * GENDERS.length);
+  });
+
+  it("names a parameter for every kind it can probe", () => {
+    // A kind with no parameter would build `undefined=<view>` and read blank
+    // for every view in that table — the failure this whole change is about.
+    assert.deepStrictEqual(Object.keys(VIEW_PARAM).sort(), ["acc", "robe"]);
+  });
+});
+
+describe("readRenderProbe", () => {
+  const write = (text) => {
+    const f = join(mkdtempSync(join(tmpdir(), "renderprobe-")), "renderable.tsv");
+    writeFileSync(f, text, "utf8");
+    return f;
+  };
+
+  it("keys a kinded file by both namespaces", () => {
+    const got = readRenderProbe(
+      write(
+        [
+          "kind\tview\tsprite\tresult\tpose\tbytes",
+          "acc\t8\t_mask\tdrew\tjob=4054&gender=male&action=0\t900",
+          "robe\t8\twing\tblank\t\t0",
+        ].join("\n"),
+      ),
+    );
+    // LATAM's 8 is a surgical mask as a headgear and Rudra's wings as a
+    // garment. One of them draws here and the other does not.
+    assert.strictEqual(got.get("acc:8"), "drew");
+    assert.strictEqual(got.get("robe:8"), "blank");
+  });
+
+  it("still reads a file written before the kind column, as accessories", () => {
+    // That is what those rows meant: the old probe only ever drove headgear=.
+    const got = readRenderProbe(
+      write(["view\tsprite\tresult\tpose\tbytes", "8\t_mask\tdrew\tgender=male&action=0\t900"].join("\n")),
+    );
+    assert.deepStrictEqual([...got], [["acc:8", "drew"]]);
+  });
+
+  it("is empty for a file that is not there, rather than throwing", () => {
+    // Both of stage 3's inputs are optional; a run without one says so.
+    assert.strictEqual(readRenderProbe(join(tmpdir(), "no-such-renderable.tsv")).size, 0);
+  });
+});
+
+describe("readAppViews", () => {
+  const write = (doc) => {
+    const f = join(mkdtempSync(join(tmpdir(), "appviews-")), "costumes.json");
+    writeFileSync(f, JSON.stringify(doc), "utf8");
+    return f;
+  };
+
+  it("takes the namespace from the slot when the app says nothing else", () => {
+    const got = readAppViews(
+      write({
+        items: [
+          { id: 1, name: "hat", slots: ["top"], view: 11 },
+          { id: 2, name: "cape", slots: ["garment"], view: 11 },
+        ],
+      }),
+    );
+    assert.deepStrictEqual([...got].sort(), ["acc:11", "robe:11"]);
+  });
+
+  it("obeys viewKind, which the app publishes only when the slot is wrong", () => {
+    // "Buquê Gigantesco" equips in Baixo and its 128 is the C_Clutch_Bouquet
+    // robe; two shields equip in Capa and their ids are accessory ids. Reading
+    // the slot alone got all three backwards — it marked a view listed that is
+    // a different costume in the other table, and left the real one unlisted.
+    const got = readAppViews(
+      write({
+        items: [
+          { id: 480177, name: "Buquê Gigantesco", slots: ["low"], viewKind: "garment", view: 128 },
+          { id: 480807, name: "Escudo Petulante", slots: ["garment"], viewKind: "headgear", view: 2828 },
+        ],
+      }),
+    );
+    assert.deepStrictEqual([...got].sort(), ["acc:2828", "robe:128"]);
+  });
+
+  it("skips a row with no usable view id", () => {
+    // View 0 is the invisible costumes; a missing one is an effect-only row.
+    const got = readAppViews(
+      write({ items: [{ id: 1, slots: ["top"], view: 0 }, { id: 2, slots: ["top"] }] }),
+    );
+    assert.strictEqual(got.size, 0);
+  });
+});
+
 describe("diffCatalogues", () => {
   it("skips the header row rather than reading it as a view", () => {
     // readRows already strips it; the guard is for a hand-made TSV, and for the
@@ -454,6 +742,82 @@ describe("rgzProbeOrder", () => {
     const client = rgzProbeOrder(rows).filter((r) => r.file.includes("live_client"));
     assert.deepStrictEqual(client.map((r) => Number(r.seq)), [9432, 9400]);
     assert.deepStrictEqual(rows.map((r) => r.file), before);
+  });
+});
+
+describe("viewsFromItems", () => {
+  // The real case: jRO's AccessoryId declares view 881 and no client's AccName
+  // names it, while five item tables carry item 18742, ClassNum 881, resource
+  // 달과별의장식, equip mid, and the costume flag on two of them.
+  const tables = {
+    accSprites: new Set(["_고글"]),
+    robeSprites: new Set(["기린의날개"]),
+    accViews: new Set([1]),
+    robeViews: new Set([3]),
+  };
+  const item = (view, resource, equip, extra = {}) => ({
+    view,
+    resource,
+    equip,
+    name: null,
+    costume: false,
+    ...extra,
+  });
+
+  it("places a headgear the sprite tables never named", () => {
+    const got = viewsFromItems(new Map([[18742, item(881, "달과별의장식", ["mid"])]]), tables);
+    assert.deepStrictEqual(got.acc, [
+      { view: 881, sprite: "_달과별의장식", item: 18742, costume: false },
+    ]);
+    assert.deepStrictEqual(got.robe, []);
+  });
+
+  it("places a garment by its equip position, with the folder name as it stands", () => {
+    const got = viewsFromItems(new Map([[480874, item(322, "C_Gerero_Spear", ["garment"])]]), tables);
+    assert.deepStrictEqual(got.robe, [
+      { view: 322, sprite: "C_Gerero_Spear", item: 480874, costume: false },
+    ]);
+  });
+
+  it("leaves a weapon out: a ClassNum with no equip position places nothing", () => {
+    // ~2,000 items per client look like this, and their ClassNum is a third
+    // numbering that means nothing in either namespace.
+    const got = viewsFromItems(new Map([[1201, item(4, "커터", [])]]), tables);
+    assert.deepStrictEqual([got.acc, got.robe], [[], []]);
+  });
+
+  it("yields to the sprite table on a view it already has", () => {
+    const got = viewsFromItems(new Map([[9, item(1, "outro", ["top"])]]), tables);
+    assert.deepStrictEqual(got.acc, []);
+  });
+
+  it("skips an item whose resource a sprite table already places", () => {
+    const got = viewsFromItems(new Map([[2224, item(77, "고글", ["top"])]]), tables);
+    assert.deepStrictEqual(got.acc, []);
+  });
+
+  it("prefers the costume item on a view, then the lowest id", () => {
+    const got = viewsFromItems(
+      new Map([
+        [500, item(881, "velho", ["mid"])],
+        [400, item(881, "fantasia", ["mid"], { costume: true })],
+        [300, item(882, "a", ["mid"])],
+        [200, item(882, "b", ["mid"])],
+      ]),
+      tables,
+    );
+    assert.deepStrictEqual(
+      got.acc.map((r) => [r.view, r.item]),
+      [
+        [881, 400],
+        [882, 200],
+      ],
+    );
+  });
+
+  it("has nothing to say about an origin read from the legacy .txt tables", () => {
+    // Those carry no ClassNum and no equip line, so `readItemInfo` never ran.
+    assert.deepStrictEqual(viewsFromItems(null, tables), { acc: [], robe: [] });
   });
 });
 
@@ -544,8 +908,12 @@ describe("targetsOf", () => {
       "/sprite/악세사리/남/남_c_chained_bear.",
       "/sprite/악세사리/여/여_c_chained_bear.",
     ]);
+    // Both effect trees: the sprite-shaped aura and the `.str` folder.
     assert.deepStrictEqual(got.filter((t) => t.tier === "effect").map((t) => t.prefix), [
       "/sprite/이팩트/c_chained_bear/",
+      "/texture/effect/efst_c_chained_bear/",
+      "/texture/effect/efst_chained_bear/",
+      "/texture/effect/c_chained_bear/",
     ]);
     // Every target carries the row's key, so a hit can be credited to a view.
     assert.deepStrictEqual(new Set(got.map((t) => t.key)), new Set(["acc:8"]));
@@ -556,7 +924,12 @@ describe("targetsOf", () => {
     assert.deepStrictEqual(got.filter((t) => t.tier === "core").map((t) => t.prefix), [
       "/sprite/로브/c_s_thanatos_wing/",
     ]);
-    assert.strictEqual((got.filter((t) => t.tier === "effect")).length, 1);
+    assert.deepStrictEqual(got.filter((t) => t.tier === "effect").map((t) => t.prefix), [
+      "/sprite/이팩트/c_s_thanatos_wing/",
+      "/texture/effect/efst_c_s_thanatos_wing/",
+      "/texture/effect/efst_s_thanatos_wing/",
+      "/texture/effect/c_s_thanatos_wing/",
+    ]);
   });
 });
 
@@ -884,6 +1257,35 @@ describe("parseSlotValue", () => {
     assert.deepStrictEqual(parseSlotValue("Superior"), ["top"]);
   });
 
+  it("reads the English forms iRO and thRO write", () => {
+    assert.deepStrictEqual(parseSlotValue("Upper"), ["top"]);
+    assert.deepStrictEqual(parseSlotValue("Middle"), ["mid"]);
+    assert.deepStrictEqual(parseSlotValue("Lower"), ["low"]);
+    assert.deepStrictEqual(parseSlotValue("Garment"), ["garment"]);
+    assert.deepStrictEqual(parseSlotValue("Upper, Middle, Lower"), ["top", "mid", "low"]);
+    assert.deepStrictEqual(parseSlotValue("Upper & Middle"), ["top", "mid"]);
+    assert.deepStrictEqual(parseSlotValue("Upper.Mid"), ["top", "mid"]);
+    // iRO's abbreviations, and its one hyphenated value.
+    assert.deepStrictEqual(parseSlotValue("Low"), ["low"]);
+    assert.deepStrictEqual(parseSlotValue("mid-low"), ["mid", "low"]);
+    // thRO: a Thai label, then an English value and a Thai weight field.
+    assert.deepStrictEqual(parseSlotValue("Garment น้ำหนัก : 0"), ["garment"]);
+  });
+
+  it("does not take an English word that is only part of another", () => {
+    // The pt branch matches substrings, which is safe for Topo/Meio/Baixo and
+    // would not be for low/mid: these are the values that pay for the \b.
+    assert.deepStrictEqual(parseSlotValue("Yellow"), []);
+    assert.deepStrictEqual(parseSlotValue("Midgard"), []);
+    assert.deepStrictEqual(parseSlotValue("Supper"), []);
+  });
+
+  it("still names no slot for the equipment positions we do not model", () => {
+    for (const v of ["Weapon", "Armor", "Shoes", "Shield", "Pendant", "Earring", "Headgear"]) {
+      assert.deepStrictEqual(parseSlotValue(v), [], v);
+    }
+  });
+
   it("returns the slots in priority order however they were written", () => {
     assert.deepStrictEqual(parseSlotValue("Baixo e Meio"), ["mid", "low"]);
     assert.deepStrictEqual(parseSlotValue("頭下/上"), ["top", "low"]);
@@ -927,6 +1329,74 @@ describe("parseSlotsFromLines", () => {
 
   it("returns nothing when no line carries the label", () => {
     assert.deepStrictEqual(parseSlotsFromLines(["uma descrição qualquer", "系列 : 服飾裝備"]), []);
+  });
+
+  it("accepts the labels iRO writes, including the prefixed ones", () => {
+    assert.deepStrictEqual(parseSlotsFromLines(["Position : Upper"]), ["top"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["Location : Garment"]), ["garment"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["Head Location : Lower"]), ["low"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["Item Position : Upper  Weight : 80"]), ["top"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["location : lower  weight : 5"]), ["low"]);
+  });
+
+  it("does not read iRO's list of towns as a position", () => {
+    // "Locations" is where an item teleports you. It is excluded by the colon
+    // the label has to be followed by, and this is the line that proves it.
+    assert.deepStrictEqual(
+      parseSlotsFromLines(['Locations : "Juno", "Lighthalzen", "Einbroch"']),
+      [],
+    );
+  });
+
+  it("accepts thRO's Thai label with its English value", () => {
+    assert.deepStrictEqual(parseSlotsFromLines(["ตำแหน่ง : Lower น้ำหนัก : 10"]), ["low"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["ตำแหน่งที่สวมใส่ : Garment  น้ำหนัก : 0"]), [
+      "garment",
+    ]);
+  });
+
+  it("accepts the two older LATAM labels as well", () => {
+    assert.deepStrictEqual(parseSlotsFromLines(["Equipado em : Topo"]), ["top"]);
+    assert.deepStrictEqual(parseSlotsFromLines(["Equipar em : Topo, Meio e Baixo"]), [
+      "top",
+      "mid",
+      "low",
+    ]);
+  });
+});
+
+describe("tableFor", () => {
+  // The accessory table defines 2579 (the candy pouch) and the robe table does
+  // not; both define 8, which is a surgical mask and Rudra's wings.
+  const tables = { acc: new Set([8, 2579]), robe: new Set([8, 128]) };
+
+  it("keys a costume by the table its art is in, not by the slot it equips in", () => {
+    // Item 480494: "Position : Garment", art in the accessory table. Keyed by
+    // the slot it became robe:2579, which no client defines and the app can
+    // never join against.
+    assert.strictEqual(tableFor(2579, ["garment"], tables), "acc");
+    // And the mirror case, which is the app's own `viewKind` row: a bouquet
+    // that equips in Baixo whose 128 is a robe.
+    assert.strictEqual(tableFor(128, ["low"], tables), "robe");
+  });
+
+  it("leaves a view both tables define to the slot", () => {
+    assert.strictEqual(tableFor(8, ["garment"], tables), "robe");
+    assert.strictEqual(tableFor(8, ["top"], tables), "acc");
+  });
+
+  it("leaves a view neither table defines where the slot put it", () => {
+    assert.strictEqual(tableFor(9999, ["garment"], tables), "robe");
+    assert.strictEqual(tableFor(9999, ["top"], tables), "acc");
+  });
+
+  it("falls back to the slot alone when no tables were read", () => {
+    assert.strictEqual(tableFor(2579, ["garment"], null), "robe");
+    assert.strictEqual(tableFor(2579, [], null), null);
+  });
+
+  it("gives no namespace when no slot is known, tables or not", () => {
+    assert.strictEqual(tableFor(2579, [], tables), null);
   });
 });
 
@@ -1096,6 +1566,26 @@ describe("originCanDraw", () => {
   it("is false for nothing at all", () => {
     assert.strictEqual(originCanDraw("robe", []), false);
   });
+
+  it("takes a .str as the whole artwork, in either namespace", () => {
+    // An effect costume IS its animation. Demanding a sprite dropped the
+    // candidate group, which is why the plan then said no archive carried the
+    // view at all: `robe:94 C_Rotating_Gears`, `acc:2420 C_Fluttering_Haze`,
+    // `robe:134 C_Astra_Blessing`.
+    const str = "data/texture/effect/efst_c_astra_blessing/astra.str";
+    assert.strictEqual(originCanDraw("robe", [str, "data/texture/effect/x/astra.tga"]), true);
+    assert.strictEqual(originCanDraw("acc", [str]), true);
+    // Textures with no animation to play them are not a costume.
+    assert.strictEqual(originCanDraw("robe", ["data/texture/effect/x/gear1.tga"]), false);
+  });
+
+  it("excuses an effect costume the sex pair, since its sprite is a placeholder", () => {
+    assert.strictEqual(
+      originCanDraw("acc", [sex("남"), "data/texture/effect/efst_c_fluttering_haze/skaura33.str"]),
+      true,
+    );
+    assert.strictEqual(originCanDraw("acc", [sex("남"), "data/texture/effect/x/a.tga"]), false);
+  });
 });
 
 describe("planByCostume", () => {
@@ -1141,6 +1631,20 @@ describe("costumeDraws", () => {
 
   it("is false without a sprite name, since nothing can resolve it", () => {
     assert.strictEqual(costumeDraws({ kind: "acc" }, "", probe), false);
+  });
+
+  it("takes an effect folder with a .str as drawing, whatever the namespace", () => {
+    // Has to agree with `originCanDraw`: the plan fetched the `.str` tier for
+    // these, and asking the tree for a sprite threw every one of them away.
+    const withEffect = { ...probe, effectStr: (origin, sprite) => sprite === "C_Astra_Blessing" };
+    assert.strictEqual(costumeDraws({ kind: "robe" }, "C_Astra_Blessing", withEffect), true);
+    assert.strictEqual(costumeDraws({ kind: "acc" }, "C_Astra_Blessing", withEffect), true);
+    assert.strictEqual(costumeDraws({ kind: "robe" }, "sem_nada", withEffect), false);
+  });
+
+  it("works against a probe that has no effect question at all", () => {
+    // `treeProbe` grew `effectStr`; a caller's fake probe need not have it.
+    assert.strictEqual(costumeDraws({ kind: "acc" }, "chapeu_bom", probe), true);
   });
 });
 
@@ -1237,6 +1741,21 @@ describe("originsFromPaths", () => {
   it("credits nothing to a costume with no sprite name", () => {
     assert.deepStrictEqual(holders.get("acc:3"), []);
   });
+
+  it("credits an effect costume to a server that carries only its .str", () => {
+    // `robe:94` ships no sprite anywhere: the whole visual is gearwheel.str,
+    // which iRO and kRO keep in different trees under the same folder name.
+    const effect = [{ kind: "robe", view: 94, sprite: "C_Rotating_Gears" }];
+    const got = originsFromPaths(
+      effect,
+      new Map([
+        ["iro", ["data\\texture\\effect\\C_Rotating_Gears\\gearwheel.str"]],
+        ["kro", ["data\\sprite\\로브\\c_rotating_gears\\gearwheel.str"]],
+        ["jro", ["data\\texture\\effect\\c_rotating_gears\\gear1.tga"]],
+      ]),
+    );
+    assert.deepStrictEqual(got.get("robe:94"), ["iro", "kro"]);
+  });
 });
 
 describe("buildCatalogue", () => {
@@ -1281,6 +1800,85 @@ describe("buildCatalogue", () => {
 
   it("counts the two reasons a costume is left out separately", () => {
     assert.deepStrictEqual(built.stats.skipped, { incomplete: 1, unknownToShortlist: 1 });
+  });
+
+  it("publishes a view our own instance draws, which no plan ever fetched", () => {
+    // `latam=draws` is the render probe's verdict, so there is nothing on disk
+    // to check and nothing to download: the art is already in our resources.
+    const b = buildCatalogue({
+      plan: [],
+      shortlist: [
+        { kind: "acc", view: "845", sprite: "_토끼리본모자", name: "Chapéu do Coelho", nameOrigin: "latam", aegis: "", latam: "draws", costume: "yes" },
+      ],
+      slots: [{ kind: "acc", view: "845", slots: "top" }],
+      probe: { headgearPair: () => false, robeHasSprite: () => false },
+      present: () => false,
+    });
+    assert.strictEqual(b.costumes.length, 1);
+    hasFields(b.costumes[0], {
+      kind: "acc",
+      view: 845,
+      origin: "latam",
+      local: true,
+      costume: true,
+      slots: ["top"],
+      // It planned nothing, so there is nothing on disk to count.
+      files: 0,
+    });
+    hasFields(b.stats, { total: 1, local: 1, localPublishable: 1, skipped: { incomplete: 0, unknownToShortlist: 0 } });
+  });
+
+  it("leaves the local source out when asked, so a run can be compared", () => {
+    const b = buildCatalogue({
+      plan: [],
+      shortlist: [{ kind: "acc", view: "845", sprite: "x", latam: "draws", costume: "yes" }],
+      slots: [],
+      includeLocal: false,
+    });
+    assert.deepStrictEqual(b.costumes, []);
+    assert.strictEqual(b.stats.local, 0);
+  });
+
+  it("lets a planned row win over a local one for the same view", () => {
+    // Normally disjoint — stage 4 does not plan what we already draw — but the
+    // LATAM tree is a source too, and that row describes real files.
+    const b = buildCatalogue({
+      plan: [{ kind: "acc", view: "1", origin: "latam", path: "a.spr" }],
+      shortlist: [{ kind: "acc", view: "1", sprite: "bom", name: "Chapéu Bom", latam: "draws" }],
+      slots: [],
+      probe,
+      present: () => true,
+    });
+    assert.strictEqual(b.costumes.length, 1);
+    assert.strictEqual(b.costumes[0].local, undefined);
+    assert.strictEqual(b.costumes[0].files, 1);
+  });
+
+  it("does not publish a local row with no sprite name to key an icon by", () => {
+    const b = buildCatalogue({
+      plan: [],
+      shortlist: [{ kind: "acc", view: "7", sprite: "", latam: "draws" }],
+      slots: [],
+    });
+    assert.deepStrictEqual(b.costumes, []);
+  });
+
+  it("publishes the costume flag, so a consumer can tell a hat from a costume", () => {
+    // `acc:11` is the Biretta: a view our client defines, drawn perfectly well,
+    // and ordinary equipment. Showing it as a costume would be wrong, and the
+    // flag is the only thing that says so.
+    const b = buildCatalogue({
+      plan: [],
+      shortlist: [
+        { kind: "acc", view: "11", sprite: "_비레타", name: "Solidéu", latam: "draws", costume: "no" },
+        { kind: "acc", view: "12", sprite: "_x", name: "X", latam: "draws", costume: "" },
+      ],
+      slots: [],
+    });
+    assert.strictEqual(b.costumes.find((c) => c.view === 11).costume, false);
+    // No client shipping a flag is not a client saying no.
+    assert.strictEqual("costume" in b.costumes.find((c) => c.view === 12), false);
+    assert.strictEqual(b.stats.localPublishable, 0);
   });
 
   it("totals by origin and by slot, with an unknown slot as ?", () => {

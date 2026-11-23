@@ -76,28 +76,56 @@ function readCatalogue(originId) {
   return { views, names, items, aegis };
 }
 
-function readRenderProbe(file) {
+/**
+ * The render probe's verdicts, keyed the way everything else here is keyed.
+ *
+ * The file gained a leading `kind` column on 2026-11-20, when the probe learnt
+ * to drive `garment=` as well. Before that every row was an accessory view by
+ * construction, and this read them as such — which is exactly the bug: a
+ * garment view could never be reported as drawing, because none was ever
+ * asked about. A file written by the old tool is still readable (its header
+ * starts at `view`), and it still means what it meant: accessories only.
+ */
+export function readRenderProbe(file) {
   const out = new Map();
   if (!file || !existsSync(file)) return out;
-  for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
+  const lines = readFileSync(file, "utf8").split(/\r?\n/);
+  const header = (lines[0] ?? "").split("\t");
+  const hasKind = header[0] === "kind";
+  for (const line of lines) {
     if (!line.trim()) continue;
-    const [view, , result] = line.split("\t");
+    const cols = line.split("\t");
+    const [kind, view, , result] = hasKind ? cols : ["acc", ...cols];
     const v = Number(view);
-    // The probe drove /image?headgear=<view>, so every row is an accessory view.
-    if (Number.isInteger(v) && result) out.set(keyOf("acc", v), result);
+    if (!Number.isInteger(v) || !result) continue;
+    if (kind !== "acc" && kind !== "robe") continue;
+    out.set(keyOf(kind, v), result);
   }
   return out;
 }
 
-function readAppViews(file) {
+/**
+ * Which (kind, view) pairs the consumer already lists.
+ *
+ * The slot normally says which namespace the view id lives in — a garment slot
+ * means the robe table, a head slot means the accessory table. Where it does
+ * not, the app publishes `viewKind` to say so, and it publishes it **only on
+ * disagreement**, so reading the slot and ignoring that field gets every row
+ * that carries one exactly backwards. All three of today's do: "Buquê
+ * Gigantesco" equips in Baixo while its 128 is the C_Clutch_Bouquet robe, and
+ * two shields equip in Capa while their 2827/2828 are accessory ids. Each one
+ * marked a view listed that is a different costume in the other table, and left
+ * the real one reading unlisted.
+ */
+export function readAppViews(file) {
   const out = new Set();
   if (!file || !existsSync(file)) return out;
   const json = JSON.parse(readFileSync(file, "utf8"));
   const items = Array.isArray(json) ? json : (json.items ?? []);
   for (const it of items) {
     if (!Number.isInteger(it.view) || !it.view) continue;
-    // The app's own slots say which namespace the item's view id belongs to.
-    out.add(keyOf((it.slots ?? []).includes("garment") ? "robe" : "acc", it.view));
+    const slotKind = (it.slots ?? []).includes("garment") ? "garment" : "headgear";
+    out.add(keyOf((it.viewKind ?? slotKind) === "garment" ? "robe" : "acc", it.view));
   }
   return out;
 }

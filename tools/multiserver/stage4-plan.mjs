@@ -23,7 +23,7 @@
 // fetch runs: it names every archive, every byte range, and every view that no
 // origin can supply.
 
-import { EFFECT_DIR, normalizePath, targetsFor } from "./pathshapes.mjs";
+import { isEffectTarget, normalizePath, targetsFor } from "./pathshapes.mjs";
 import { slotRank } from "./slots.mjs";
 import { paths, readRows, streamRows, writeRows } from "./store.mjs";
 
@@ -60,7 +60,7 @@ export function targetsOf(row) {
   return targetsFor(row.kind, row.sprite).map((prefix) => ({
     prefix,
     key: rowKey(row),
-    tier: prefix.startsWith(EFFECT_DIR) ? "effect" : "core",
+    tier: isEffectTarget(prefix) ? "effect" : "core",
   }));
 }
 
@@ -85,16 +85,34 @@ export function blockedFrom(rows) {
  * Newest wins because patches carry whole files: the last patch to ship a
  * sprite is the one a live client would be running.
  */
+/**
+ * The substrings a path must contain to be worth matching against the targets.
+ *
+ * `/sprite/` alone was the gate, and it is why adding `effectTargets` to the
+ * path shapes changed nothing on its own: a `.str` effect lives under
+ * `/texture/effect/efst_<sprite>/`, which no `/sprite/` gate ever lets through,
+ * so the plan came out with the same 4 effect rows as before.
+ *
+ * The second gate was `/texture/effect/efst_` — 1,798 rows in iRO's index and
+ * 2,014 in twRO's, against 26,501 and 30,817 for the whole effect tree — until
+ * a costume turned up with its animation in `/texture/effect/C_Rotating_Gears/`,
+ * no prefix. The gate is the cheap test, not the match: letting the whole
+ * effect tree through costs one `includes` per row on ~57k extra rows across
+ * eight clients, and the targets decide the rest.
+ */
+export const GATES = ["/sprite/", "/texture/effect/"];
+
 export async function resolveOrigin(
   originId,
   targets,
-  { blocked = new Set(), onProgress, gate = "/sprite/", match } = {},
+  { blocked = new Set(), onProgress, gate = GATES, match } = {},
 ) {
   // `match` and `gate` are what the icon pass needs: it wants exact paths under
   // /texture/ rather than sprite-folder prefixes, and the scan itself — stream
   // the index, skip the unreadable archives, keep the newest copy — is the part
   // worth having in one place.
   const find = match ?? ((norm) => targets.find((t) => norm.includes(t.prefix)));
+  const gates = gate ? (Array.isArray(gate) ? gate : [gate]) : null;
   const best = new Map(); // normalized path -> {seq, archive, path, uncompSize, key, tier}
   let scanned = 0;
   for await (const r of streamRows(paths.pathsFile(originId))) {
@@ -104,7 +122,7 @@ export async function resolveOrigin(
     const norm = normalizePath(r.path);
     // Cheap gate first: an index is mostly textures, maps and lua, and matching
     // every row against ~1,600 prefixes would dominate the run.
-    if (gate && !norm.includes(gate)) continue;
+    if (gates && !gates.some((g) => norm.includes(g))) continue;
     const hit = find(norm);
     if (!hit) continue;
     const seq = Number(r.seq);
@@ -140,16 +158,30 @@ export async function resolveOrigin(
  *          not a costume.
  *   robe   at least one `.spr` anywhere in the folder. The `.act` files alone
  *          are animation data for artwork that never arrives.
+ *
+ * And one costume has no sprite at all. A `.str` effect costume — "Capa de
+ * Engrenagens", "Cerração", Astra Blessing — IS its animation: a `.str` and the
+ * textures it plays, with at most a placeholder item icon. Demanding a `.spr`
+ * dropped every one of them, and because the drop happens in the *candidate*
+ * pass, their effect files went with them: the plan then reported the view as
+ * carried by no archive at all, which is why `.str` support alone moved nothing.
+ * A `.str` is as much "this origin can render it" as a sprite pair is.
  */
 export function originCanDraw(kind, normalizedPaths) {
+  // The effect folder is keyed by this view's own sprite name, so a `.str` here
+  // is this costume's animation and not somebody else's.
+  const effect = normalizedPaths.some((p) => p.endsWith(".str"));
   const sprites = normalizedPaths.filter((p) => p.endsWith(".spr"));
-  if (!sprites.length) return false;
+  if (!sprites.length) return effect;
   if (kind !== "acc") return true;
   const base = (p) => p.slice(p.lastIndexOf("/") + 1);
   // The sex is the first character of the file name, not a folder we can trust:
-  // the same sprite sits under 악세사리/남/ and 악세사리/여/.
+  // the same sprite sits under 악세사리/남/ and 악세사리/여/. An effect costume
+  // is excused the pair: its sprite is a placeholder and several clients ship
+  // only one sex of it.
   return (
-    sprites.some((p) => base(p).startsWith("남")) && sprites.some((p) => base(p).startsWith("여"))
+    effect ||
+    (sprites.some((p) => base(p).startsWith("남")) && sprites.some((p) => base(p).startsWith("여")))
   );
 }
 
