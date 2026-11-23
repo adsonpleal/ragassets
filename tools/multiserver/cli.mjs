@@ -193,6 +193,14 @@ async function cmdCatalogue() {
       console.error(
         `    robes: ${r.robes.count}` + (r.robes.count ? "" : ` — ${r.robes.note}`),
       );
+      // The views the item table placed on its own, which no sprite table
+      // named. Printed because "+2 views" is otherwise invisible next to 2,861.
+      const fromItems = (r.views.fromItems ?? 0) + (r.robes.fromItems ?? 0);
+      if (fromItems) {
+        console.error(
+          `    ${fromItems} view(s) da tabela de itens: acc ${r.views.fromItems ?? 0}, robe ${r.robes.fromItems ?? 0}`,
+        );
+      }
       for (const [kind, j] of Object.entries(r.join)) {
         console.error(
           `    join ${kind.padEnd(4)} ${j.withItem}/${j.views} views matched an item, ${j.withName} got a name`,

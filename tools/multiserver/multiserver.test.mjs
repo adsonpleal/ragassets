@@ -47,6 +47,7 @@ import { readAppViews, readRenderProbe } from "./stage3-shortlist.mjs";
 import { tableFor } from "./slotindex.mjs";
 import { diffCatalogues, indexRows } from "./diff-catalogues.mjs";
 import {
+  effectFolders,
   effectTargets,
   isEffectTarget,
   normalizePath,
@@ -55,6 +56,7 @@ import {
   targetsFor,
 } from "./pathshapes.mjs";
 import { legacyNameCoverage } from "./coverage.mjs";
+import { viewsFromItems } from "./stage2-catalogue.mjs";
 import {
   bestSlotOfStep,
   blockedFrom,
@@ -248,20 +250,56 @@ describe("effectTargets", () => {
     assert.deepStrictEqual(effectTargets("_C_CLB_SS_LL"), [
       "/texture/effect/efst_c_clb_ss_ll/",
       "/texture/effect/efst_clb_ss_ll/",
+      "/texture/effect/c_clb_ss_ll/",
     ]);
     assert.deepStrictEqual(effectTargets("_C_FlutterButterfly_BL"), [
       "/texture/effect/efst_c_flutterbutterfly_bl/",
       "/texture/effect/efst_flutterbutterfly_bl/",
+      "/texture/effect/c_flutterbutterfly_bl/",
     ]);
   });
 
-  it("asks once when the sprite has no c_ to strip", () => {
+  it("asks for the unprefixed folder too, but never for a stripped name", () => {
+    // `robe:94 C_Rotating_Gears` keeps its animation in
+    // `/texture/effect/C_Rotating_Gears/gearwheel.str`, with no `efst_`. The
+    // stripped form is only ever asked for WITH the prefix: `/texture/effect/`
+    // is the game's whole effect library, and `rotating_gears` there could be
+    // anybody's folder.
+    assert.deepStrictEqual(effectTargets("C_Rotating_Gears"), [
+      "/texture/effect/efst_c_rotating_gears/",
+      "/texture/effect/efst_rotating_gears/",
+      "/texture/effect/c_rotating_gears/",
+    ]);
+    assert.strictEqual(
+      effectTargets("C_Rotating_Gears").includes("/texture/effect/rotating_gears/"),
+      false,
+    );
+  });
+
+  it("asks once per form when the sprite has no c_ to strip", () => {
     assert.deepStrictEqual(effectTargets("_Jirant_Circlet"), [
       "/texture/effect/efst_jirant_circlet/",
+      "/texture/effect/jirant_circlet/",
     ]);
     assert.deepStrictEqual(effectTargets("_붉은고양이귀케이프"), [
       "/texture/effect/efst_붉은고양이귀케이프/",
+      "/texture/effect/붉은고양이귀케이프/",
     ]);
+  });
+
+  it("names the folders the mirror would hold, for stage 5 to look inside", () => {
+    // Same list as the targets, minus the directory, because the two must not
+    // disagree: the planner fetches by prefix and the catalogue looks for a
+    // `.str` by folder name.
+    assert.deepStrictEqual(effectFolders("_C_CLB_SS_LL"), [
+      "efst_c_clb_ss_ll",
+      "efst_clb_ss_ll",
+      "c_clb_ss_ll",
+    ]);
+    assert.deepStrictEqual(
+      effectTargets("_C_CLB_SS_LL"),
+      effectFolders("_C_CLB_SS_LL").map((f) => `/texture/effect/${f}/`),
+    );
   });
 
   it("matches the real .str path a patch table carries", () => {
@@ -707,6 +745,82 @@ describe("rgzProbeOrder", () => {
   });
 });
 
+describe("viewsFromItems", () => {
+  // The real case: jRO's AccessoryId declares view 881 and no client's AccName
+  // names it, while five item tables carry item 18742, ClassNum 881, resource
+  // 달과별의장식, equip mid, and the costume flag on two of them.
+  const tables = {
+    accSprites: new Set(["_고글"]),
+    robeSprites: new Set(["기린의날개"]),
+    accViews: new Set([1]),
+    robeViews: new Set([3]),
+  };
+  const item = (view, resource, equip, extra = {}) => ({
+    view,
+    resource,
+    equip,
+    name: null,
+    costume: false,
+    ...extra,
+  });
+
+  it("places a headgear the sprite tables never named", () => {
+    const got = viewsFromItems(new Map([[18742, item(881, "달과별의장식", ["mid"])]]), tables);
+    assert.deepStrictEqual(got.acc, [
+      { view: 881, sprite: "_달과별의장식", item: 18742, costume: false },
+    ]);
+    assert.deepStrictEqual(got.robe, []);
+  });
+
+  it("places a garment by its equip position, with the folder name as it stands", () => {
+    const got = viewsFromItems(new Map([[480874, item(322, "C_Gerero_Spear", ["garment"])]]), tables);
+    assert.deepStrictEqual(got.robe, [
+      { view: 322, sprite: "C_Gerero_Spear", item: 480874, costume: false },
+    ]);
+  });
+
+  it("leaves a weapon out: a ClassNum with no equip position places nothing", () => {
+    // ~2,000 items per client look like this, and their ClassNum is a third
+    // numbering that means nothing in either namespace.
+    const got = viewsFromItems(new Map([[1201, item(4, "커터", [])]]), tables);
+    assert.deepStrictEqual([got.acc, got.robe], [[], []]);
+  });
+
+  it("yields to the sprite table on a view it already has", () => {
+    const got = viewsFromItems(new Map([[9, item(1, "outro", ["top"])]]), tables);
+    assert.deepStrictEqual(got.acc, []);
+  });
+
+  it("skips an item whose resource a sprite table already places", () => {
+    const got = viewsFromItems(new Map([[2224, item(77, "고글", ["top"])]]), tables);
+    assert.deepStrictEqual(got.acc, []);
+  });
+
+  it("prefers the costume item on a view, then the lowest id", () => {
+    const got = viewsFromItems(
+      new Map([
+        [500, item(881, "velho", ["mid"])],
+        [400, item(881, "fantasia", ["mid"], { costume: true })],
+        [300, item(882, "a", ["mid"])],
+        [200, item(882, "b", ["mid"])],
+      ]),
+      tables,
+    );
+    assert.deepStrictEqual(
+      got.acc.map((r) => [r.view, r.item]),
+      [
+        [881, 400],
+        [882, 200],
+      ],
+    );
+  });
+
+  it("has nothing to say about an origin read from the legacy .txt tables", () => {
+    // Those carry no ClassNum and no equip line, so `readItemInfo` never ran.
+    assert.deepStrictEqual(viewsFromItems(null, tables), { acc: [], robe: [] });
+  });
+});
+
 describe("legacyNameCoverage", () => {
   // This rule decides whether to download tens of MB of .rgz from somebody
   // else's CDN, so each real origin's shape gets a case.
@@ -799,6 +913,7 @@ describe("targetsOf", () => {
       "/sprite/이팩트/c_chained_bear/",
       "/texture/effect/efst_c_chained_bear/",
       "/texture/effect/efst_chained_bear/",
+      "/texture/effect/c_chained_bear/",
     ]);
     // Every target carries the row's key, so a hit can be credited to a view.
     assert.deepStrictEqual(new Set(got.map((t) => t.key)), new Set(["acc:8"]));
@@ -813,6 +928,7 @@ describe("targetsOf", () => {
       "/sprite/이팩트/c_s_thanatos_wing/",
       "/texture/effect/efst_c_s_thanatos_wing/",
       "/texture/effect/efst_s_thanatos_wing/",
+      "/texture/effect/c_s_thanatos_wing/",
     ]);
   });
 });
@@ -1450,6 +1566,26 @@ describe("originCanDraw", () => {
   it("is false for nothing at all", () => {
     assert.strictEqual(originCanDraw("robe", []), false);
   });
+
+  it("takes a .str as the whole artwork, in either namespace", () => {
+    // An effect costume IS its animation. Demanding a sprite dropped the
+    // candidate group, which is why the plan then said no archive carried the
+    // view at all: `robe:94 C_Rotating_Gears`, `acc:2420 C_Fluttering_Haze`,
+    // `robe:134 C_Astra_Blessing`.
+    const str = "data/texture/effect/efst_c_astra_blessing/astra.str";
+    assert.strictEqual(originCanDraw("robe", [str, "data/texture/effect/x/astra.tga"]), true);
+    assert.strictEqual(originCanDraw("acc", [str]), true);
+    // Textures with no animation to play them are not a costume.
+    assert.strictEqual(originCanDraw("robe", ["data/texture/effect/x/gear1.tga"]), false);
+  });
+
+  it("excuses an effect costume the sex pair, since its sprite is a placeholder", () => {
+    assert.strictEqual(
+      originCanDraw("acc", [sex("남"), "data/texture/effect/efst_c_fluttering_haze/skaura33.str"]),
+      true,
+    );
+    assert.strictEqual(originCanDraw("acc", [sex("남"), "data/texture/effect/x/a.tga"]), false);
+  });
 });
 
 describe("planByCostume", () => {
@@ -1495,6 +1631,20 @@ describe("costumeDraws", () => {
 
   it("is false without a sprite name, since nothing can resolve it", () => {
     assert.strictEqual(costumeDraws({ kind: "acc" }, "", probe), false);
+  });
+
+  it("takes an effect folder with a .str as drawing, whatever the namespace", () => {
+    // Has to agree with `originCanDraw`: the plan fetched the `.str` tier for
+    // these, and asking the tree for a sprite threw every one of them away.
+    const withEffect = { ...probe, effectStr: (origin, sprite) => sprite === "C_Astra_Blessing" };
+    assert.strictEqual(costumeDraws({ kind: "robe" }, "C_Astra_Blessing", withEffect), true);
+    assert.strictEqual(costumeDraws({ kind: "acc" }, "C_Astra_Blessing", withEffect), true);
+    assert.strictEqual(costumeDraws({ kind: "robe" }, "sem_nada", withEffect), false);
+  });
+
+  it("works against a probe that has no effect question at all", () => {
+    // `treeProbe` grew `effectStr`; a caller's fake probe need not have it.
+    assert.strictEqual(costumeDraws({ kind: "acc" }, "chapeu_bom", probe), true);
   });
 });
 
@@ -1590,6 +1740,21 @@ describe("originsFromPaths", () => {
 
   it("credits nothing to a costume with no sprite name", () => {
     assert.deepStrictEqual(holders.get("acc:3"), []);
+  });
+
+  it("credits an effect costume to a server that carries only its .str", () => {
+    // `robe:94` ships no sprite anywhere: the whole visual is gearwheel.str,
+    // which iRO and kRO keep in different trees under the same folder name.
+    const effect = [{ kind: "robe", view: 94, sprite: "C_Rotating_Gears" }];
+    const got = originsFromPaths(
+      effect,
+      new Map([
+        ["iro", ["data\\texture\\effect\\C_Rotating_Gears\\gearwheel.str"]],
+        ["kro", ["data\\sprite\\로브\\c_rotating_gears\\gearwheel.str"]],
+        ["jro", ["data\\texture\\effect\\c_rotating_gears\\gear1.tga"]],
+      ]),
+    );
+    assert.deepStrictEqual(got.get("robe:94"), ["iro", "kro"]);
   });
 });
 

@@ -154,6 +154,55 @@ async function extractFrom(origin, archive, matchRe, outDir) {
   return { local, bytes: got.bytes, cached: got.cached };
 }
 
+/** The equip positions that make an item a headgear. */
+export const ACC_EQUIP = new Set(["top", "mid", "low"]);
+
+/**
+ * The views an item table declares and no sprite table names.
+ *
+ * Pure half of the pass described at "the views only the item table knows":
+ * take the items with a ClassNum whose resource name is in neither sprite
+ * table, keep the ones whose equip position places them in a namespace, and
+ * leave any view the sprite table already has to the sprite table.
+ *
+ * `items` is `readItemInfo`'s map, or nothing at all for an origin read from
+ * the legacy .txt tables — those carry no ClassNum and no equip line, so there
+ * is nothing here for them.
+ *
+ * @returns {{acc: Array<{view: number, sprite: string, item: number}>,
+ *   robe: Array<{view: number, sprite: string, item: number}>}}
+ */
+export function viewsFromItems(items, { accSprites, robeSprites, accViews, robeViews }) {
+  const out = { acc: new Map(), robe: new Map() };
+  if (!items) return { acc: [], robe: [] };
+  for (const [id, it] of items) {
+    if (!it.view || !it.resource) continue;
+    const low = it.resource.toLowerCase();
+    // Placed by the sprite tables already: that join owns it.
+    if (accSprites.has(`_${low}`) || robeSprites.has(low)) continue;
+    const equip = it.equip ?? [];
+    const kind = equip.includes("garment")
+      ? "robe"
+      : equip.some((e) => ACC_EQUIP.has(e))
+        ? "acc"
+        : null;
+    if (!kind) continue;
+    if ((kind === "acc" ? accViews : robeViews).has(it.view)) continue;
+    // A headgear sprite name carries the leading underscore the AccName table
+    // writes; a garment folder is the resource name as it stands.
+    const sprite = kind === "acc" ? `_${it.resource}` : it.resource;
+    const prev = out[kind].get(it.view);
+    // Same ranking as the main join: the costume version of an item beats the
+    // plain one, then the lowest id. A named item cannot be preferred here —
+    // the name comes from a table this function does not read.
+    if (prev && !(it.costume && !prev.costume) && !(it.costume === prev.costume && id < prev.item)) {
+      continue;
+    }
+    out[kind].set(it.view, { view: it.view, sprite, item: id, costume: it.costume });
+  }
+  return { acc: [...out.acc.values()], robe: [...out.robe.values()] };
+}
+
 export async function catalogueOrigin(origin, { onProgress, probeRgz = true, rgzLimit = 12 } = {}) {
   const located = await locateTables(origin.id);
   if (!located.size) {
@@ -196,13 +245,12 @@ export async function catalogueOrigin(origin, { onProgress, probeRgz = true, rgz
   const robeNameFile = robeNameTail ? findExtracted(outDir, robeNameTail) : null;
   const result = { origin: origin.id, fetched, located: [...located.values()] };
 
+  // views.tsv and robes.tsv are written further down, after the item join, not
+  // here: the item table knows views the sprite tables never named, and those
+  // rows belong in the same two files. Everything between here and there reads
+  // these rows from memory.
   if (idFile && nameFile) {
     const { rows, stats } = joinAccessories(idFile, nameFile);
-    writeRows(
-      join(paths.catalogDir(origin.id), "views.tsv"),
-      ["view", "sprite", "accessoryKey"],
-      rows.map((r) => [r.view, r.sprite ?? "", r.key]),
-    );
     result.views = { count: rows.length, ...stats };
     result.viewRows = rows;
   } else {
@@ -212,11 +260,6 @@ export async function catalogueOrigin(origin, { onProgress, probeRgz = true, rgz
 
   if (robeIdFile && robeNameFile) {
     const { rows, stats } = joinRobes(robeIdFile, robeNameFile);
-    writeRows(
-      join(paths.catalogDir(origin.id), "robes.tsv"),
-      ["view", "sprite", "spriteEng", "robeKey"],
-      rows.map((r) => [r.view, r.sprite ?? "", r.spriteEng ?? "", r.key]),
-    );
     result.robes = { count: rows.length, ...stats };
     result.robeRows = rows;
   } else {
@@ -352,6 +395,32 @@ export async function catalogueOrigin(origin, { onProgress, probeRgz = true, rgz
   // namespace by itself: ClassNum 2 is a sword, headgear view 2 is a cat-ear
   // hairband and garment view 2 is an adventurer's backpack. It is used here as
   // a cross-check, and the disagreements are reported rather than hidden.
+  // --- the views only the item table knows ---
+  //
+  // The join above reads the sprite tables and asks the item table for names.
+  // Three costumes showed that the arrow points both ways. Views `acc:881`
+  // (Moon and Stars), `acc:883` (Twilight) and `acc:1074` (Musical Decoration)
+  // are declared by jRO's AccessoryId and named by **nobody's** AccName — not
+  // jRO's, not any of the other seven — so stage 3 saw a view with no sprite
+  // name and the planner could not build a target for it. Meanwhile five
+  // clients' item tables carry the whole answer: item 18742, ClassNum 881,
+  // resource `달과별의장식`, equip position mid, "Luar de Cristal" in our own
+  // client, and the costume flag set on twRO and thRO. The art is in iRO's and
+  // jRO's patches under `악세사리/남/남_달과별의장식.spr`, and nothing was
+  // missing but the name.
+  //
+  // So: an item with a ClassNum whose resource name is in neither sprite table
+  // still identifies its view, and the equip position decides the namespace —
+  // garment is a robe, top/mid/low is a headgear, and a weapon (whose ClassNum
+  // is a third numbering entirely) has neither and is dropped as before. The
+  // view id must be one the sprite table does not already have: where both
+  // speak, the sprite table is the authority on its own namespace.
+  //
+  // Measured over the five clients that ship an item table: 78 headgear views
+  // and 7 garment views in total, of which ~2-3 per client are views no sprite
+  // table named. The other ~2,000 items with a ClassNum and no placeable
+  // resource have no equip position either — they are weapons, and they stay
+  // out.
   const accViewOfSprite = new Map();
   for (const r of result.viewRows) {
     if (r.sprite) accViewOfSprite.set(r.sprite.toLowerCase(), r.view);
@@ -382,6 +451,13 @@ export async function catalogueOrigin(origin, { onProgress, probeRgz = true, rgz
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i];
     return id < prev;
   };
+  const itemPlaced = viewsFromItems(info?.items, {
+    accSprites: new Set(accViewOfSprite.keys()),
+    robeSprites: new Set(robeViewOfSprite.keys()),
+    accViews: new Set(result.viewRows.map((r) => Number(r.view))),
+    robeViews: new Set(result.robeRows.map((r) => Number(r.view))),
+  });
+
   const check = { agree: 0, disagree: 0, noClassNum: 0, unplaced: 0 };
   for (const [id, res] of itemRes) {
     const low = res.toLowerCase();
@@ -403,6 +479,42 @@ export async function catalogueOrigin(origin, { onProgress, probeRgz = true, rgz
     else if (claimed === view) check.agree++;
     else check.disagree++;
     if (better(id, byKind[kind].get(view))) byKind[kind].set(view, id);
+  }
+
+  // The item-placed views join on the same terms: their item is the one that
+  // placed them, unless the usual ranking prefers another item on that view.
+  for (const [kind, rows] of [
+    ["acc", itemPlaced.acc],
+    ["robe", itemPlaced.robe],
+  ]) {
+    for (const r of rows) {
+      if (better(r.item, byKind[kind].get(r.view))) byKind[kind].set(r.view, r.item);
+    }
+  }
+  result.views.fromItems = itemPlaced.acc.length;
+  result.robes.fromItems = itemPlaced.robe.length;
+  result.viewRows = [...result.viewRows, ...itemPlaced.acc.map((r) => ({ ...r, source: "item" }))];
+  result.robeRows = [...result.robeRows, ...itemPlaced.robe.map((r) => ({ ...r, source: "item" }))];
+
+  if (result.viewRows.length) {
+    writeRows(
+      join(paths.catalogDir(origin.id), "views.tsv"),
+      ["view", "sprite", "accessoryKey", "source"],
+      result.viewRows.map((r) => [r.view, r.sprite ?? "", r.key ?? "", r.source ?? ""]),
+    );
+  }
+  if (result.robeRows.length) {
+    writeRows(
+      join(paths.catalogDir(origin.id), "robes.tsv"),
+      ["view", "sprite", "spriteEng", "robeKey", "source"],
+      result.robeRows.map((r) => [
+        r.view,
+        r.sprite ?? "",
+        r.spriteEng ?? "",
+        r.key ?? "",
+        r.source ?? "",
+      ]),
+    );
   }
 
   const costumes = [];

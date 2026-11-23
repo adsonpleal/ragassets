@@ -84,14 +84,19 @@ export function robeTargets(...names) {
  * `/texture/effect/`, so a plan over all eight clients came out with **4 effect
  * rows**, which are two costumes' `.spr`/`.act` pairs, and not one `.str`.
  *
- * This reaches **2 of those 9** — `_C_CLB_SS_LL` (56 files, 9.3 MB, in five
- * clients) and `_C_FlutterButterfly_BL` (9 files, in four). The other 7 have no
- * folder under either name in any of the eight clients, because their effect is
- * filed under a name the sprite does not give: `resources/effects/` already
- * holds a `gold_shower` and a `time_accessory` that look like two of them, and
- * our own costumes are mapped to those names **by hand** in
- * `resources/effects/index.json`. A folder name derived from the sprite is as
- * far as a path shape can go; the rest is a mapping, not a target.
+ * The folder name derived from the sprite is right more often than the first
+ * measurement of this suggested. `efst_C_Astra_Blessing/astra.str` and
+ * `efst_C_Fluttering_Haze/skaura33.str` are both exactly `efst_` + the sprite
+ * name, in six clients each, and both matched these targets from the day they
+ * were added — what kept them out of the plan was `originCanDraw` in
+ * stage4-plan.mjs, which dropped any view with no `.spr`, and that is precisely
+ * what an effect-only costume has. The two are fixed together or neither
+ * shows.
+ *
+ * What a path shape still cannot reach is a costume whose effect our own client
+ * maps by hand: `resources/effects/index.json` holds a `gold_shower` and a
+ * `time_accessory` that look like two of the nine, under names no sprite gives.
+ * That is a mapping, not a target.
  *
  * Two forms are tried, because a costume and the ordinary hat it copies share
  * one effect folder and the folder is named after whichever came first:
@@ -103,19 +108,42 @@ export function robeTargets(...names) {
  * are the base/costume pair of the same hat (`_Jirant_Circlet` and
  * `_C_Jirant_Circlet`), which is the same artwork and so the same effect.
  */
-export function effectTargets(...names) {
+export function effectFolders(...names) {
   const out = [];
   for (const name of names) {
     if (!name) continue;
     const bare = name.toLowerCase().replace(/^_+/, "");
     if (!bare) continue;
-    out.push(`${EFFECT_TEX_DIR}${EFFECT_TEX_PREFIX}${bare}/`);
+    // Both spellings the effect tree uses. The `efst_` prefix is the common one,
+    // but it is a convention and not a rule: `robe:94 C_Rotating_Gears` —
+    // "Capa de Engrenagens", one of the costumes this audit went looking for —
+    // files its animation as `/texture/effect/C_Rotating_Gears/gearwheel.str`,
+    // with no prefix at all, in iRO, kRO, twRO and thRO. Asking for the bare
+    // folder costs one more name per sprite and is what reaches it.
+    out.push(`${EFFECT_TEX_PREFIX}${bare}`);
     const stripped = bare.replace(/^c_?/, "");
-    if (stripped && stripped !== bare) {
-      out.push(`${EFFECT_TEX_DIR}${EFFECT_TEX_PREFIX}${stripped}/`);
-    }
+    if (stripped && stripped !== bare) out.push(`${EFFECT_TEX_PREFIX}${stripped}`);
+    // The unprefixed form takes the sprite's own name and nothing else. The
+    // `c_`-stripped variant is deliberately NOT tried without the prefix:
+    // `efst_` keeps that guess inside the costume-effect tree, while
+    // `/texture/effect/` is the game's whole effect library, where a stripped
+    // name like `fire` or `aura` is somebody else's folder with hundreds of
+    // textures in it.
+    out.push(bare);
   }
   return out;
+}
+
+/**
+ * The same folders, as prefixes to match an index row against.
+ *
+ * One source of truth with `effectFolders` on purpose: the planner matches
+ * paths with these, and stage 5 looks for a `.str` in those folders in the
+ * mirror. The two asking different questions is how an effect costume gets
+ * fetched and then dropped.
+ */
+export function effectTargets(...names) {
+  return effectFolders(...names).map((folder) => `${EFFECT_TEX_DIR}${folder}/`);
 }
 
 /** Is this target an effect rather than the costume's own artwork? Both effect

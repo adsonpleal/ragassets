@@ -91,11 +91,16 @@ export function blockedFrom(rows) {
  * `/sprite/` alone was the gate, and it is why adding `effectTargets` to the
  * path shapes changed nothing on its own: a `.str` effect lives under
  * `/texture/effect/efst_<sprite>/`, which no `/sprite/` gate ever lets through,
- * so the plan came out with the same 4 effect rows as before. The second gate
- * is narrow on purpose — `/texture/effect/` is 26,501 rows in iRO's index and
- * 30,817 in twRO's, while `/texture/effect/efst_` is 1,798 and 2,014.
+ * so the plan came out with the same 4 effect rows as before.
+ *
+ * The second gate was `/texture/effect/efst_` — 1,798 rows in iRO's index and
+ * 2,014 in twRO's, against 26,501 and 30,817 for the whole effect tree — until
+ * a costume turned up with its animation in `/texture/effect/C_Rotating_Gears/`,
+ * no prefix. The gate is the cheap test, not the match: letting the whole
+ * effect tree through costs one `includes` per row on ~57k extra rows across
+ * eight clients, and the targets decide the rest.
  */
-export const GATES = ["/sprite/", "/texture/effect/efst_"];
+export const GATES = ["/sprite/", "/texture/effect/"];
 
 export async function resolveOrigin(
   originId,
@@ -153,16 +158,30 @@ export async function resolveOrigin(
  *          not a costume.
  *   robe   at least one `.spr` anywhere in the folder. The `.act` files alone
  *          are animation data for artwork that never arrives.
+ *
+ * And one costume has no sprite at all. A `.str` effect costume — "Capa de
+ * Engrenagens", "Cerração", Astra Blessing — IS its animation: a `.str` and the
+ * textures it plays, with at most a placeholder item icon. Demanding a `.spr`
+ * dropped every one of them, and because the drop happens in the *candidate*
+ * pass, their effect files went with them: the plan then reported the view as
+ * carried by no archive at all, which is why `.str` support alone moved nothing.
+ * A `.str` is as much "this origin can render it" as a sprite pair is.
  */
 export function originCanDraw(kind, normalizedPaths) {
+  // The effect folder is keyed by this view's own sprite name, so a `.str` here
+  // is this costume's animation and not somebody else's.
+  const effect = normalizedPaths.some((p) => p.endsWith(".str"));
   const sprites = normalizedPaths.filter((p) => p.endsWith(".spr"));
-  if (!sprites.length) return false;
+  if (!sprites.length) return effect;
   if (kind !== "acc") return true;
   const base = (p) => p.slice(p.lastIndexOf("/") + 1);
   // The sex is the first character of the file name, not a folder we can trust:
-  // the same sprite sits under 악세사리/남/ and 악세사리/여/.
+  // the same sprite sits under 악세사리/남/ and 악세사리/여/. An effect costume
+  // is excused the pair: its sprite is a placeholder and several clients ship
+  // only one sex of it.
   return (
-    sprites.some((p) => base(p).startsWith("남")) && sprites.some((p) => base(p).startsWith("여"))
+    effect ||
+    (sprites.some((p) => base(p).startsWith("남")) && sprites.some((p) => base(p).startsWith("여")))
   );
 }
 

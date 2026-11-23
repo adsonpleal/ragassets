@@ -572,6 +572,38 @@ function readFileTableV200(fd, tableStart, entryTrailerBytes = 17) {
  * `buf` starts at the table offset and must hold at least 8 + compressed bytes;
  * anything after that is ignored, so a caller that read "the rest of the file"
  * can pass it straight in.
+ *
+ * ## What a kRO .gsf payload looks like, and why it still does not extract
+ *
+ * The one thing this reader cannot do with an "Event Horizon" archive is read a
+ * file OUT of it, and that costs real costumes: kRO has shipped `.gsf`/`.gef`
+ * since 2025-12-04, 141 of them in its own patch list, and nine of the costumes
+ * a Divine-Pride audit went looking for exist in no other readable archive —
+ * the whole kROM Guerrero / Hanom / Tatsi / Sirena / Diosa / Bluehole set.
+ *
+ * Measured on `2026-07-29_live_data_3258_3264_1784777728.gsf` (13,492,264
+ * bytes, 1,515 entries, magic "Event Horizon", table at 0x32 + the header's
+ * offset, which lists perfectly):
+ *
+ *   * every entry carries flags = 0x80 and no 0x01 FILE bit, so `decodeGrfEntry`
+ *     returns zero bytes before it even looks at the payload;
+ *   * `compSize == compSizeAligned` for all 1,515 — no 4-byte padding — and the
+ *     spans are contiguous: offset(n+1) == offset(n) + compSize(n), with the
+ *     first entry at offset 0, which puts the data base at 0x2e as in v0x200;
+ *   * every payload begins with a 4-byte header, `01 01 00 00` or `01 02 00 00`
+ *     — two variants, one per entry, which looks like a method byte;
+ *   * what follows is 7.83 bits/byte. Tried and failed, at both bases and with
+ *     and without those 4 bytes: zlib, raw deflate, gzip, brotli, zstd, a
+ *     single-byte XOR sweep followed by zlib, an LZMA2 chunk header read, and
+ *     both GRF DES passes (header-only and mixed) followed by inflate. A sweep
+ *     of the whole 13 MB data section finds 703 bytes that look like a zlib
+ *     header, which is what random bytes give you.
+ *
+ * So the payload is neither deflate nor any codec with a magic number, and the
+ * method byte is the thing to attack next — presumably against the client
+ * binary, not by guessing. Until then `listRemote` marks these archives
+ * `blocked`, which is honest: the index still records which archive WOULD have
+ * the file.
  */
 export function parseFileTableV2(buf, entryTrailerBytes = 17) {
   const compressedSize = buf.readUInt32LE(0);

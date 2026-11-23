@@ -59,7 +59,14 @@ import { join } from "node:path";
 import { sanitizePath } from "../../extract-grf.mjs";
 import { clientNamesFromDisk, normResource } from "./clientnames.mjs";
 import { ORIGINS } from "./origins.mjs";
-import { ACC_DIR, ROBE_DIR, SEX_PREFIX, normalizePath, robeTargets } from "./pathshapes.mjs";
+import {
+  ACC_DIR,
+  ROBE_DIR,
+  SEX_PREFIX,
+  effectFolders,
+  normalizePath,
+  robeTargets,
+} from "./pathshapes.mjs";
 import { paths, readRows } from "./store.mjs";
 
 /**
@@ -85,9 +92,19 @@ import { paths, readRows } from "./store.mjs";
 export function originsFromPaths(costumes, pathsByOrigin) {
   const accWant = new Map(); // normalized .spr path -> "kind:view|sex"
   const robeWant = new Map(); // normalized folder prefix -> Set of "kind:view"
+  const effectWant = new Map(); // effect folder name -> Set of "kind:view"
   for (const c of costumes) {
     const key = `${c.kind}:${c.view}`;
     if (!c.sprite) continue;
+    // An effect costume is "had" by any server carrying its `.str`, in either
+    // namespace: the animation is the artwork. Same question `costumeDraws`
+    // asks of the tree, asked of an index. Keyed by the folder's own name so a
+    // `.str` costs one lookup — `/sprite/로브/c_rotating_gears/gearwheel.str`
+    // and `/texture/effect/c_rotating_gears/gearwheel.str` are the same answer.
+    for (const folder of effectFolders(c.sprite)) {
+      if (!effectWant.has(folder)) effectWant.set(folder, new Set());
+      effectWant.get(folder).add(key);
+    }
     if (c.kind === "robe") {
       for (const prefix of robeTargets(c.sprite)) {
         if (!robeWant.has(prefix)) robeWant.set(prefix, new Set());
@@ -100,10 +117,17 @@ export function originsFromPaths(costumes, pathsByOrigin) {
   }
 
   const found = new Map(); // origin -> Set of "kind:view|sex" and "kind:view"
+  const foundEffect = new Map(); // origin -> Set of "kind:view"
   for (const [origin, paths] of pathsByOrigin) {
     const hits = new Set();
+    const effects = new Set();
     for (const raw of paths) {
       const path = normalizePath(raw);
+      if (path.endsWith(".str")) {
+        const parts = path.split("/");
+        for (const key of effectWant.get(parts[parts.length - 2]) ?? []) effects.add(key);
+        continue;
+      }
       if (!path.endsWith(".spr")) continue;
       // The asset tree is rooted differently in different archives (`data\...`
       // in most, deeper in a few), so both lookups are keyed from the folder
@@ -123,6 +147,7 @@ export function originsFromPaths(costumes, pathsByOrigin) {
       for (const key of robeWant.get(path.slice(at, end + 1)) ?? []) hits.add(key);
     }
     found.set(origin, hits);
+    foundEffect.set(origin, effects);
   }
 
   const out = new Map();
@@ -131,9 +156,10 @@ export function originsFromPaths(costumes, pathsByOrigin) {
     const origins = [];
     for (const [origin, hits] of found) {
       const has =
-        c.kind === "robe"
+        foundEffect.get(origin)?.has(key) ||
+        (c.kind === "robe"
           ? hits.has(key)
-          : SEX_PREFIX.every((sex) => hits.has(`${key}|${sex}`));
+          : SEX_PREFIX.every((sex) => hits.has(`${key}|${sex}`)));
       if (has) origins.push(origin);
     }
     out.set(key, origins);
@@ -273,16 +299,24 @@ export function slotsByCostume(rows) {
  *          all — which is exactly what ragassets says about the two it empties
  *          here (`c_snow_powder`, `모험가배낭`): their real visual is a `.str`
  *          world effect, handled by `--effects`, not a sprite.
+ *
+ *   either an effect folder holding a `.str`. A costume whose whole visual is a
+ *          `.str` animation has no sprite to find, in either namespace, and
+ *          asking for one threw away every costume the plan's own new effect
+ *          tier had just fetched. This mirrors `originCanDraw` in
+ *          stage4-plan.mjs on purpose: the two have to agree or the plan
+ *          promises what the catalogue rejects.
  */
 export function costumeDraws(costume, sprite, probe) {
   if (!sprite) return false;
+  if (probe.effectStr?.(costume.origin, sprite)) return true;
   if (costume.kind === "robe") return probe.robeHasSprite(costume.origin, sprite);
   return probe.headgearPair(costume.origin, sprite);
 }
 
 /** The filesystem questions `costumeDraws` asks, isolated so tests can fake them. */
 export function treeProbe({ readdirSync, existsSync: exists }) {
-  const anySpr = (dir) => {
+  const anyFile = (dir, re) => {
     let found = false;
     const walk = (d) => {
       if (found) return;
@@ -295,12 +329,13 @@ export function treeProbe({ readdirSync, existsSync: exists }) {
       for (const e of entries) {
         if (found) return;
         if (e.isDirectory()) walk(join(d, e.name));
-        else if (/[.]spr$/i.test(e.name)) found = true;
+        else if (re.test(e.name)) found = true;
       }
     };
     walk(dir);
     return found;
   };
+  const anySpr = (dir) => anyFile(dir, /[.]spr$/i);
   return {
     robeHasSprite(origin, sprite) {
       const bare = sprite.replace(/^_/, "");
@@ -311,6 +346,13 @@ export function treeProbe({ readdirSync, existsSync: exists }) {
       return ["남", "여"].every((sex) =>
         exists(join(root, sex, `${sex}${sprite.toLowerCase()}.spr`)),
       );
+    },
+    // A `.str` under any of the folder names this sprite could own. The fetcher
+    // lowercases everything under `data/`, so the lowercased names
+    // `effectFolders` returns are the names on disk.
+    effectStr(origin, sprite) {
+      const root = join(paths.mirrorDir(origin), "data", "texture", "effect");
+      return effectFolders(sprite).some((folder) => anyFile(join(root, folder), /[.]str$/i));
     },
   };
 }

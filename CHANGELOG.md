@@ -14,6 +14,76 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-23
+
+### Added
+- **The item table can name a view the sprite tables never did.** jRO's
+  `AccessoryId` declares `acc:881`, `acc:883` and `acc:1074`, and no client's
+  `AccName` names them — not jRO's own — so the shortlist carried three needed
+  views with no sprite name, which is a view the planner cannot build a target
+  for. Five item tables carried the whole answer: item 18742, `ClassNum` 881,
+  resource `달과별의장식`, equip position mid, "Luar de Cristal" in our own
+  client, the costume flag set on twRO and thRO, and the art sitting in iRO's
+  and jRO's patches under `악세사리/남/남_달과별의장식.spr`. Stage 2 now places
+  an item with a `ClassNum` whose resource is in neither sprite table by its
+  **equip position** — garment is a robe, top/mid/low a headgear, a weapon has
+  neither and stays out — and writes the row with `source=item`, as long as the
+  sprite table does not already carry that view id. Across the five clients
+  with an item table that places 78 headgear and 7 garment views, of which 4 are
+  views nothing else named (the three above and thRO's `acc:2830
+  _Primordial_Weapons`).
+
+### Fixed
+- **An effect costume is no longer thrown away for having no sprite.** The
+  `.str` work shipped yesterday found the files and the plan still came out
+  unchanged, because `originCanDraw` — the test that stops the planner fetching
+  a costume the catalogue would reject — required a `.spr`, and a costume whose
+  whole visual is a `.str` animation has none. It dropped the whole candidate
+  group, effect files included, so the plan reported those views as carried by
+  no archive at all. A `.str` now counts as artwork in both namespaces, in the
+  planner and in `costumeDraws`/`treeProbe`/`originsFromPaths` on the catalogue
+  side, which have to agree or the plan promises what the catalogue rejects.
+
+- **An effect folder is not always prefixed.** `robe:94 C_Rotating_Gears` ("Capa
+  de Engrenagens") keeps its animation in `/texture/effect/C_Rotating_Gears/`,
+  with no `efst_`, in four clients. `effectFolders` asks for three names per
+  sprite — `efst_<sprite>`, `efst_<sprite minus c_>` and `<sprite>` — and the
+  stripped form is deliberately never tried unprefixed, because
+  `/texture/effect/` is the game's whole effect library where a name like
+  `fire` is somebody else's folder. The planner's cheap gate widens from
+  `/texture/effect/efst_` to `/texture/effect/` to let the unprefixed form
+  through: ~57k more rows past the gate across eight clients, where the gate is
+  the cheap test and the targets decide.
+
+- Yesterday's note that seven of the nine effect costumes are "filed under a
+  name their sprite does not give" was wrong. `efst_C_Astra_Blessing` (with
+  `astra.str`) and `efst_C_Fluttering_Haze` are exactly `efst_` + the sprite
+  name, in six clients each, and matched from the day the target was added; what
+  kept them out was the `.spr` requirement above. Corrected in the code and in
+  the README.
+
+### Measured
+- **What a kRO `.gsf` payload looks like, and why it still does not extract.**
+  Nine of the costumes the Divine-Pride audit wants exist in no readable archive
+  — the kROM Guerrero / Hanom / Tatsi / Sirena / Diosa / Bluehole set, all of it
+  inside `2026-07-29_live_data_3258_3264_*.gsf`, a GRF **0x300** "Event Horizon"
+  archive that lists fine and is recorded `blocked`. Measured on that archive
+  (13.5 MB, 1,515 entries): every entry carries flags `0x80` and no `FILE` bit;
+  `compSize == compSizeAligned` throughout; spans are contiguous from offset 0,
+  so the data base is `0x2e` as in v0x200; and every payload opens with a 4-byte
+  header, `01 01 00 00` or `01 02 00 00`. What follows is 7.83 bits/byte and is
+  not zlib, raw deflate, gzip, brotli, zstd or an LZMA2 chunk, with or without
+  those 4 bytes, at either base, and neither GRF DES pass followed by inflate
+  produces anything. The method byte is the thing to attack next, against the
+  client binary rather than by guessing. Written down above `parseFileTableV2`
+  in `extract-grf.mjs`.
+
+- **`acc:732` "Bone Hat" stays out on purpose.** Divine-Pride lists it as a
+  costume (item 19820); all five item tables we can read say `costume=false`,
+  iRO names it "C Bone Hat", and the item carries no equip position at all. The
+  shortlist follows the clients, so the view counts as ordinary equipment and
+  `--include-equipment` is the way to fetch it.
+
 ## 2026-11-22
 
 ### Added

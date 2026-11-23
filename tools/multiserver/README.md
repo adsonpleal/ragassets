@@ -143,6 +143,30 @@ carried a `ClassNum` and belonged to neither, and the result reproduces 1,148 of
 the app's own 1,239 named pairs. Names the client itself has not filled in
 are dropped rather than shipped: twRO carries a literal `(null)` for 94 items.
 
+**And sometimes only the item table knows the view exists.** jRO's `AccessoryId`
+declares `acc:881`, `acc:883` and `acc:1074`, and **no client's `AccName` names
+them** — not jRO's own. A view with no sprite name is a view the planner cannot
+build a target for, so those three sat in the shortlist as needed, nameless and
+unfetchable, while five item tables carried the whole answer: item 18742,
+`ClassNum` 881, resource `달과별의장식`, equip position mid, "Luar de Cristal" in
+our own client, and the costume flag set on twRO and thRO. The art is in iRO's
+and jRO's patches under `악세사리/남/남_달과별의장식.spr`.
+
+So `viewsFromItems` closes the loop the other way: an item with a `ClassNum`
+whose resource name is in neither sprite table still identifies its view, and
+the **equip position** decides the namespace — garment is a robe, top/mid/low is
+a headgear, and a weapon has neither (its `ClassNum` is that third space) and
+stays out. The view id has to be one the sprite table does not already carry:
+where both speak, the sprite table is the authority on its own namespace. Those
+rows are written into `views.tsv`/`robes.tsv` with `source=item`.
+
+It is a narrow rule, and the measurement is the reason to trust it: across the
+five clients that ship an item table it places 78 headgear and 7 garment views,
+of which **4 are views no sprite table named** — `acc:881`, `acc:883`,
+`acc:1074` and thRO's `acc:2830 _Primordial_Weapons` — and the other ~2,000
+items with a `ClassNum` and an unplaceable resource have no equip position
+either.
+
 Watch the encodings: display names are in the server's language (Shift-JIS,
 Big5, EUC-KR), but **resource names are Korean in every client** because they are
 GRF paths. Decoding the resource table as Shift-JIS looks like it works and
@@ -392,9 +416,18 @@ has 343; `acc:1931 _C_Dullahan_Mask` went to kRO Zero, which has one sex, while
 twRO has both. Both would have been fetched, stored, and found undrawable one
 stage later. `originCanDraw` applies exactly the test stage 5 applies to the
 tree — both sex `.spr` files for a headgear, one `.spr` anywhere in the folder
-for a garment — so a view that no origin can render is reported as unreachable
-*before* the bytes are spent, instead of becoming a costume the catalogue
-throws away.
+for a garment, **or an effect folder with a `.str` in it, in either namespace** —
+so a view that no origin can render is reported as unreachable *before* the
+bytes are spent, instead of becoming a costume the catalogue throws away.
+
+That last clause is the whole reason `.str` support took three passes to land.
+An effect costume IS its animation: a `.str` and the textures it plays, with at
+most a placeholder sprite. Demanding a `.spr` dropped the **candidate group**,
+so the effect files the new targets had just found went with it and the plan
+reported the view as carried by no archive at all — which is why the first
+measurement said the effect tier reached only 2 of the 9. The test lives in two
+places by necessity (here and `costumeDraws` in stage 5) and the two have to say
+the same thing, or the plan promises what the catalogue rejects.
 
 **A patch is not a sprite.** twRO's client patches run 2–292 MB (median 2.8,
 mean 60 in the sample on disk), and the sprites inside are a few hundred KB.
@@ -430,18 +463,29 @@ slot for (the ones only iRO, kRO or jRO define). `--tiers` splits the costume's 
 (`core`) from the effect files some hats carry (`effect`), so a fetch can start
 with the cheap half.
 
-**The effect tier could not see a `.str` at all**, and that took two fixes
-rather than one. A costume whose whole visual is a `.str` animation — nine of
-the ones Divine-Pride lists and we do not show — keeps it under
-`/texture/effect/efst_<sprite>/`, while `spriteTargets` only ever reached
-`/sprite/이팩트/`, where a *sprite-shaped* effect lives. Adding `effectTargets`
-changed nothing on its own, because `resolveOrigin`'s cheap gate was `/sprite/`
-and dropped the new target before it was ever matched. Both together, a plan
-over all eight clients goes from **4 effect files, 1.2 MB, no `.str` at all** to
-**407 files, 55.6 MB, 18 `.str` across 19 views**, for 2 more patches (198 →
-200). The second gate is narrow on purpose — `/texture/effect/` is 26,501 rows
-in iRO's index and 30,817 in twRO's, while `/texture/effect/efst_` is 1,798 and
-2,014.
+**The effect tier could not see a `.str` at all**, and that took three fixes,
+each of which looked like the whole answer on its own. A costume whose whole
+visual is a `.str` animation — nine of the ones Divine-Pride lists and we do not
+show — keeps it under `/texture/effect/efst_<sprite>/`, while `spriteTargets`
+only ever reached `/sprite/이팩트/`, where a *sprite-shaped* effect lives.
+
+1. `effectTargets` asks for the `.str` folder. On its own it changed **nothing**:
+   `resolveOrigin`'s cheap gate was `/sprite/`, which dropped the new target
+   before it was ever matched.
+2. The gate takes `/texture/effect/` as well. Now the files are found — and the
+   plan still came out with the same 513 covered views, because
+   `originCanDraw` threw away every candidate group with no `.spr` in it, which
+   is exactly what an effect costume is. See 4a above.
+3. The folder name is not always prefixed. `robe:94 C_Rotating_Gears` ("Capa de
+   Engrenagens") keeps its animation in `/texture/effect/C_Rotating_Gears/`,
+   with no `efst_` at all, in four clients — and a second copy in
+   `/sprite/로브/C_Rotating_Gears/`, which the ordinary garment target was
+   already matching and `originCanDraw` was already rejecting.
+
+The gate was `/texture/effect/efst_` — 1,798 rows in iRO's index and 2,014 in
+twRO's, against 26,501 and 30,817 for the whole effect tree — and widening it to
+the whole tree is what step 3 costs: one `includes` per row on ~57k extra rows
+across eight clients, where the gate is the cheap test and the targets decide.
 
 Two name forms are tried, because a costume and the ordinary hat it copies share
 one effect folder, named after whichever came first: `_C_FlutterButterfly_BL`'s
@@ -449,9 +493,21 @@ is `efst_flutterbutterfly_bl`, with no `c_`. Over the shortlist's 3,242 sprite
 names the exact form finds 40 folders and the variant takes it to 46, 120 MB.
 The variant steals nothing: of the 39 folders claimed by more than one sprite
 name, the 5 claimed by an exact and a stripped name are all the base/costume
-pair of the same hat. It reaches **2 of the 9** — the other 7 are filed under a
-name their sprite does not give, which is a mapping (`resources/effects/index.json`
-does ours by hand) and not a path shape.
+pair of the same hat.
+
+The stripped form is only ever asked for **with** the prefix. `efst_` keeps a
+guess inside the costume-effect tree; `/texture/effect/` is the game's whole
+effect library, where `rotating_gears` or `fire` is somebody else's folder with
+hundreds of textures in it. So three names per sprite: `efst_<sprite>`,
+`efst_<sprite minus c_>`, and `<sprite>`.
+
+The first measurement of this said the folder name was usually wrong and the
+nine costumes needed a hand mapping. That was wrong: `efst_C_Astra_Blessing`
+(with `astra.str`) and `efst_C_Fluttering_Haze` are exactly `efst_` + the sprite
+name, in six clients each, and both matched from the day the target was added.
+What a path shape genuinely cannot reach is a costume whose effect our own
+client maps by hand — `resources/effects/index.json` holds a `gold_shower` and a
+`time_accessory` that look like two of the nine, under names no sprite gives.
 
 The 162 unreachable views include the oldest hats in the game — `_두건` (hood),
 `_머리띠` (headband), `_햇` (hat). They have sat in the installer's `data.grf`
