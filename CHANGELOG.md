@@ -14,6 +14,42 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-23 (segunda entrada)
+
+### Changed
+- **`icons-plan.tsv` regerado do catálogo de 1.762 fantasias: 1.275 → 3.378
+  ícones.** O plano anterior nasceu do catálogo de 663, antes de a stage 5
+  publicar as 1.099 views que a nossa própria árvore já desenha. Nada no código
+  precisou mudar: `iconName()` vai do nome do sprite direto ao BMP, sem passar
+  por item id, e o ícone pode vir de qualquer cliente que o tenha — exatamente o
+  que as 305 views sem id LATAM precisavam.
+
+  O plano é superconjunto estrito do antigo: comparado por `kind` + sprite
+  normalizado, **2.103 ícones novos e nenhum perdido**. (Comparar pelo path cru
+  acusa 53 saídas falsas, porque o path carrega o case do archive escolhido:
+  `C_Guardian_Butterwing.bmp` num cliente e `c_guardian_butterwing.bmp` noutro.)
+
+  Buscado e publicado: 1.350 BMP de 371 patches em 655 requisições, 37,0 MB
+  transferidos, 2.028 já no espelho. A árvore vai de 1.275 para **3.378 PNG**
+  (1.689 `item` + 1.689 `collection`, 25 MB), cobrindo **1.691 dos 1.746 sprites
+  distintos (96,8%)**. Por origem:
+  `{iro:1252, krozero:685, jro:576, twro:413, kro:171, thro:126, twrozero:109, latam:46}`.
+
+  Os 55 sprites restantes não têm o BMP em cliente nenhum e seguem 404 de
+  propósito — o consumidor já cai no thumbnail renderizado, e um placeholder
+  seria uma imagem que se diz a fantasia.
+
+### Measured
+- **O fetch de ícones é retomável, e precisa ser.** A primeira passada morreu em
+  44 dos 371 patches num range de `ropatch.gnjoy.in.th` que falhou três vezes
+  com `terminated`. Como os BMP vão para o espelho antes da conversão, e a
+  conversão só roda no fim, a segunda tentativa pulou 2.028 arquivos já em disco
+  e completou. Rode num laço de retomada, não numa passada só.
+- **O gateway não precisa de restart para ver ícone novo.** `handleCostumeIcon`
+  faz `os.Open` por request, sem índice de diretório em cache — ao contrário do
+  store de efeito, que indexa a pasta uma vez e por isso obriga o restart do
+  ciclo de patch.
+
 ## 2026-11-23
 
 ### Added
