@@ -14,6 +14,37 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-25
+
+### Fixed
+- **The blank sweep never looked at our own client, and the five it was blamed
+  for are not blank.** `find-blank-visuals.mjs` renders every costume and keeps
+  the ones that come back byte-identical to a bare character, but its query
+  always carried an `origin` — and LATAM is not one the gateway accepts. Its
+  tree is the gateway's own `resourceDir` rather than a mirror, so `origin=latam`
+  answers 500 and a sprite override with no origin answers 400. Two thirds of
+  the catalogue (1,170 of 1,762 rows) is `origin: latam`, and none of it had
+  ever been swept. Those rows render from the bare view id, the way the app
+  renders them, and that is the line that was missing. The sweep also read
+  `.items` from a path that does not exist in this repository, so since the move
+  to `paths.catalogue()` it crashed on its own default input; it now reads
+  `costumes` (this pipeline's catalogue) or `items` (the app's build of it) and
+  accepts either spelling of the kind.
+- **19 of 1,762 are blank, up from 17 of 592.** The two new ones are both ours:
+  garment `7` (`피아멧트의리본`, which no client names) and garment `100`
+  (`C_Snow_Powder`), the `GARMENT_TEMPLATE_ONLY` row whose folder is all backpack
+  leftovers and whose visual is a `.str` — the sweep finding it on its own is
+  the check that it works. The other 1,168 LATAM rows draw. No previous verdict
+  changed. 2,016 renders, zero errors.
+- **A garment is the case a one-pose probe gets wrong.** It is worn on the back,
+  so facing south the body hides it: the five LATAM backpacks (views 22, 26, 59,
+  81, 119 — `EXE_Backpack`, `BlackCatBag`, `C_Soldier_Backpack`,
+  `C_BlackBear_Back_TW`, `C_School_Bag_PU`) render byte-identical to the bare
+  character standing and are unmistakable from behind. A consumer's own
+  single-pose check called all five dead and was about to ship that as a warning
+  to its users. The ten-pose ladder this sweep has always used settles every one
+  of them, and the README now says why a garment needs it.
+
 ## 2026-11-23
 
 ### Added
