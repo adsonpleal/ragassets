@@ -55,6 +55,7 @@ import {
   spriteTargets,
   targetsFor,
 } from "./pathshapes.mjs";
+import { kindOf, renderQuery } from "./find-blank-visuals.mjs";
 import { legacyNameCoverage } from "./coverage.mjs";
 import { viewsFromItems } from "./stage2-catalogue.mjs";
 import {
@@ -2075,5 +2076,45 @@ describe("catalogueDocument", () => {
     assert.deepStrictEqual(doc.costumes.map((c) => c.sprite), ["bom", "capa"]);
     assert.strictEqual(doc.version, 1);
     assert.strictEqual(doc.generatedAt, "2026-11-18");
+  });
+});
+
+describe("renderQuery", () => {
+  const pose = "job=0&head=1&frame=0&gender=male&action=0";
+
+  it("names the tree and the sprite for a foreign row", () => {
+    // Both halves matter: the origin picks the mirror, and the sprite is how a
+    // view id that means something else here resolves to the right art.
+    assert.strictEqual(
+      renderQuery({ origin: "iro", kind: "acc", view: 1063, sprite: "_flag" }, pose),
+      `${pose}&origin=iro&headgear=1063&headgearSprite=1063%3A_flag`,
+    );
+  });
+
+  it("asks for our own art by the bare view id, with no origin", () => {
+    // LATAM is the gateway's own resourceDir and not a mirror: `origin=latam`
+    // is a 500 and a sprite override without an origin is a 400, so a row of
+    // ours can only be rendered the way the app renders it.
+    assert.strictEqual(
+      renderQuery({ origin: "latam", kind: "robe", view: 22, sprite: "EXE_Backpack" }, pose),
+      `${pose}&garment=22`,
+    );
+  });
+
+  it("treats a row with no origin at all as ours", () => {
+    // The app's copy of the catalogue omits `origin` on its own client's rows,
+    // because the point of them is that there is no foreign tree to name.
+    assert.strictEqual(
+      renderQuery({ viewKind: "garment", view: 22, sprite: "exe_backpack" }, pose),
+      `${pose}&garment=22`,
+    );
+  });
+
+  it("reads either spelling of the kind", () => {
+    // acc/robe is this pipeline's, headgear/garment is the app's.
+    assert.strictEqual(kindOf({ kind: "robe" }), "robe");
+    assert.strictEqual(kindOf({ viewKind: "garment" }), "robe");
+    assert.strictEqual(kindOf({ viewKind: "headgear" }), "acc");
+    assert.strictEqual(kindOf({}), "acc");
   });
 });

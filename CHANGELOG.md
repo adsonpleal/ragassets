@@ -14,6 +14,73 @@ rates and `CF-Cache-Status` observations in older entries were real when taken
 and do not describe the system today. Check the date before trusting an entry;
 `CLAUDE.md` and `README.md` describe the current state.
 
+## 2026-11-25
+
+### Fixed
+- **The blank sweep never looked at our own client, and the five it was blamed
+  for are not blank.** `find-blank-visuals.mjs` renders every costume and keeps
+  the ones that come back byte-identical to a bare character, but its query
+  always carried an `origin` — and LATAM is not one the gateway accepts. Its
+  tree is the gateway's own `resourceDir` rather than a mirror, so `origin=latam`
+  answers 500 and a sprite override with no origin answers 400. Two thirds of
+  the catalogue (1,170 of 1,762 rows) is `origin: latam`, and none of it had
+  ever been swept. Those rows render from the bare view id, the way the app
+  renders them, and that is the line that was missing. The sweep also read
+  `.items` from a path that does not exist in this repository, so since the move
+  to `paths.catalogue()` it crashed on its own default input; it now reads
+  `costumes` (this pipeline's catalogue) or `items` (the app's build of it) and
+  accepts either spelling of the kind.
+- **19 of 1,762 are blank, up from 17 of 592.** The two new ones are both ours:
+  garment `7` (`피아멧트의리본`, which no client names) and garment `100`
+  (`C_Snow_Powder`), the `GARMENT_TEMPLATE_ONLY` row whose folder is all backpack
+  leftovers and whose visual is a `.str` — the sweep finding it on its own is
+  the check that it works. The other 1,168 LATAM rows draw. No previous verdict
+  changed. 2,016 renders, zero errors.
+- **A garment is the case a one-pose probe gets wrong.** It is worn on the back,
+  so facing south the body hides it: the five LATAM backpacks (views 22, 26, 59,
+  81, 119 — `EXE_Backpack`, `BlackCatBag`, `C_Soldier_Backpack`,
+  `C_BlackBear_Back_TW`, `C_School_Bag_PU`) render byte-identical to the bare
+  character standing and are unmistakable from behind. A consumer's own
+  single-pose check called all five dead and was about to ship that as a warning
+  to its users. The ten-pose ladder this sweep has always used settles every one
+  of them, and the README now says why a garment needs it.
+
+## 2026-11-23 (segunda entrada)
+
+### Changed
+- **`icons-plan.tsv` regerado do catálogo de 1.762 fantasias: 1.275 → 3.378
+  ícones.** O plano anterior nasceu do catálogo de 663, antes de a stage 5
+  publicar as 1.099 views que a nossa própria árvore já desenha. Nada no código
+  precisou mudar: `iconName()` vai do nome do sprite direto ao BMP, sem passar
+  por item id, e o ícone pode vir de qualquer cliente que o tenha — exatamente o
+  que as 305 views sem id LATAM precisavam.
+
+  O plano é superconjunto estrito do antigo: comparado por `kind` + sprite
+  normalizado, **2.103 ícones novos e nenhum perdido**. (Comparar pelo path cru
+  acusa 53 saídas falsas, porque o path carrega o case do archive escolhido:
+  `C_Guardian_Butterwing.bmp` num cliente e `c_guardian_butterwing.bmp` noutro.)
+
+  Buscado e publicado: 1.350 BMP de 371 patches em 655 requisições, 37,0 MB
+  transferidos, 2.028 já no espelho. A árvore vai de 1.275 para **3.378 PNG**
+  (1.689 `item` + 1.689 `collection`, 25 MB), cobrindo **1.691 dos 1.746 sprites
+  distintos (96,8%)**. Por origem:
+  `{iro:1252, krozero:685, jro:576, twro:413, kro:171, thro:126, twrozero:109, latam:46}`.
+
+  Os 55 sprites restantes não têm o BMP em cliente nenhum e seguem 404 de
+  propósito — o consumidor já cai no thumbnail renderizado, e um placeholder
+  seria uma imagem que se diz a fantasia.
+
+### Measured
+- **O fetch de ícones é retomável, e precisa ser.** A primeira passada morreu em
+  44 dos 371 patches num range de `ropatch.gnjoy.in.th` que falhou três vezes
+  com `terminated`. Como os BMP vão para o espelho antes da conversão, e a
+  conversão só roda no fim, a segunda tentativa pulou 2.028 arquivos já em disco
+  e completou. Rode num laço de retomada, não numa passada só.
+- **O gateway não precisa de restart para ver ícone novo.** `handleCostumeIcon`
+  faz `os.Open` por request, sem índice de diretório em cache — ao contrário do
+  store de efeito, que indexa a pasta uma vez e por isso obriga o restart do
+  ciclo de patch.
+
 ## 2026-11-23
 
 ### Added

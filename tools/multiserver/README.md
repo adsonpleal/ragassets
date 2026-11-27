@@ -230,8 +230,10 @@ blank looks obviously right — a garment is a folder with one sprite pair per
 class and sex, so partial art is invisible on the wrong body — and was measured
 away: every one of the 223 is settled on the asked-for class, and two more
 classes changed no verdict while tripling what each blank costs. That case
-belongs to `find-blank-visuals.mjs`, which renders a foreign mirror; this probe
-asks our own resolver, whose tree is complete. The *pose* half does earn its
+belongs to `find-blank-visuals.mjs`, which renders the foreign mirrors, where
+the tree is only as complete as the fetch made it; here, and on the LATAM rows
+that sweep now covers too, the resolver answers from a complete tree. The *pose*
+half does earn its
 keep: 11 of the 223 draw nothing standing and appear only from action type 1 or
 3 on, the school bags and the Poring bag among them.
 
@@ -668,7 +670,7 @@ index is the only one all six answer the same way, and it undercounts rather
 than inventing: an archive with no readable file table is invisible to it.
 
 Each entry is `{kind, view, sprite, origin, origins, name, nameOrigin, names,
-ids, aegis, slots, files}`, plus `blank: true` on the 17 that render nothing (stage
+ids, aegis, slots, files}`, plus `blank: true` on the 19 that render nothing (stage
 5b). `name` is whichever client names the item, which is not always the client
 the art came from: an item id is global, so twRO can name a costume iRO
 supplies. `aegis` is the English identifier, a translation base rather than a
@@ -794,19 +796,35 @@ wearing nothing, which no status code or content type distinguishes from a
 request that asked for nothing — so the only way to find them is to render the
 bare character too and compare the bytes.
 
-17 of the 592 are blank. `blank-visuals.json` is the committed result, and
+**19 of the 1,762 are blank.** `blank-visuals.json` is the committed result, and
 `publishable` reads it and marks those rows `blank: true`, so a consumer can
 leave them out rather than ship dead tiles — it is marked rather than dropped
 because "renders nothing" is a fact about the costume that the catalogue is the
-right place to state. Nearly all 17 are effect costumes (`_흩날리는낙엽` falling
+right place to state. Nearly all are effect costumes (`_흩날리는낙엽` falling
 leaves, `_c골드샤워` gold shower, `_흩날리는벚꽃` Amatsu aura): drawing them
 needs the `.str` extracted per origin, which this pipeline does not do yet.
+
+**Every costume, not only the foreign ones.** Two thirds of the catalogue is
+`origin: latam` — art this client already ships, for an item it never released —
+and until 2026-11-25 none of it was swept, because the query this built always
+carried an `origin` and LATAM is not one the gateway accepts: its tree is the
+gateway's own `resourceDir` rather than a mirror, so `origin=latam` is a 500 and
+a sprite override with no origin is a 400. Those rows render from the bare view
+id, the way the app renders them. The sweep of all 1,170 found **two** blanks —
+garment `7` (`피아멧트의리본`, which no client names) and garment `100`
+(`C_Snow_Powder`), the `GARMENT_TEMPLATE_ONLY` row whose folder is all backpack
+leftovers and whose visual is a `.str`. The other 1,168 draw.
 
 The sweep tries ten poses before calling a costume blank. Asking for the
 standing pose alone accused 47, and five of those draw perfectly well once the
 character moves — iRO's `_low_pony_bu` is empty standing, walking and sitting,
-and draws from action type 3 on. Only a costume that fails the first pose pays
-for the other nine: 822 renders for 592 costumes.
+and draws from action type 3 on. A **garment is the case to be careful with**:
+it is worn on the back, so facing south the body hides it, and the five LATAM
+backpacks (views 22, 26, 59, 81, 119 — `EXE_Backpack`, `BlackCatBag`,
+`C_Soldier_Backpack`, `C_BlackBear_Back_TW`, `C_School_Bag_PU`) are byte-identical
+to the bare character standing and unmistakable from behind. A one-pose probe
+calls all five dead. Only a costume that fails the first pose pays for the other
+nine: 2,016 renders for 1,762 costumes, zero errors.
 
 The bare-character comparison, the pose ladder and the retry policy live in
 `renderprobe.mjs`, shared with `renderable` (2b). The two tools ask opposite

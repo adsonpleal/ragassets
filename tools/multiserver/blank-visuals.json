@@ -1,16 +1,9 @@
 {
-  "note": "Visuais estrangeiros que renderizam identicos ao personagem pelado, nos dois generos. Gerado por find-blank-visuals.mjs; lido por export-app-catalogue.mjs.",
-  "checkedAt": "2026-11-18",
+  "note": "Visuais do catalogo que renderizam identicos ao personagem pelado, nos dois generos e em cinco poses. Gerado por find-blank-visuals.mjs; lido por stage5-catalogue.mjs.",
+  "checkedAt": "2026-11-26",
   "base": "https://assets.latam-tools.com.br",
-  "count": 17,
+  "count": 19,
   "blank": [
-    {
-      "origin": "iro",
-      "view": 89,
-      "viewKind": "garment",
-      "sprite": "c_capoo_bag_tw",
-      "name": "(服飾)咖波包"
-    },
     {
       "origin": "iro",
       "view": 1275,
@@ -22,36 +15,43 @@
       "origin": "iro",
       "view": 1461,
       "viewKind": "headgear",
-      "sprite": "_c흩날리는깃털",
+      "sprite": "_C흩날리는깃털",
       "name": "[Visual] Penas Coloridas"
     },
     {
       "origin": "iro",
       "view": 1528,
       "viewKind": "headgear",
-      "sprite": "_c골드샤워",
+      "sprite": "_C골드샤워",
       "name": "[Visual] Chuva Dourada"
     },
     {
       "origin": "iro",
       "view": 2150,
       "viewKind": "headgear",
-      "sprite": "_c_cat_footprints",
-      "name": "(服飾)喵喵肉球印"
+      "sprite": "_C_Cat_Footprints",
+      "name": "Costume Cat Footprints"
     },
     {
       "origin": "iro",
       "view": 2353,
       "viewKind": "headgear",
-      "sprite": "_ghost_fire_tw",
-      "name": "幽魅火球"
+      "sprite": "_Ghost_Fire_TW",
+      "name": "Ghost Fire"
     },
     {
       "origin": "iro",
       "view": 2432,
       "viewKind": "headgear",
-      "sprite": "_c_s_attack_ring",
-      "name": "(服飾)金環(受到攻擊)"
+      "sprite": "_C_S_Attack_Ring",
+      "name": "Costume Ring (Hit)"
+    },
+    {
+      "origin": "iro",
+      "view": 89,
+      "viewKind": "garment",
+      "sprite": "C_CAPOO_Bag_TW",
+      "name": "(服飾)咖波包"
     },
     {
       "origin": "krozero",
@@ -71,57 +71,71 @@
       "origin": "krozero",
       "view": 1378,
       "viewKind": "headgear",
-      "sprite": "_c나비의날갯짓",
+      "sprite": "_C나비의날갯짓",
       "name": "(服飾)飄揚的蝴蝶"
     },
     {
       "origin": "krozero",
       "view": 1772,
       "viewKind": "headgear",
-      "sprite": "_return_tw_2th_hat",
+      "sprite": "_Return_TW_2th_Hat",
       "name": "(服飾)回歸二週年頭飾"
     },
     {
       "origin": "krozero",
       "view": 1931,
       "viewKind": "headgear",
-      "sprite": "_c_dullahan_mask",
+      "sprite": "_C_Dullahan_Mask",
       "name": "[Visual] Capacete de Dullahan"
+    },
+    {
+      "origin": "latam",
+      "view": 7,
+      "viewKind": "garment",
+      "sprite": "피아멧트의리본",
+      "name": null
+    },
+    {
+      "origin": "latam",
+      "view": 100,
+      "viewKind": "garment",
+      "sprite": "C_Snow_Powder",
+      "name": "[Visual] Aura Nevada"
     },
     {
       "origin": "twro",
       "view": 1230,
       "viewKind": "headgear",
       "sprite": "_부유하는현자의돌",
-      "name": "(服飾)飄浮的賢者之石"
+      "name": "Costume Floating Sage Stone"
     },
     {
       "origin": "twro",
       "view": 1380,
       "viewKind": "headgear",
-      "sprite": "_c흩날리는천사의날개",
+      "sprite": "_C흩날리는천사의날개",
       "name": "[Visual] Penas Encantadas"
     },
     {
       "origin": "twro",
       "view": 1665,
       "viewKind": "headgear",
-      "sprite": "_c_flutterbutterfly_bl",
-      "name": "(服飾)幽暗的蝴蝶"
+      "sprite": "_C_FlutterButterfly_BL",
+      "name": "Costume Black Butterfly's Wings"
     },
     {
       "origin": "twro",
       "view": 1821,
       "viewKind": "headgear",
-      "sprite": "_romanticrose",
+      "sprite": "_RomanticRose",
       "name": "(服飾)浪漫玫瑰"
     },
     {
       "origin": "twrozero",
       "view": 2533,
       "viewKind": "headgear",
-      "sprite": "_c_clb_ss_ll",
-      "name": "(服飾)發懶滷哥氣球"
+      "sprite": "_C_CLB_SS_LL",
+      "name": "Costume Shiba Says Luke"
     }
   ]
 }
